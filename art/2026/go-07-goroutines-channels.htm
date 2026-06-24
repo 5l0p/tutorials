@@ -1,0 +1,396 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Go - Part 7: Goroutines & Channels</title>
+    <meta name="description" content="How goroutines and channels work in Go, compared to C pthreads and C# async/await, with examples of the select statement and channel patterns.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="go-07-goroutines-channels.txt">plain/text</a> | <i>2026-07-10</i> | <i><a href="../../go.htm">go</a></i>
+        <h2>Go - Part 7: Goroutines & Channels</h2>
+        <p>
+Concurrency is the area where Go most clearly diverges from both C and C#. In C you use
+pthreads or OS threads directly. In C# you use <code>async</code>/<code>await</code> with
+<code>Task</code> objects managed by the CLR. Go introduces goroutines - lightweight
+coroutines multiplexed over OS threads - and channels - typed message-passing pipes.
+This is not just different syntax; it is a different mental model. This article explains
+both from first principles.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What goroutines are, how they differ from OS threads and C# Tasks, and how the Go scheduler multiplexes them</li>
+<li>How to launch goroutines with <code>go</code> and why you must synchronise their results</li>
+<li>How channels work: unbuffered (synchronous handoff) and buffered (async queue)</li>
+<li>Closing channels and iterating with <code>range</code></li>
+<li>The <code>select</code> statement: waiting on multiple channel operations simultaneously</li>
+<li>Implementing timeouts using <code>select</code> with <code>time.After</code></li>
+<li>Goroutine leaks: how to prevent them and why they matter</li>
+</ul>
+
+<h3>Goroutines</h3>
+
+<p>
+A goroutine is started with the <code>go</code> keyword followed by a function call. That
+is the entire syntax:
+</p>
+
+<pre>
+go fmt.Println("hello from a goroutine")
+
+go func() {
+    time.Sleep(100 * time.Millisecond)
+    fmt.Println("delayed greeting")
+}()
+</pre>
+
+<p>
+The function runs concurrently with the goroutine that started it. There is no handle,
+no token, no <code>Task&lt;T&gt;</code> - just <code>go</code> and a function call.
+</p>
+
+<p>
+Goroutines are not OS threads. The Go runtime implements its own scheduler (the M:N
+scheduler) that multiplexes many goroutines onto a smaller number of OS threads. A
+goroutine starts with a tiny stack (a few kilobytes) that grows automatically as needed.
+You can launch a million goroutines on a laptop; launching a million OS threads would
+exhaust memory and crash the machine.
+</p>
+
+<p>
+In C, <code>pthread_create</code> creates a real OS thread - expensive, with a fixed
+64KB–8MB default stack depending on the platform. In C# a <code>Thread</code> object is
+similarly expensive. C#'s <code>async/await</code> avoids creating threads by using a
+cooperative scheduler on a thread pool - but the programming model requires explicit
+<code>async</code>/<code>await</code> annotations throughout the call chain. Go goroutines
+are cheaper than threads and require no annotations: any function can be run as a
+goroutine.
+</p>
+
+<h3>Channels</h3>
+
+<p>
+A channel is a typed conduit through which goroutines send and receive values. Sending to
+a channel and receiving from a channel are synchronisation points - they coordinate
+goroutines without shared memory.
+</p>
+
+<pre>
+// Create an unbuffered channel of int
+ch := make(chan int)
+
+// Send in a goroutine (blocks until a receiver is ready)
+go func() {
+    ch &lt;- 42
+}()
+
+// Receive (blocks until a sender is ready)
+v := &lt;-ch
+fmt.Println(v) // 42
+</pre>
+
+<p>
+An unbuffered channel is a synchronous rendezvous: the sender blocks until a receiver
+is ready, and the receiver blocks until a sender is ready. This is a built-in
+synchronisation primitive; you do not need a mutex or condition variable for the common
+case of passing a value between goroutines.
+</p>
+
+<p>
+In C, the closest analogue is a <code>pipe</code> or a semaphore-guarded queue. In C#,
+<code>System.Threading.Channels.Channel&lt;T&gt;</code> (added in .NET Core 3.0) provides
+the same idea, but it requires more ceremony.
+</p>
+
+<h3>Buffered Channels</h3>
+
+<p>
+A buffered channel has a capacity greater than zero. Sends do not block as long as the
+buffer has space; receives do not block as long as the buffer is non-empty:
+</p>
+
+<pre>
+ch := make(chan int, 3) // buffer capacity 3
+
+ch &lt;- 1 // does not block
+ch &lt;- 2 // does not block
+ch &lt;- 3 // does not block
+// ch &lt;- 4 would block here - buffer full
+
+fmt.Println(&lt;-ch) // 1
+fmt.Println(&lt;-ch) // 2
+fmt.Println(&lt;-ch) // 3
+</pre>
+
+<p>
+Buffered channels decouple the timing of sender and receiver. Use them when you know a
+bounded amount of work can queue up. Do not use large buffers as a way to avoid thinking
+about backpressure - a buffer size of 100 is not 100 times more correct than a buffer
+size of 1.
+</p>
+
+<h3>Closing Channels and range</h3>
+
+<p>
+A channel can be closed with <code>close(ch)</code> to signal that no more values will be
+sent. Receiving from a closed channel returns the zero value immediately. The two-value
+receive form lets you detect a closed channel:
+</p>
+
+<pre>
+ch := make(chan int, 3)
+ch &lt;- 1
+ch &lt;- 2
+ch &lt;- 3
+close(ch)
+
+for v := range ch {
+    fmt.Println(v) // 1, 2, 3
+}
+// range exits when the channel is closed and drained
+</pre>
+
+<p>
+Only the sender should close a channel - closing a channel twice, or sending to a closed
+channel, panics. If you have multiple senders, use a <code>sync.WaitGroup</code> to wait
+for all senders to finish before closing (pattern covered in the concurrency patterns
+article).
+</p>
+
+<h3>The select Statement</h3>
+
+<p>
+<code>select</code> lets a goroutine wait on multiple channel operations simultaneously.
+It blocks until one is ready, then executes that case. If multiple cases are ready, one
+is chosen at random.
+</p>
+
+<pre>
+func fanIn(ch1, ch2 &lt;-chan string) &lt;-chan string {
+    merged := make(chan string)
+    go func() {
+        for {
+            select {
+            case v := &lt;-ch1:
+                merged &lt;- v
+            case v := &lt;-ch2:
+                merged &lt;- v
+            }
+        }
+    }()
+    return merged
+}
+</pre>
+
+<p>
+A <code>default</code> case makes <code>select</code> non-blocking - it runs immediately
+if no channel operation is ready:
+</p>
+
+<pre>
+select {
+case v := &lt;-ch:
+    fmt.Println("received:", v)
+default:
+    fmt.Println("no value ready")
+}
+</pre>
+
+<p>
+There is no equivalent single construct in C - you would use <code>select(2)</code> for
+file descriptors, not arbitrary typed channels. In C# you can await on
+<code>Task.WhenAny</code> for a similar effect, but the idiom is more verbose and tied to
+the <code>Task</code> abstraction.
+</p>
+
+<h3>Timeouts with select</h3>
+
+<p>
+Combining <code>select</code> with <code>time.After</code> (which returns a channel that
+delivers a value after a duration) is the idiomatic way to implement timeouts:
+</p>
+
+<pre>
+func doWithTimeout(ch &lt;-chan string, timeout time.Duration) (string, error) {
+    select {
+    case v := &lt;-ch:
+        return v, nil
+    case &lt;-time.After(timeout):
+        return "", fmt.Errorf("timed out after %v", timeout)
+    }
+}
+</pre>
+
+<p>
+In C# this is <code>await Task.WhenAny(task, Task.Delay(timeout))</code> followed by
+checking which task completed. Go's version is more concise and does not require returning
+a type that wraps both cases.
+</p>
+
+<h3>Goroutine Scheduling: Cooperative vs Preemptive</h3>
+
+<p>
+Before Go 1.14, the Go scheduler was cooperative: a goroutine would yield only at certain
+points (channel operations, system calls, explicit <code>runtime.Gosched()</code> calls,
+function calls). Since Go 1.14, the scheduler is asynchronously preemptive - a goroutine
+can be preempted by the scheduler at any point in its execution, similar to OS thread
+scheduling. This fixed cases where a tight CPU loop would starve other goroutines.
+</p>
+
+<p>
+C# <code>async/await</code> is cooperative: <code>await</code> is the yield point.
+A synchronous loop never yields. This is why blocking inside an async method (with
+<code>Thread.Sleep</code> instead of <code>await Task.Delay</code>) is a C# anti-pattern.
+In Go, a blocking call inside a goroutine is fine - the runtime moves the goroutine to
+a separate OS thread so other goroutines continue running.
+</p>
+
+<h3>Goroutine Leaks</h3>
+
+<p>
+Goroutines are cheap but not free. A goroutine that blocks forever - typically because it
+is waiting on a channel that nobody will ever send to - is a <b>goroutine leak</b>. Leaked
+goroutines hold their stack memory and any resources they reference. In long-running
+servers they accumulate and cause out-of-memory errors.
+</p>
+
+<pre>
+// BUG: goroutine leak
+func leaky(ch chan int) {
+    go func() {
+        v := &lt;-ch // blocks forever if nobody sends
+        fmt.Println(v)
+    }()
+}
+</pre>
+
+<p>
+The standard fix is a done channel or a context (covered in detail in the context article)
+that signals the goroutine to stop:
+</p>
+
+<pre>
+func notLeaky(ch chan int, done &lt;-chan struct{}) {
+    go func() {
+        select {
+        case v := &lt;-ch:
+            fmt.Println(v)
+        case &lt;-done:
+            return // clean exit
+        }
+    }()
+}
+</pre>
+
+<h3>GOMAXPROCS</h3>
+
+<p>
+The <code>GOMAXPROCS</code> environment variable (and <code>runtime.GOMAXPROCS(n)</code>)
+controls how many OS threads the scheduler uses simultaneously. Since Go 1.5 it defaults
+to the number of CPU cores, so Go programs are parallel by default on multi-core machines.
+You rarely need to change this. C# controls this via the thread pool settings.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Goroutines are cheap (a few KB of initial stack) and multiplexed by the Go
+runtime over a pool of OS threads. Channels provide typed, synchronised
+communication: unbuffered channels block until both sides are ready; buffered
+channels queue up to their capacity. <code>select</code> waits on multiple
+channels simultaneously, with an optional <code>default</code> case for
+non-blocking polls. Always ensure goroutines can exit — a goroutine blocked on
+an unbounded channel send or receive never terminates.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://go.dev/doc/effective_go#goroutines">Effective Go: Goroutines</a></li>
+<li><a href="https://go.dev/doc/effective_go#channels">Effective Go: Channels</a></li>
+<li><a href="https://go.dev/blog/pipelines">Go Concurrency Patterns: Pipelines and Cancellation - The Go Blog</a></li>
+<li><a href="https://go.dev/ref/spec#Select_statements">Go Specification: Select Statements</a></li>
+<li><a href="https://pkg.go.dev/runtime#GOMAXPROCS">runtime.GOMAXPROCS - pkg.go.dev</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="go-08-concurrency-patterns.htm">Concurrency Patterns</a></li>
+<li><a href="go-09-context.htm">The Context Package</a></li>
+<li><a href="go-06-defer-panic-recover.htm">defer, panic, and recover</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

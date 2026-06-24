@@ -1,0 +1,197 @@
+Elektron Synthesis - Part 11: Monomachine FM+ Extended FM Engine
+2026-01-01
+
+
+The Monomachine FM+ engine extends the 2-operator VO model with additional operators,
+feedback paths, and algorithm selection. Where VO SIN is a clean, DX-7-style 2-op voice,
+FM+ provides deeper frequency modulation capabilities — closer to the 4-operator
+configurations of the Yamaha DX100 or TX81Z. FM+ is the Monomachine's go-to engine
+for brass sounds, complex pads, and evolving harmonic textures.
+
+
+FM+ Architecture
+
+
+FM+ extends VO by adding:
+
+
+
+A third operator (effectively adding one more modulator in the chain)
+Multiple algorithm topologies: series (M2→M1→C) vs parallel (M1→C, M2→C independently)
+Per-operator envelope controls with different ADSR settings for each operator's index
+Extended feedback routing including carrier self-feedback
+
+
+FM+ Parameters
+
+
+KnobNameFunction
+ALGOAlgorithmOperator topology (series / parallel / hybrid)
+RATIO 1C:M1 ratioFirst modulator ratio to carrier
+INDEX 1M1 indexFirst modulator depth
+RATIO 2M2:C or M2:M1 ratioSecond operator ratio
+INDEX 2M2 indexSecond modulator depth
+FB CCarrier feedbackCarrier self-modulation depth
+IDX ENVIndex envelope routingWhich index stages get ADSR
+DETUNEMicro-detune between operatorsBeat frequency / chorus depth
+
+
+Algorithm Topologies in Pd
+
+Algorithm 1 — Series (cascade): M2 → M1 → Carrier
+
+
+; M2 modulates M1, which modulates Carrier:
+[osc~ freq_m2]
+|
+[*~ idx2_t]
+|
+[*~ freq_m2]
+|
+[+~ freq_m1]
+|
+[osc~]              ; M1, frequency modulated by M2
+|
+[*~ idx1_t]
+|
+[*~ freq_m1]
+|
+[+~ freq_carrier]
+|
+[osc~]              ; Carrier, frequency modulated by M1 (which is modulated by M2)
+|
+[*~ amp_env]
+
+
+Algorithm 2 — Parallel: M1 → Carrier, M2 → Carrier (independently)
+
+
+; M1 and M2 both modulate Carrier independently:
+[osc~ freq_m1] *~ [idx1_t] *~ [freq_m1]    → fm_dev_1
+[osc~ freq_m2] *~ [idx2_t] *~ [freq_m2]    → fm_dev_2
+
+fm_dev_1 + fm_dev_2 = total_fm_deviation
+
+[+~ freq_carrier]
+|
+[osc~]               ; Carrier modulated by both
+|
+[*~ amp_env]
+
+
+Algorithm 3 — Hybrid: M2 → M1, M1 → Carrier, M2 → Carrier
+
+
+; M2 modulates both M1 and Carrier:
+[osc~ freq_m2]
+|
+[t a a]
+|         |
+[*~ idx2] [*~ idx2]
+|         |
+→ M1 fm   → Carrier fm direct
+
+M1 (freq=freq_m1 + M2_fm) → [*~ idx1] → Carrier fm from M1
+
+[+~ freq_carrier, M1_fm, M2_direct_fm]
+|
+[osc~] Carrier
+|
+[*~ amp_env]
+
+
+Per-Operator Index Envelopes
+
+
+In FM+, each operator can have its own index envelope — meaning M1 and M2 can evolve
+at different rates. A common FM brass configuration: M1 has a fast attack/decay (adds
+brightness on the note onset), while M2 has a slow attack (adds complexity as the note
+sustains):
+
+
+
+; M1 index envelope: bright attack
+[vline~]    ; 0 0, idx1_peak 5, idx1_peak*0.3 80 5    ; attack 5ms, decay to 30%
+
+; M2 index envelope: slow modulation build
+[vline~]    ; 0 0, 0 50, idx2_peak 400 50             ; builds over 400ms
+
+
+
+This two-envelope approach (one fast, one slow) is the signature of FM brass and string
+sounds. The fast envelope provides the attack transient; the slow envelope provides the
+evolving shimmer.
+
+
+Carrier Feedback in FM+
+
+
+FM+ adds carrier self-feedback (FB C) in addition to VO's modulator feedback. The
+carrier feeds back into its own frequency input through a one-sample delay:
+
+
+
+; Carrier feedback:
+carrier_output → [delread~ carr_fb 1/sr]
+|
+[*~ fb_c_scaled]
+|
+[+~ carrier_freq_modulated]    ; add to carrier's total frequency input
+|
+[osc~]                          ; carrier — self-modulating
+
+[delwrite~ carr_fb 1/sr] ← carrier_output
+
+
+
+Carrier feedback at moderate levels adds a sawtooth-like harmonic richness without
+affecting the modulator's spectrum. At high levels it adds chaotic FM behaviour.
+
+
+Detune
+
+
+The DETUNE parameter slightly offsets operator frequencies against each other, creating
+slow beating between operators. This is especially effective with parallel algorithm:
+both modulators slightly detuned from the carrier produce a rich chorus-like motion
+in the FM sidebands:
+
+
+
+; Detune: offset M1 and M2 by +/- a small fraction of their base frequency
+; detune_hz = carrier_freq × detune × 0.02    (up to 2% detuning)
+
+freq_m1 = carrier_freq × ratio_1 + detune_hz * 0.5
+freq_m2 = carrier_freq × ratio_2 - detune_hz * 0.5
+
+
+Musical Uses
+
+
+SoundAlgoratio1ratio2idx1idx2
+FM BrassSeries1.01.03.55.0 (fast decay)
+Hollow BassParallel2.03.02.01.0
+Evolving PadHybrid1.50.54.02.0 (slow atk)
+MarimbaSeries3.51.02.01.5
+Metallic LeadParallel1.413.146.04.0
+
+
+Summary
+
+
+FM+ extends VO with a third operator, three algorithm topologies (series, parallel,
+hybrid), per-operator ADSR index envelopes, and carrier self-feedback. The algorithm
+selection is the primary timbral structural choice: series produces "nested" FM
+textures; parallel produces additive FM sideband clusters; hybrid combines both.
+Per-operator envelopes enable the characteristic FM brass sound (fast M1 for bright
+attack, slow M2 for sustained shimmer). Carrier feedback adds harmonic richness to the
+output without involving the modulator chain.
+
+
+See Also
+
+
+Monomachine VO Engine - the simpler 2-op FM this extends
+Monomachine SuperWave Engine - a completely different approach using multiple detuned oscillators
+FM Synthesis - Bessel functions, C:M ratios, and all FM algorithms
+

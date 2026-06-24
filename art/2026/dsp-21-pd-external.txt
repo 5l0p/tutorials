@@ -1,0 +1,358 @@
+DSP - Part 21: Writing a Pure Data External
+2026-09-14
+
+
+Pure Data processes audio by connecting objects in a patch. Every object you use — osc~,
+lowpass~, dac~ — is a C shared library loaded at runtime. Writing your own external gives
+you the ability to embed any DSP code from this series directly into Pd, expose it to
+patchers as a native object, and benefit from Pd's message routing and GUI without
+writing an audio or MIDI stack yourself. The API is old-fashioned but stable; the same
+external compiled in 1997 still works in Pd 0.54.
+
+
+What You Will Learn
+
+
+The m_pd.h object model: t_object, t_class, and the setup() convention.
+How to create inlets and outlets for messages and signals.
+How signal processing works in Pd: perform() routines and dsp_add.
+How to build a biquad filter~ external using the Part 6 coefficients.
+How to build a control-rate abstraction for parameter messages.
+How to compile an external with pd-config on Linux.
+
+
+The Pd Object Model
+
+
+Every Pd object is an instance of a C struct whose first member is a t_object.
+The class (t_class *) holds the method table — the message handlers and
+the DSP method. Pd calls yourobject_setup() at load time; setup registers the
+class and its methods. Pd calls yourobject_new() for each instance in a
+patch; new allocates the struct and initialises it.
+
+
+
+/* myfilter_tilde.c — minimal signal-rate object skeleton */
+#include "m_pd.h"
+
+/* The object struct: t_object MUST be the first member */
+typedef struct _myfilter {
+    t_object x_obj;     /* Pd core object (DO NOT reorder) */
+    /* ... your state here ... */
+    t_inlet  *x_in2;    /* extra signal inlet (the first is free) */
+    t_outlet *x_out;    /* signal outlet */
+} t_myfilter;
+
+/* Forward declarations */
+static t_class *myfilter_class;
+
+static void *myfilter_new(void);
+static void  myfilter_free(t_myfilter *x);
+static void  myfilter_dsp(t_myfilter *x, t_signal **sp);
+static t_int *myfilter_perform(t_int *w);
+
+/* setup() is called once when the .pd_linux (Linux) or .pd_darwin (macOS)
+   or .dll (Windows) is loaded.  Must be named [objectname]_setup. */
+void myfilter_tilde_setup(void) {
+    myfilter_class = class_new(
+        gensym("myfilter~"),           /* object name in patches */
+        (t_newmethod)myfilter_new,     /* constructor */
+        (t_method)myfilter_free,       /* destructor */
+        sizeof(t_myfilter),            /* struct size */
+        CLASS_DEFAULT,
+        0                              /* no creation arguments here */
+    );
+
+    /* Register the DSP method — Pd calls this when audio is reconfigured */
+    CLASS_MAINSIGNALIN(myfilter_class, t_myfilter, x_obj);
+    class_addmethod(myfilter_class, (t_method)myfilter_dsp,
+                    gensym("dsp"), A_CANT, 0);
+}
+
+
+Constructor and Destructor
+
+
+static void *myfilter_new(void) {
+    t_myfilter *x = (t_myfilter *)pd_new(myfilter_class);
+    /* Create an extra signal inlet (the first inlet is created by pd_new) */
+    x->x_in2 = inlet_new(&x->x_obj, &x->x_obj.ob_pd, &s_signal, &s_signal);
+    /* Create a signal outlet */
+    x->x_out = outlet_new(&x->x_obj, &s_signal);
+    return (void *)x;
+}
+
+static void myfilter_free(t_myfilter *x) {
+    /* Free any inlets/outlets not created with CLASS_MAINSIGNALIN */
+    inlet_free(x->x_in2);
+    outlet_free(x->x_out);
+    /* Free any heap allocations in your struct here */
+}
+
+
+The DSP Chain: perform() and dsp_add
+
+
+Pd processes audio in blocks of N samples. For each object in the DSP chain, Pd calls
+the dsp() method when the patch is compiled, passing an array of
+t_signal pointers. The dsp() method calls dsp_add()
+to register a perform routine that will be called each block.
+
+
+
+dsp_add takes a function pointer and an arbitrary list of void-pointer
+arguments. The convention is to pass the object pointer, then the audio buffer pointers,
+then the block size. The perform routine receives these as a t_int * array.
+
+
+
+/* The perform routine: called by the Pd DSP chain for each audio block.
+   w[0] = function pointer (ignore)
+   w[1] = pointer to t_myfilter
+   w[2] = input buffer pointer (t_sample *)
+   w[3] = output buffer pointer (t_sample *)
+   w[4] = block size (int) */
+static t_int *myfilter_perform(t_int *w) {
+    t_myfilter *x   = (t_myfilter *)(w[1]);
+    t_sample   *in  = (t_sample *)(w[2]);
+    t_sample   *out = (t_sample *)(w[3]);
+    int         n   = (int)(w[4]);
+
+    for (int i = 0; i < n; i++)
+        out[i] = in[i];   /* pass-through: replace with your DSP */
+
+    return w + 5;   /* advance past the 4 arguments + 1 for function pointer */
+}
+
+static void myfilter_dsp(t_myfilter *x, t_signal **sp) {
+    /* sp[0] = first signal inlet
+       sp[1] = second signal inlet
+       sp[2] = first signal outlet */
+    dsp_add(myfilter_perform, 4,
+            x,             /* w[1] */
+            sp[0]->s_vec,  /* w[2]: input buffer */
+            sp[2]->s_vec,  /* w[3]: output buffer */
+            (t_int)sp[0]->s_n);   /* w[4]: block size */
+}
+
+
+A Complete Biquad Filter External
+
+
+This external implements the biquad filter from Part 5 as a Pd signal-rate object
+biquad2~, accepting coefficients as a message to allow the Part 6
+cookbook formulas to be applied from a control patch.
+
+
+
+/* biquad2_tilde.c
+   A biquad filter external for Pure Data.
+   Message: [coefs b0 b1 b2 a1 a2(  sets filter coefficients.
+   Signal inlet: audio input.
+   Signal outlet: filtered audio.
+
+   Compile (Linux, adjust pd path):
+     cc -shared -fPIC -o biquad2~.pd_linux biquad2_tilde.c \
+        $(pd-config --cflags) -lm
+*/
+#include "m_pd.h"
+#include <math.h>
+
+typedef struct _biquad2 {
+    t_object x_obj;
+    /* Filter state */
+    t_float  b0, b1, b2, a1, a2;
+    t_float  z1, z2;
+    /* Pd requires a t_float for the signal inlet created by CLASS_MAINSIGNALIN */
+    t_float  x_f;
+    t_outlet *x_out;
+} t_biquad2;
+
+static t_class *biquad2_class;
+
+/* "coefs" message: set b0 b1 b2 a1 a2 */
+static void biquad2_coefs(t_biquad2 *x,
+                           t_floatarg b0, t_floatarg b1, t_floatarg b2,
+                           t_floatarg a1, t_floatarg a2) {
+    x->b0 = (t_float)b0;
+    x->b1 = (t_float)b1;
+    x->b2 = (t_float)b2;
+    x->a1 = (t_float)a1;
+    x->a2 = (t_float)a2;
+}
+
+/* "clear" message: reset filter state (useful on note-off) */
+static void biquad2_clear(t_biquad2 *x) {
+    x->z1 = x->z2 = 0.0f;
+}
+
+static t_int *biquad2_perform(t_int *w) {
+    t_biquad2 *x   = (t_biquad2 *)(w[1]);
+    t_sample  *in  = (t_sample *)(w[2]);
+    t_sample  *out = (t_sample *)(w[3]);
+    int        n   = (int)(w[4]);
+
+    t_float b0 = x->b0, b1 = x->b1, b2 = x->b2;
+    t_float a1 = x->a1, a2 = x->a2;
+    t_float z1 = x->z1, z2 = x->z2;
+
+    for (int i = 0; i < n; i++) {
+        t_float inp = in[i];
+        t_float y   = b0*inp + z1;
+        z1 = b1*inp - a1*y + z2;
+        z2 = b2*inp - a2*y;
+        out[i] = y;
+    }
+
+    x->z1 = z1;
+    x->z2 = z2;
+    return w + 5;
+}
+
+static void biquad2_dsp(t_biquad2 *x, t_signal **sp) {
+    dsp_add(biquad2_perform, 4, x,
+            sp[0]->s_vec, sp[1]->s_vec, (t_int)sp[0]->s_n);
+}
+
+static void *biquad2_new(void) {
+    t_biquad2 *x = (t_biquad2 *)pd_new(biquad2_class);
+    x->b0 = 1.0f; x->b1 = x->b2 = x->a1 = x->a2 = 0.0f;
+    x->z1 = x->z2 = 0.0f;
+    x->x_out = outlet_new(&x->x_obj, &s_signal);
+    return (void *)x;
+}
+
+void biquad2_tilde_setup(void) {
+    biquad2_class = class_new(
+        gensym("biquad2~"),
+        (t_newmethod)biquad2_new,
+        0,                      /* no destructor needed (only x_out to free in full version) */
+        sizeof(t_biquad2),
+        CLASS_DEFAULT,
+        0
+    );
+    CLASS_MAINSIGNALIN(biquad2_class, t_biquad2, x_f);
+    class_addmethod(biquad2_class, (t_method)biquad2_dsp,   gensym("dsp"), A_CANT, 0);
+    class_addmethod(biquad2_class, (t_method)biquad2_coefs, gensym("coefs"),
+                    A_FLOAT, A_FLOAT, A_FLOAT, A_FLOAT, A_FLOAT, 0);
+    class_addmethod(biquad2_class, (t_method)biquad2_clear, gensym("clear"), 0);
+}
+
+
+A Control-Rate Object
+
+
+Not every object needs signal processing. A control-rate object responds only to
+messages, outputs messages, and has no perform routine. Here is a skeleton that computes
+a lowpass biquad coefficient set and bangs five floats to the outlet:
+
+
+
+/* lowpass_coefs.c — outputs [b0 b1 b2 a1 a2( for a lowpass given [freq Q srate( */
+#include "m_pd.h"
+#include <math.h>
+
+typedef struct _lp_coefs {
+    t_object x_obj;
+    t_outlet *x_out;   /* list outlet */
+} t_lp_coefs;
+
+static t_class *lp_coefs_class;
+
+static void lp_coefs_compute(t_lp_coefs *x,
+                              t_floatarg freq, t_floatarg q, t_floatarg sr) {
+    float w0    = 2.0f * (float)M_PI * freq / sr;
+    float alpha = sinf(w0) / (2.0f * q);
+    float cosw  = cosf(w0);
+    float a0    = 1.0f + alpha;
+    float b0    = ((1.0f - cosw) / 2.0f) / a0;
+    float b1    = (1.0f - cosw)           / a0;
+    float b2    = b0;
+    float a1    = (-2.0f * cosw)          / a0;
+    float a2    = (1.0f - alpha)          / a0;
+
+    /* Output as a list: b0 b1 b2 a1 a2 */
+    t_atom av[5];
+    SETFLOAT(av + 0, b0);
+    SETFLOAT(av + 1, b1);
+    SETFLOAT(av + 2, b2);
+    SETFLOAT(av + 3, a1);
+    SETFLOAT(av + 4, a2);
+    outlet_list(x->x_out, &s_list, 5, av);
+}
+
+static void *lp_coefs_new(void) {
+    t_lp_coefs *x = (t_lp_coefs *)pd_new(lp_coefs_class);
+    x->x_out = outlet_new(&x->x_obj, &s_list);
+    return x;
+}
+
+void lowpass_coefs_setup(void) {
+    lp_coefs_class = class_new(
+        gensym("lowpass_coefs"),
+        (t_newmethod)lp_coefs_new,
+        0, sizeof(t_lp_coefs), CLASS_DEFAULT, 0);
+    class_addmethod(lp_coefs_class, (t_method)lp_coefs_compute,
+                    gensym("compute"),
+                    A_FLOAT, A_FLOAT, A_FLOAT, 0);
+}
+
+
+
+In a patch you connect a number box to [lowpass_coefs] and route its list output to
+the [coefs( inlet of [biquad2~]. Changing the frequency control instantly updates the
+filter coefficients without any C recompilation.
+
+
+Compiling on Linux
+
+
+# Install Pd development headers (Debian/Ubuntu):
+#   apt install pd-dev   or install pd from source
+
+# Compile the biquad2~ external:
+cc -shared -fPIC -o biquad2~.pd_linux biquad2_tilde.c \
+   $(pd-config --cflags) -lm
+
+# If pd-config is not available, use the include path directly:
+cc -shared -fPIC -o biquad2~.pd_linux biquad2_tilde.c \
+   -I/usr/include/pd -lm
+
+# Copy to ~/.pd_externals/ or the patch directory, then in Pd:
+#   [biquad2~]
+
+
+Summary
+
+
+A Pd external is a shared library with a _setup() function that registers
+a class and its methods. Signal-rate objects implement a perform()
+function registered via dsp_add(), which Pd calls every block. Coefficients
+and parameters arrive as messages and are stored in the object struct. The biquad filter
+external connects directly to the Part 5 and Part 6 formulas — the only difference from
+standalone C code is the Pd scaffolding around it.
+
+
+
+Part 22 steps up to the commercial plug-in standard: a VST3 plugin using the Steinberg
+SDK headers, with IComponent, IAudioProcessor, and a stereo gain parameter.
+
+
+Further Reading
+
+
+Pd Externals HOWTO - puredata.info
+pd-lib-builder: Makefile system for Pd externals
+pure-data/externals-howto on GitHub
+m_pd.h Reference (IEM)
+Programming Electronic Music in Pd - Johannes Kreidler
+
+
+See Also
+
+
+Biquad Filters
+Filter Cookbook: Lowpass & Highpass
+VST3 Plugin
+SDL2 as Audio Backend
+

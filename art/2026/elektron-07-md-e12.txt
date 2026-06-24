@@ -1,0 +1,204 @@
+Elektron Synthesis - Part 7: Machinedrum E12 — Vector Emulation Machines
+2026-01-01
+
+
+The Machinedrum's E12 machines emulate classic drum machine sounds — the E-mu SP1200
+and the Simmons electronic drum range — not by replaying the original samples directly,
+but by using a multi-dimensional interpolation model between several spectral snapshots.
+This hybrid synthesis/sample approach produces a much wider sound palette than a fixed
+sample, while remaining more controllable than pure synthesis. This article explains
+the E12 model and implements an approximation in Pd using wavetables.
+
+
+What the E12 Machines Are
+
+
+"E12" stands for "Emulation 12" — a reference to the 12-bit era of classic drum
+machines. The E12 architecture is not simple sample playback. The Machinedrum manual
+describes it as "vector synthesis applied to stored waveforms". In practice this means:
+
+
+
+For each emulated instrument (BD, SD, HH, etc.), several spectral states are stored
+— call them A, B, C, D. Each represents a different character of that instrument
+(e.g. A=compressed/bright, B=natural, C=dull/roomy, D=thin).
+
+The E12 parameters control interpolation between these states — sweeping between
+them produces intermediate timbres not present in any original sample.
+
+Additionally, standard synthesis controls (pitch, decay, envelope shape) apply on
+top of the interpolated spectrum.
+
+
+
+This is why the E12 machines do not sound like simple sample players — turning TUNE
+or DECAY does not just speed up/slow down playback. The sound genuinely changes
+character.
+
+
+E12 Parameters (Common to All E12 Machines)
+
+
+KnobNameFunctionRange
+1TUNE (tun)Playback pitch (transposes spectral model)±24 semitones
+2DECAY (dcy)Amplitude decay time10–10000 ms
+3TUNE B (tnb)Vector position X (spectral interpolation dim 1)0–127
+4DIST (dst)Waveshaper drive0–1
+5START (srt)Playback start offset into stored waveform0–127
+6LOOP (lp)Loop mode (off / forward / ping-pong)0–2
+7S/H (sh)Vector position Y (spectral interpolation dim 2)0–127
+8LEVEL (lvl)Output level0–1
+
+
+The Vector Interpolation Model
+
+
+Vector synthesis interpolates between N stored waveforms using a control point in
+N-dimensional space. For E12, this is a 2D interpolation (X=TUNE B, Y=S/H) over four
+corner waveforms:
+
+
+
+;   Y=0, X=0: waveform A   │   Y=0, X=127: waveform B
+;   ─────────────────────────────────────────────────
+;   Y=127, X=0: waveform C │   Y=127, X=127: waveform D
+
+; Interpolated output = bilinear blend of A, B, C, D:
+; w_ab = A * (1-x) + B * x
+; w_cd = C * (1-x) + D * x
+; output = w_ab * (1-y) + w_cd * y
+
+
+
+In a Pd implementation, "waveforms" become wavetables — stored arrays of one cycle
+of the emulated instrument's characteristic spectral snapshot. Four tables (A, B, C, D)
+per instrument type, interpolated at message rate based on TUNE B and S/H values.
+
+
+Pd Wavetable Implementation
+
+
+Approximate the E12 model with four stored wavetables and bilinear interpolation:
+
+
+
+; Step 1: Create four wavetables per instrument
+[array e12_bd_a 1024]   ; spectral snapshot A
+[array e12_bd_b 1024]   ; spectral snapshot B
+[array e12_bd_c 1024]
+[array e12_bd_d 1024]
+
+; Step 2: Fill tables at patch load time
+; Each table stores one cycle of the characteristic spectrum
+; Generated from: Fourier synthesis of the target spectrum + stored as array
+; (In a real E12 recreation, populate from analysed original recordings)
+
+; Step 3: Wavetable oscillator for each table
+; Phase accumulator driven by TUNE (pitch):
+[phasor~ $0-freq_hz]   ; phase 0–1 at playback frequency
+
+; Read from each of the four tables using the phase:
+[tabread4~ e12_bd_a]   ; cubic interpolated table read
+[tabread4~ e12_bd_b]
+[tabread4~ e12_bd_c]
+[tabread4~ e12_bd_d]
+
+; Bilinear blend:
+; x = tnb / 127
+; y = sh / 127
+[r $0-tnb] → [/ 127] → $x
+[r $0-sh]  → [/ 127] → $y
+
+table_a * (1-x) * (1-y)
+table_b * x     * (1-y)
+table_c * (1-x) * y
+table_d * x     * y
+[+~] all four → interpolated output
+
+
+Per-Instrument Spectral Snapshots
+
+
+For the Pd recreation to sound correct, the four wavetables need to represent actual
+spectral states of the emulated instruments. Two approaches:
+
+
+Synthesis approach: Construct each table from Fourier coefficients derived
+from analysis of the original machines. For example, the E12 BD's "A state" (corner
+at tnb=0, sh=0) resembles the SP1200 kick at a high input level — gritty and punchy —
+while the "D state" (tnb=127, sh=127) resembles the Simmons SDSV kick — deeper, more
+electronic, with the characteristic Simmons pad resonance.
+
+
+; Fourier synthesis example: SP1200 BD spectral snapshot
+; Dominant partials (from analysis): fund, fund*1.5, fund*2, noise
+; In Pd, build the table using [tabosc4~] pre-seeded with Fourier coefficients
+
+; Write a Pd patch or Lua script to fill the table:
+; for i = 0 to 1023:
+;   t[i] = amp1*sin(2π*1*i/1024) + amp2*sin(2π*1.5*i/1024) + ...
+; Use [tabwrite] from a message-rate precomputation
+
+
+Analysis approach: Record the original machines if available, take the FFT
+of a single cycle at the onset, and store the spectral envelope as the wavetable
+coefficients. This is closer to what the Machinedrum actually does.
+
+START and LOOP Parameters
+
+
+The START parameter offsets the phase accumulator's starting position into the table.
+In a real sample, this skips the initial transient. In the wavetable model, this
+shifts the phase of the composite waveform — producing a different timbre without
+changing the spectrum:
+
+
+
+; Phase offset for START:
+[phasor~ freq_hz]
+|
+[+ $start_offset]       ; $start_offset = start/1024
+|
+[wrap~]                 ; keep phase 0–1
+|
+[tabread4~ e12_bd_a]    ; read table with offset phase
+
+
+
+LOOP mode determines whether the wavetable plays through once (LOOP=off, percussive)
+or loops continuously (LOOP=on, sustaining). For drum sounds, LOOP is always off.
+
+
+E12 Machine List
+
+
+MachineEmulatesCharacteristic
+E12 BDE-mu SP1200 / Simmons kick blendGritty 12-bit transient, punchy body
+E12 SDE-mu SP1200 / Simmons snare blendCrunchy 12-bit attack, tight decay
+E12 HHSP1200 closed hi-hatTight, gritty metallic
+E12 OHSP1200 open hi-hatCrunchy metallic tail
+E12 RSSP1200 rimshotTight crack
+E12 CPSP1200 clap12-bit room reverb character
+E12 CYSP1200 crash cymbalGritty metallic wash
+E12 CBSimmons cowbellElectronic metallic ping
+
+
+Summary
+
+
+The E12 machines use bilinear vector interpolation between four stored spectral
+snapshots (wavetables), controlled by the TUNE B and S/H parameters. In Pd, implement
+with four wavetable oscillators sharing a [phasor~] phase, blended with
+message-rate mix coefficients derived from the two vector control parameters. The
+wavetable content determines which instrument is emulated — populate from Fourier
+analysis of original recordings, or from Fourier synthesis based on known spectral
+characteristics of the target machines.
+
+
+See Also
+
+
+Machinedrum EFM Machines - FM synthesis as an alternative to wavetable emulation
+Machinedrum PI Machines - physically modelled pitched percussion
+Wavetable Oscillators - the [tabread4~] oscillator technique used here
+

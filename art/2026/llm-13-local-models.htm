@@ -1,0 +1,341 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 13: Local Models with llama.cpp</title>
+    <meta name="description" content="Run llama.cpp as a local OpenAI-compatible server, swap the base URL in your Go agent, and understand the trade-offs between local and cloud models.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-13-local-models.txt">plain/text</a> | <i>2026-06-22</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 13: Local Models with llama.cpp</h2>
+        <p>
+Every article in this series has called <code>https://api.openai.com</code>. That endpoint
+sends your data to OpenAI's servers and costs money per token. Sometimes you want to run
+inference locally: for privacy, for offline use, for cost control, or to experiment with
+models that are not available via API. <code>llama.cpp</code> runs quantized open models
+locally and exposes an OpenAI-compatible REST API. Your Go agent code changes by one line.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What llama.cpp is and how to install it from source or pre-built binaries</li>
+<li>How to download a quantized model and start the OpenAI-compatible server</li>
+<li>How to point your Go agent at the local server with a single environment variable</li>
+<li>Quantisation trade-offs: 4-bit vs 8-bit vs full precision, quality vs memory vs speed</li>
+<li>Performance benchmarks: tokens per second by model size and hardware</li>
+<li>When to use local models and when cloud models are worth the cost</li>
+</ul>
+
+<h3>What llama.cpp Is</h3>
+
+<p>
+<code>llama.cpp</code> is a C/C++ library for running large language model inference on
+commodity hardware. It supports CPU inference (slow but functional) and GPU acceleration
+via CUDA, Metal, and Vulkan. It can run quantized models (4-bit, 8-bit) which reduces
+memory requirements dramatically: a 7B parameter model at 4-bit quantization fits in
+about 4GB of RAM.
+</p>
+
+<p>
+The project includes a server binary that exposes the OpenAI-compatible
+<code>/v1/chat/completions</code> and <code>/v1/embeddings</code> endpoints.
+</p>
+
+<h3>Installing llama.cpp</h3>
+
+<pre>
+# Build from source (Linux/macOS)
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+cmake -B build -DLLAMA_CURL=ON
+cmake --build build --config Release -j$(nproc)
+
+# The server binary is at:
+./build/bin/llama-server
+</pre>
+
+<p>
+On a machine with an NVIDIA GPU, add <code>-DGGML_CUDA=ON</code> to the cmake flags.
+On macOS with Apple Silicon, Metal acceleration is enabled by default.
+</p>
+
+<h3>Downloading a Model</h3>
+
+<p>
+Models are distributed as GGUF files on Hugging Face. A few practical choices:
+</p>
+
+<ul>
+<li><b>Qwen2.5-7B-Instruct-Q4_K_M.gguf</b> - 7B params, 4GB RAM, strong at following instructions. Good all-round choice.</li>
+<li><b>Llama-3.2-3B-Instruct-Q8_0.gguf</b> - 3B params, 3.5GB RAM, fast, less capable.</li>
+<li><b>Mistral-7B-Instruct-v0.3-Q4_K_M.gguf</b> - reliable instruction following, good for tool calling.</li>
+</ul>
+
+<pre>
+# Download a model (requires huggingface-cli or wget)
+huggingface-cli download Qwen/Qwen2.5-7B-Instruct-GGUF \
+  Qwen2.5-7B-Instruct-Q4_K_M.gguf \
+  --local-dir ./models
+</pre>
+
+<h3>Running the Server</h3>
+
+<pre>
+./build/bin/llama-server \
+  --model ./models/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
+  --port 8080 \
+  --ctx-size 8192 \
+  --n-gpu-layers 99 \
+  --host 127.0.0.1
+</pre>
+
+<p>
+Key flags:
+</p>
+
+<ul>
+<li><code>--ctx-size</code> - context window size in tokens. Larger uses more RAM. Match this to your model's supported window.</li>
+<li><code>--n-gpu-layers</code> - number of transformer layers to offload to GPU. Use 99 to offload everything; reduce if you run out of VRAM.</li>
+<li><code>--host 127.0.0.1</code> - bind to localhost only. Do not expose this to the network without auth.</li>
+</ul>
+
+<h3>Swapping the Base URL in Go</h3>
+
+<p>
+This is the key insight: <code>llama.cpp</code>'s server speaks the same JSON API as
+OpenAI. Change one constant and your agent talks to a local model:
+</p>
+
+<pre>
+// Before:
+const apiURL = "http://localhost:8001/v1/chat/completions"
+
+// After:
+const apiURL = "http://127.0.0.1:8080/v1/chat/completions"
+</pre>
+
+<p>
+Make this configurable via an environment variable:
+</p>
+
+<pre>
+func apiBaseURL() string {
+    if base := os.Getenv("LLM_BASE_URL"); base != "" {
+        return base
+    }
+    return "https://api.openai.com"
+}
+
+const chatPath = "/v1/chat/completions"
+
+func chatURL() string {
+    return apiBaseURL() + chatPath
+}
+</pre>
+
+<p>
+When using a local model you may not need an API key. The server accepts the key field
+but ignores it:
+</p>
+
+<pre>
+func apiKey() string {
+    if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+        return key
+    }
+    return "local" // placeholder; llama.cpp server ignores it
+}
+</pre>
+
+<h3>Model Name Handling</h3>
+
+<p>
+Local models do not have the same names as OpenAI models. The <code>model</code> field
+in the request is typically ignored by <code>llama.cpp</code> (it always uses whatever
+model was loaded at startup), but you should still send something. Use an environment
+variable:
+</p>
+
+<pre>
+func modelName() string {
+    if m := os.Getenv("LLM_MODEL"); m != "" {
+        return m
+    }
+    return "gpt-4o-mini" // default for OpenAI
+}
+</pre>
+
+<h3>Tool Calling with Local Models</h3>
+
+<p>
+Tool calling support varies by model. Well-supported options as of 2026:
+</p>
+
+<ul>
+<li><b>Qwen2.5-7B/14B/72B-Instruct</b> - excellent tool calling, follows complex schemas.</li>
+<li><b>Llama-3.1/3.2-Instruct</b> - good tool calling, built-in function call format.</li>
+<li><b>Mistral-7B-Instruct</b> - adequate, less consistent than the above.</li>
+</ul>
+
+<p>
+<code>llama.cpp</code> translates the OpenAI <code>tools</code> format to the model's
+native function-calling template automatically, using the model's chat template from
+its GGUF metadata. If your model supports tool calling, the translation is transparent.
+</p>
+
+<p>
+If tool calling is unreliable with a smaller model, add explicit instructions in the
+system prompt:
+</p>
+
+<pre>
+systemPrompt := `You are a helpful assistant. You have access to tools.
+When you need to use a tool, you MUST use the tool_calls mechanism.
+Do NOT describe what you would do - actually call the tool.`
+</pre>
+
+<h3>Embeddings with a Local Model</h3>
+
+<p>
+<code>llama.cpp</code> server exposes <code>/v1/embeddings</code>. Change the embedding
+URL to match:
+</p>
+
+<pre>
+func embedURL() string {
+    return apiBaseURL() + "/v1/embeddings"
+}
+</pre>
+
+<p>
+Use a model designed for embeddings, not a chat model. <code>nomic-embed-text</code>
+and <code>mxbai-embed-large</code> are both available as GGUF files and perform well
+on retrieval benchmarks. Chat models can produce embeddings but their quality is lower.
+</p>
+
+<pre>
+./build/bin/llama-server \
+  --model ./models/nomic-embed-text-v1.5.Q8_0.gguf \
+  --port 8081 \
+  --embedding \
+  --pooling mean
+</pre>
+
+<h3>Performance Expectations</h3>
+
+<p>
+On a machine with a recent consumer GPU (RTX 3080 or better):
+</p>
+
+<ul>
+<li>7B model, 4-bit: ~50–80 tokens/second generation speed. Acceptable for interactive use.</li>
+<li>3B model, 8-bit: ~100–150 tokens/second. Fast.</li>
+<li>70B model, 4-bit (needs 40GB+ VRAM or split across GPUs): ~8–15 tokens/second. Slow but capable.</li>
+</ul>
+
+<p>
+On CPU only: 3–7 tokens/second for a 7B model. Usable for batch jobs, too slow for
+interactive agents.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+<code>llama.cpp</code> exposes an OpenAI-compatible API at <code>http://localhost:8080</code>
+so the only change needed in your Go agent is the base URL. Download a GGUF quantized model
+from Hugging Face, start the server with <code>--model</code> and <code>--port</code>, and
+your existing code works. 4-bit quantization fits a 7B model in 4 GB of VRAM with minimal
+quality loss. Use local models for privacy, cost control, or offline use; use cloud models
+when you need the latest capabilities or reliable speed.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://github.com/ggerganov/llama.cpp">llama.cpp on GitHub</a></li>
+<li><a href="https://huggingface.co/docs/hub/gguf">Hugging Face: GGUF format documentation</a></li>
+<li><a href="https://github.com/ggerganov/llama.cpp/blob/master/examples/server/README.md">llama.cpp server README</a></li>
+<li><a href="https://ollama.com">Ollama - another local model runner with OpenAI-compatible API</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-01-openai-api-basics.htm">OpenAI API Basics</a> - the API structure that llama.cpp mirrors</li>
+<li><a href="llm-11-rag.htm">RAG: Retrieval-Augmented Generation</a> - embeddings work with local models too</li>
+<li><a href="llm-14-full-agent.htm">Putting It Together: A Full Agent</a> - configured to run against either OpenAI or a local model</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

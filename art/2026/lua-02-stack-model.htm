@@ -1,0 +1,621 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Lua - Part 2: The Lua C API - The Stack Model</title>
+    <meta name="description" content="The virtual stack is the only communication channel between C and Lua - understanding indices, type checks, and stack discipline is the foundation of every embedding.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, lua, scripting">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="lua-02-stack-model.txt">plain/text</a> | <i>2026-11-23</i> | <i><a href="../../c.htm">c</a>, <a href="../../lua.htm">lua</a>, <a href="../../scripting.htm">scripting</a></i>
+        <h2>Lua - Part 2: The Lua C API - The Stack Model</h2>
+        <p>
+Every interaction between C and Lua goes through one data structure: the virtual stack.
+There is no other way to pass a value from C to Lua or retrieve a value from Lua in C.
+Lua strings, numbers, booleans, tables, functions, and userdata all enter and leave
+through the stack. You push values onto it, call Lua or have Lua call you, and read
+values back off it. The entire Lua C API is a vocabulary of operations on this stack.
+Get the stack model right and the rest of the API becomes mechanical. Get it wrong
+and you will spend hours debugging mysterious nil values and type errors. This article
+covers the stack in complete detail: how indices work, every basic push and get
+operation, type checking, and the discipline needed to keep the stack balanced.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why the virtual stack exists and what problems it solves compared to passing values directly.</li>
+<li>How positive and negative stack indices work, and when to use each.</li>
+<li>How to push every basic Lua type onto the stack from C.</li>
+<li>How to check types and retrieve values safely.</li>
+<li>How to manage stack space with <code>lua_checkstack</code>, <code>lua_pop</code>, and <code>lua_settop</code>.</li>
+<li>A complete, runnable C program demonstrating the full push/inspect/pop cycle.</li>
+</ul>
+
+<h3>Why a Stack?</h3>
+
+<p>
+The stack exists to solve a hard problem: how do C and Lua exchange values of
+different types without either language needing to know the other's internal
+memory representation?
+</p>
+
+<p>
+From Lua's perspective, every value is a tagged union - a type tag plus a payload.
+A Lua number might be an integer or a float; a Lua string is an interned, GC-managed
+object. From C's perspective, values are typed at compile time: <code>int</code>,
+<code>double</code>, <code>char *</code>. Bridging these two worlds cleanly requires
+a well-defined interface.
+</p>
+
+<p>
+The stack provides that interface. Lua manages a fixed-capacity array of Lua values
+(the "stack") that C code can read from and write to through the API. C code never
+sees the internals of a Lua value - it only pushes typed C values in (using typed push
+functions) and retrieves typed C values out (using typed get functions). The type
+information travels with the value in the tagged union; C checks it explicitly before
+reading. This is safe, deterministic, and requires no knowledge of Lua's internals.
+</p>
+
+<p>
+The secondary benefit is GC safety. Lua values on the stack are automatically GC
+roots: the garbage collector sees them and will not collect the objects they reference.
+C code that holds a Lua value on the stack keeps that value alive for free. When a
+stack frame is popped, those values are no longer roots and may be collected. Compare
+this to Python's approach where C code must call <code>Py_INCREF</code> to hold a
+reference and <code>Py_DECREF</code> to release it - a discipline that has caused
+reference leaks in real production code for thirty years.
+</p>
+
+<h3>Stack Indices</h3>
+
+<p>
+The stack at any moment looks like this when three values have been pushed:
+</p>
+
+<pre>
+  index  value
+  -----  -----
+    3    "hello"     &lt;-- top (also index -1)
+    2    3.14        &lt;-- also index -2
+    1    42          &lt;-- bottom (also index -3)
+</pre>
+
+<p>
+Positive indices count from the bottom of the current function's stack frame.
+Index 1 is the first value pushed (or, for a C function called from Lua, the first
+argument). Index 2 is the second, and so on.
+</p>
+
+<p>
+Negative indices count from the top. Index -1 is always the top of the stack -
+the most recently pushed value. Index -2 is one below the top, -3 is two below,
+and so on.
+</p>
+
+<p>
+<b>Use negative indices by preference.</b> Positive indices become unstable when you
+push additional values: if index 1 is a table and you push a string, the string
+is now at index 2, but the table is still at index 1. With negative indices,
+-1 always refers to whatever is on top, regardless of how many values you have
+pushed since. Stack manipulation code written with negative indices is easier
+to reason about and less prone to off-by-one errors.
+</p>
+
+<p>
+Index 0 is never valid. Passing 0 to an API function is undefined behaviour.
+The valid range is 1 to <code>lua_gettop(L)</code> for positive indices, and
+-1 to -<code>lua_gettop(L)</code> for negative indices.
+</p>
+
+<h3>Pushing Values</h3>
+
+<p>
+Each Lua type has a corresponding push function. All of them take a
+<code>lua_State *</code> as their first argument and push exactly one value
+onto the top of the stack.
+</p>
+
+<pre>
+#include &lt;lua.h&gt;
+#include &lt;lualib.h&gt;
+#include &lt;lauxlib.h&gt;
+
+void demonstrate_push(lua_State *L) {
+    lua_pushnil(L);               /* pushes nil             stack: [nil] */
+    lua_pushboolean(L, 1);        /* pushes true            stack: [nil, true] */
+    lua_pushinteger(L, 42);       /* pushes integer 42      stack: [nil, true, 42] */
+    lua_pushnumber(L, 3.14);      /* pushes float 3.14      stack: [nil, true, 42, 3.14] */
+    lua_pushstring(L, "hello");   /* pushes a copy of str   stack: [..., "hello"] */
+
+    /* lua_pushvalue duplicates a value already on the stack */
+    lua_pushvalue(L, 1);          /* duplicate index 1 (nil) to top */
+
+    /* at this point the stack has 6 values */
+}
+</pre>
+
+<p>
+A few things to note:
+</p>
+
+<p>
+<b>lua_pushstring copies the string.</b> The C string you pass does not need to
+remain valid after the call. Lua interns the string and manages the copy's memory.
+This means you can safely push a string from a local buffer and then let the buffer
+go out of scope.
+</p>
+
+<p>
+<b>lua_pushinteger vs lua_pushnumber.</b> Lua 5.3 introduced a distinction between
+integers and floats. <code>lua_pushinteger</code> takes a <code>lua_Integer</code>
+(typically <code>int64_t</code>) and pushes a Lua integer. <code>lua_pushnumber</code>
+takes a <code>lua_Number</code> (typically <code>double</code>) and pushes a float.
+Use the right one for the C type you have. Pushing a float with
+<code>lua_pushinteger</code> will truncate it silently.
+</p>
+
+<p>
+<b>lua_pushnil has no argument</b> beyond the state. There is only one nil value in
+Lua; it needs no payload.
+</p>
+
+<p>
+<b>lua_pushboolean takes an int,</b> not a C <code>_Bool</code>. Zero is false;
+anything else is true. This follows C's usual convention.
+</p>
+
+<h3>Checking Types</h3>
+
+<p>
+Before reading a value, check its type. Attempting to read a value as the wrong type
+either returns a default (for <code>lua_toXxx</code> functions) or raises a Lua error
+(for <code>luaL_checkXxx</code> functions). In C function callbacks called from Lua,
+you almost always want the error-raising versions - they produce proper Lua error
+messages with type information.
+</p>
+
+<pre>
+/* lua_type returns the type tag of the value at the given index */
+int t = lua_type(L, -1);
+
+switch (t) {
+    case LUA_TNIL:       /* nil */                    break;
+    case LUA_TBOOLEAN:   /* true or false */          break;
+    case LUA_TNUMBER:    /* integer or float */       break;
+    case LUA_TSTRING:    /* string */                 break;
+    case LUA_TTABLE:     /* table */                  break;
+    case LUA_TFUNCTION:  /* function (Lua or C) */    break;
+    case LUA_TUSERDATA:  /* full userdata */          break;
+    case LUA_TLIGHTUSERDATA: /* raw C pointer */      break;
+    case LUA_TTHREAD:    /* coroutine */              break;
+    default:             /* should not happen */      break;
+}
+
+/* lua_typename converts a type constant to a readable string */
+printf("type: %s\n", lua_typename(L, t));
+</pre>
+
+<p>
+For quick boolean checks, the <code>lua_isXxx</code> family:
+</p>
+
+<pre>
+lua_isnil(L, idx)        /* 1 if value is nil */
+lua_isboolean(L, idx)    /* 1 if value is boolean */
+lua_isnumber(L, idx)     /* 1 if value is a number (int or float) */
+lua_isinteger(L, idx)    /* 1 if value is an integer specifically */
+lua_isstring(L, idx)     /* 1 if value is a string (or a number, which Lua coerces) */
+lua_istable(L, idx)      /* 1 if value is a table */
+lua_isfunction(L, idx)   /* 1 if value is a function */
+lua_isuserdata(L, idx)   /* 1 if value is userdata (full or light) */
+lua_isthread(L, idx)     /* 1 if value is a coroutine */
+lua_isnone(L, idx)       /* 1 if the index is invalid (past stack top) */
+lua_isnoneornil(L, idx)  /* 1 if invalid index or nil */
+</pre>
+
+<p>
+<b>Gotcha: lua_isstring returns true for numbers.</b> Lua coerces numbers to strings
+in many contexts, and <code>lua_isstring</code> reflects that. If you need to
+distinguish a string from a number, use <code>lua_type(L, idx) == LUA_TSTRING</code>
+rather than <code>lua_isstring</code>.
+</p>
+
+<h3>Retrieving Values</h3>
+
+<p>
+The <code>lua_toXxx</code> functions extract C values from the stack. They do not
+pop the value - the value remains on the stack after the call. You must pop it
+separately when you are done with it.
+</p>
+
+<pre>
+/* Reading back the values we pushed earlier */
+/* Assume stack from bottom: [nil, true, 42, 3.14, "hello"] */
+
+lua_Integer i = lua_tointeger(L, 3);   /* 42 */
+lua_Number  f = lua_tonumber(L, 4);    /* 3.14 */
+const char *s = lua_tostring(L, 5);    /* "hello" */
+int         b = lua_toboolean(L, 2);   /* 1 (true) */
+</pre>
+
+<p>
+<b>lua_tostring returns a pointer into Lua's internal string storage.</b>
+The pointer is valid as long as the string is on the stack. If you pop the string
+or call any function that might trigger a GC cycle, the pointer may be invalidated.
+Always copy the string with <code>strdup</code> or <code>memcpy</code> if you need
+it beyond the current scope.
+</p>
+
+<p>
+<b>lua_tostring has a side effect on numbers.</b> Calling <code>lua_tostring</code>
+on a number value converts the number to a string in-place on the stack. The
+original number value is replaced. This is rarely what you want. If you want a
+string representation of a number, use <code>lua_tostring</code> on a copy
+(<code>lua_pushvalue</code> first), or format it yourself with <code>snprintf</code>.
+</p>
+
+<p>
+The safer <code>luaL_checkXxx</code> variants are for use inside C functions called
+from Lua (C callbacks). They check the type and raise a Lua error if it is wrong,
+producing a useful error message:
+</p>
+
+<pre>
+/* Inside a C function called from Lua: */
+lua_Integer n = luaL_checkinteger(L, 1);   /* error if arg 1 is not an integer */
+lua_Number  x = luaL_checknumber(L, 2);    /* error if arg 2 is not a number */
+const char *s = luaL_checkstring(L, 3);    /* error if arg 3 is not a string */
+
+/* Optional arguments with defaults: */
+lua_Number rate = luaL_optnumber(L, 4, 44100.0);  /* arg 4 or 44100.0 if absent */
+</pre>
+
+<p>
+The error message includes the argument position and expected type:
+<code>bad argument #1 to 'foo' (number expected, got string)</code>.
+This is the message Lua programmers expect; always prefer <code>luaL_checkXxx</code>
+over manual type checking in callbacks.
+</p>
+
+<h3>Stack Size and lua_checkstack</h3>
+
+<p>
+The Lua stack is not unlimited. By default, each new state starts with space for
+at least <code>LUA_MINSTACK</code> values (defined as 20 in the Lua headers). The
+stack will grow automatically up to a configurable limit
+(<code>LUAI_MAXSTACK</code>, typically 15,000 on 64-bit platforms).
+</p>
+
+<p>
+In most code this is not a concern. But if you are writing a function that might push
+an unknown number of values - iterating a C array and pushing each element, for
+instance - you should call <code>lua_checkstack</code> first:
+</p>
+
+<pre>
+int n = count_of_items_to_push();
+
+if (!lua_checkstack(L, n)) {
+    /* Stack cannot grow to accommodate n more values.
+     * This is a programming error, not a Lua error - handle it in C. */
+    fprintf(stderr, "lua_checkstack failed: need %d slots\n", n);
+    return;
+}
+
+for (int i = 0; i &lt; n; i++) {
+    lua_pushinteger(L, items[i]);
+}
+</pre>
+
+<p>
+<code>lua_checkstack(L, n)</code> ensures there are at least <code>n</code> additional
+slots available above the current top. It returns 1 on success, 0 if growth is
+impossible. It does not push anything.
+</p>
+
+<h3>Inspecting and Manipulating the Stack</h3>
+
+<p>
+Two functions let you inspect and set the stack size:
+</p>
+
+<pre>
+int top = lua_gettop(L);    /* number of values currently on the stack */
+                             /* returns 0 if the stack is empty */
+
+lua_settop(L, 5);            /* set the stack to exactly 5 values.
+                              * if the current top is less than 5, pushes nil for the difference.
+                              * if the current top is more than 5, pops the excess. */
+
+lua_settop(L, 0);            /* clear the stack - equivalent to popping everything */
+</pre>
+
+<p>
+<code>lua_pop(L, n)</code> is the most common operation - pop n values from the top:
+</p>
+
+<pre>
+lua_pop(L, 1);   /* pop the top value */
+lua_pop(L, 3);   /* pop the top 3 values */
+</pre>
+
+<p>
+<code>lua_pop(L, n)</code> is actually defined as <code>lua_settop(L, -(n)-1)</code>.
+The two are equivalent; <code>lua_pop</code> is just a convenience macro.
+</p>
+
+<p>
+<b>Stack balance is your responsibility.</b> Lua does not automatically restore the
+stack after a C function runs. If your C function called from Lua pushes three values
+and then returns without cleaning up, those three values sit on the stack as garbage.
+The convention is: C functions called from Lua should leave the stack with exactly as
+many values as they intend to return. The API does enforce this indirectly through the
+return-value count you pass to <code>lua_pcall</code>, but extra values you push and
+forget will accumulate until the stack overflows or you get wrong results. Always
+trace what you push and pop.
+</p>
+
+<h3>A Complete Example</h3>
+
+<p>
+A full C program that creates a Lua state, pushes a variety of values, inspects and
+prints them all, and cleans up:
+</p>
+
+<pre>
+#include &lt;lua.h&gt;
+#include &lt;lualib.h&gt;
+#include &lt;lauxlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+/* print_stack: dump all values on the stack for debugging */
+static void print_stack(lua_State *L) {
+    int top = lua_gettop(L);
+    printf("stack (%d values):\n", top);
+    for (int i = 1; i &lt;= top; i++) {
+        int t = lua_type(L, i);
+        printf("  [%d] %-12s", i, lua_typename(L, t));
+        switch (t) {
+            case LUA_TBOOLEAN:
+                printf("%s", lua_toboolean(L, i) ? "true" : "false");
+                break;
+            case LUA_TNUMBER:
+                if (lua_isinteger(L, i))
+                    printf("%lld", (long long)lua_tointeger(L, i));
+                else
+                    printf("%g", lua_tonumber(L, i));
+                break;
+            case LUA_TSTRING:
+                printf("'%s'", lua_tostring(L, i));
+                break;
+            default:
+                /* tables, functions, etc: just print the type */
+                break;
+        }
+        printf("\n");
+    }
+}
+
+int main(void) {
+    lua_State *L = luaL_newstate();
+    if (!L) {
+        fprintf(stderr, "failed to create Lua state\n");
+        return 1;
+    }
+
+    /* Push a variety of types */
+    lua_pushnil(L);               /* index 1 */
+    lua_pushboolean(L, 1);        /* index 2: true */
+    lua_pushboolean(L, 0);        /* index 3: false */
+    lua_pushinteger(L, 42);       /* index 4 */
+    lua_pushnumber(L, 2.71828);   /* index 5 */
+    lua_pushstring(L, "hello");   /* index 6 */
+    lua_pushstring(L, "world");   /* index 7 */
+
+    print_stack(L);
+
+    /* Demonstrate negative indexing */
+    printf("\nnegative index -1 is: %s\n", lua_tostring(L, -1));
+    printf("negative index -2 is: %s\n", lua_tostring(L, -2));
+
+    /* Read back specific values */
+    printf("\ninteger at index 4: %lld\n", (long long)lua_tointeger(L, 4));
+    printf("number at index 5: %g\n", lua_tonumber(L, 5));
+
+    /* Duplicate a value */
+    lua_pushvalue(L, 6);          /* pushes a copy of "hello" */
+    printf("\nafter pushvalue(6), top is: %s\n", lua_tostring(L, -1));
+
+    /* Pop 2 values */
+    lua_pop(L, 2);
+    printf("after pop(2), top is index %d: %s\n",
+           lua_gettop(L), lua_tostring(L, -1));
+
+    /* Clear the stack */
+    lua_settop(L, 0);
+    printf("after settop(0), stack size: %d\n", lua_gettop(L));
+
+    lua_close(L);
+    return 0;
+}
+</pre>
+
+<pre>
+# Compile and run
+gcc -o stack_demo stack_demo.c $(pkg-config --cflags --libs lua5.4)
+./stack_demo
+</pre>
+
+<pre>
+stack (7 values):
+  [1] nil
+  [2] boolean    true
+  [3] boolean    false
+  [4] number     42
+  [5] number     2.71828
+  [6] string     'hello'
+  [7] string     'world'
+
+negative index -1 is: world
+negative index -2 is: hello
+
+integer at index 4: 42
+number at index 5: 2.71828
+
+after pushvalue(6), top is: hello
+after pop(2), top is index 6: world
+after settop(0), stack size: 0
+</pre>
+
+<p>
+The <code>print_stack</code> helper shown here is worth keeping in your toolbox
+during development. Stack state bugs are much easier to diagnose when you can see
+exactly what is on the stack at any point.
+</p>
+
+<h3>Common Mistakes</h3>
+
+<p>
+<b>Forgetting to pop.</b> Every push must eventually be balanced by a pop. Functions
+that return early without cleaning up leave garbage on the stack. In complex code,
+use <code>int base = lua_gettop(L)</code> at function entry and
+<code>lua_settop(L, base)</code> before returning to restore the stack invariant.
+</p>
+
+<p>
+<b>Using a string pointer after pushing more values.</b> The pointer returned by
+<code>lua_tostring</code> is valid only as long as the string stays on the stack
+and no allocating calls are made. Copy the string immediately if you need it longer.
+</p>
+
+<p>
+<b>Confusing index 0.</b> Index 0 is invalid. Code that computes indices must ensure
+it never produces 0. A common bug: computing <code>-(n+1)</code> when you meant
+<code>-(n)</code> and accidentally producing -1 when n was 0, then being confused
+why you got the wrong value.
+</p>
+
+<p>
+<b>Mixing lua_tointeger and lua_tonumber.</b> Calling <code>lua_tointeger</code> on
+a float value truncates the float toward zero and returns the integer part. It also
+returns 0 and sets its <code>isnum</code> output to 0 if the conversion fails silently.
+Use <code>lua_isinteger(L, idx)</code> to check whether a number is actually an
+integer before calling <code>lua_tointeger</code>.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+The Lua stack is a GC-safe, type-tagged communication channel between C and Lua.
+Push values with <code>lua_pushnil</code>, <code>lua_pushboolean</code>,
+<code>lua_pushinteger</code>, <code>lua_pushnumber</code>, <code>lua_pushstring</code>,
+and <code>lua_pushvalue</code>. Check types with <code>lua_type</code> and the
+<code>lua_isXxx</code> predicates. Retrieve values with <code>lua_toXxx</code> or
+the safer <code>luaL_checkXxx</code> in callbacks. Manage stack size with
+<code>lua_gettop</code>, <code>lua_settop</code>, <code>lua_pop</code>, and
+<code>lua_checkstack</code>.
+</p>
+
+<p>
+Use negative indices by preference - they stay valid as the stack grows. Always balance
+every push with a pop. Never hold a string pointer past the point where the stack may
+change. With these rules internalized, the rest of the Lua C API becomes straightforward:
+it is all operations on this one stack.
+</p>
+
+<p>
+The next article uses the stack model to do something useful: load and run Lua files
+and strings from C, call named Lua functions, and handle errors through protected calls.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://www.lua.org/manual/5.4/manual.html#4">Lua 5.4 Reference Manual - The C API (section 4)</a></li>
+<li><a href="https://www.lua.org/pil/24.html">Programming in Lua - Chapter 24: An Overview of the C API</a></li>
+<li><a href="https://www.lua.org/manual/5.4/manual.html#lua_checkstack">lua_checkstack - Lua 5.4 Reference</a></li>
+<li><a href="https://www.lua.org/manual/5.4/manual.html#luaL_checkinteger">luaL_checkinteger - Lua 5.4 Reference</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="lua-01-why-lua.htm">Why Lua? The Embedding Case</a></li>
+<li><a href="lua-03-running-lua.htm">Running Lua from C</a></li>
+<li><a href="lua-04-calling-c-from-lua.htm">Calling C from Lua</a></li>
+<li><a href="lua-07-userdata.htm">Userdata &amp; Metatables</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

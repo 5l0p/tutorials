@@ -1,0 +1,329 @@
+openFrameworks - Part 16: Linux Builds
+2026-10-07
+
+
+Linux is the most transparent platform for openFrameworks work. The entire build chain -
+compiler, linker, dependency resolution, and the oF Makefile system - is visible in plain
+text, auditable, and scriptable. There is no IDE required and no opaque project file format.
+If you understand make and can read a Makefile, you understand exactly what is
+happening when your sketch compiles. This article covers the Linux build workflow from first
+compile through release packaging and ARM cross-compilation.
+
+
+What You Will Learn
+
+
+  The Makefile-based build workflow: make, make Release,
+  and project configuration.
+  ALSA vs JACK audio backends and how to select between them.
+  X11 vs Wayland windowing considerations.
+  How to resolve missing system library dependencies with apt.
+  Packaging a release binary: stripping, rpath, and bundling data/.
+  Cross-compiling for ARM (Raspberry Pi 4) from an x86 Linux host.
+
+
+The Makefile Workflow
+
+
+An oF project on Linux has this structure at minimum:
+
+
+
+myProject/
+  src/
+    ofApp.h
+    ofApp.cpp
+    main.cpp
+  addons.make       # one addon name per line
+  config.make       # optional project-specific settings
+  Makefile          # one line: include $(OF_ROOT)/libs/openFrameworksCompiled/project/makefileCommon/compile.project.mk
+
+
+
+The single-line Makefile delegates everything to oF's shared Makefile
+infrastructure. You only need to set OF_ROOT to point at your oF installation:
+
+
+
+# Makefile
+OF_ROOT = ../..          # relative path from project to oF root
+include $(OF_ROOT)/libs/openFrameworksCompiled/project/makefileCommon/compile.project.mk
+
+
+
+Build commands:
+
+
+
+make             # Debug build (with -g, sanitiser-friendly)
+make Release     # Release build (with -O2, no debug symbols)
+make clean       # Remove build artefacts
+make RunRelease  # Build Release and immediately run the binary
+make run         # Run the most recently built binary
+
+
+
+The compiled binary lands in bin/myProjectDebug or
+bin/myProjectRelease. The working directory at runtime is automatically set to
+bin/data/ by oF's startup code, which is why relative asset paths work.
+
+
+config.make: Project-Level Build Settings
+
+
+# config.make
+# Extra compiler flags
+PROJECT_CFLAGS = -march=native -ffast-math
+
+# Extra linker flags
+PROJECT_LDFLAGS = -Wl,-rpath,\$$ORIGIN/lib
+
+# Additional source directories (e.g. for bundled third-party code)
+PROJECT_SOURCES = $(wildcard src/yaml-cpp/src/*.cpp)
+
+# Additional include paths
+PROJECT_CFLAGS  += -Isrc/yaml-cpp/include
+
+
+Audio Backends: ALSA and JACK
+
+
+oF's Linux audio backend is selected at oF compile time, not at project compile time. The
+relevant flag is OF_AUDIO_BACKEND in the oF library build:
+
+
+
+# Compile oF itself with JACK support (run from the oF libs directory)
+cd $OF_ROOT/libs/openFrameworksCompiled/project/
+make Release OF_AUDIO_BACKEND=jack
+
+
+
+ALSA is the default and works without a running audio daemon. It connects directly to
+the kernel sound driver. Latency is typically 10–30 ms depending on the driver and buffer
+size. Install headers if missing:
+
+
+
+sudo apt install libasound2-dev
+
+
+
+JACK gives lower latency (typically 2–6 ms) and is the professional choice for
+audio work. It requires a JACK server to be running (jackd or
+qjackctl). JACK allows routing audio between applications without going through
+the kernel mixer:
+
+
+
+sudo apt install libjack-jackd2-dev jackd2
+# Start JACK server (in another terminal):
+jackd -d alsa -r 44100 -p 256 -n 2
+
+
+
+In ofSoundStreamSettings, the buffer size you set must match the JACK server's
+period size exactly or the connection will fail.
+
+
+X11 vs Wayland
+
+
+oF's GLFW on Linux targets X11 by default. Wayland has matured significantly but GLFW's
+Wayland backend still has edge cases (clipboard, drag-and-drop, cursor shape) that the X11
+backend does not. The practical advice for 2026:
+
+
+
+  If you are on a desktop with XWayland (the X11 compatibility layer under Wayland -
+  standard on GNOME and KDE), oF's X11 GLFW works unchanged. You do not need to do
+  anything.
+  If you need native Wayland (no XWayland), you must compile GLFW with
+  -DGLFW_BUILD_WAYLAND=1 and set GLFW_PLATFORM=wayland at
+  runtime. This requires patching oF's bundled GLFW or providing your own.
+
+
+
+For the vast majority of Linux development, XWayland is fine and requires no action.
+
+
+Resolving Missing Library Dependencies
+
+
+The first build on a fresh system almost always fails with missing headers or linker errors.
+The canonical fix pattern:
+
+
+
+# Compiler error: fatal error: GL/gl.h: No such file or directory
+sudo apt install libgl-dev
+
+# Linker error: cannot find -lGLEW
+sudo apt install libglew-dev
+
+# Linker error: cannot find -lGL
+sudo apt install libgl1-mesa-dev
+
+# Runtime error: error while loading shared libraries: libfreeimage.so.3
+sudo apt install libfreeimage3
+# or copy libfreeimage.so.3 into bin/ alongside the binary
+
+# All oF dependencies on Debian/Ubuntu in one shot:
+sudo apt install \
+    libgl1-mesa-dev libglu1-mesa-dev libglew-dev \
+    libfreeimage-dev libfreetype-dev \
+    libasound2-dev libpulse-dev \
+    libgtk-3-dev libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libcurl4-openssl-dev liburiparser-dev libssl-dev \
+    libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+
+
+
+oF ships its own copies of some libraries (FreeImage, GLFW) to ensure version consistency.
+These live under libs/ in the oF root and are linked statically - you do not need
+the system package for those. For system libraries (OpenGL, ALSA, GStreamer), you need the
+-dev package for compile time and the runtime package (no -dev) for
+distribution.
+
+
+Packaging a Release Binary
+
+
+A self-contained release consists of the binary plus its data folder and any dynamic libraries
+it depends on that are not present on every target system.
+
+
+
+Step 1: Strip debug symbols.
+
+
+
+strip bin/myProjectRelease
+
+
+
+Step 2: Check dynamic library dependencies.
+
+
+
+ldd bin/myProjectRelease
+# Output (example):
+#     libGL.so.1 => /lib/x86_64-linux-gnu/libGL.so.1
+#     libfreeimage-3.18.0.so => not found   <-- this needs bundling
+#     libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6  (safe, always present)
+
+
+
+Step 3: Bundle non-system libraries. Copy any library shown as "not found" or that
+you cannot guarantee will be present on the target system into a lib/
+subdirectory next to the binary.
+
+
+
+Step 4: Set rpath. The rpath tells the dynamic linker where to look for libraries
+relative to the binary. The special token $ORIGIN means "same directory as the
+binary":
+
+
+
+# At compile time, via LDFLAGS in config.make:
+PROJECT_LDFLAGS = -Wl,-rpath,'$$ORIGIN/lib'
+
+# Or after the fact with patchelf:
+sudo apt install patchelf
+patchelf --set-rpath '$ORIGIN/lib' bin/myProjectRelease
+
+
+
+Step 5: Create the distribution archive.
+
+
+
+mkdir -p dist/bin/data
+cp bin/myProjectRelease dist/bin/
+cp -r bin/data/          dist/bin/data/
+cp -r bin/lib/           dist/bin/lib/      # bundled .so files
+tar czf myProject-linux-x64.tar.gz -C dist .
+
+
+Cross-Compiling for ARM (Raspberry Pi 4)
+
+
+Cross-compilation lets you build a Raspberry Pi binary on a fast x86 desktop. The Pi runs
+ARM 64-bit (aarch64) Linux.
+
+
+
+Step 1: Install the cross-compiler.
+
+
+
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+
+
+Step 2: Install ARM sysroot. The cleanest approach is to copy the Pi's
+/usr and /lib trees to your host machine (using rsync over SSH
+from a running Pi). This gives you the exact library versions the Pi uses.
+
+
+
+rsync -avz pi@raspberrypi.local:/usr  ~/pi-sysroot/
+rsync -avz pi@raspberrypi.local:/lib ~/pi-sysroot/
+
+
+
+Step 3: Build oF for ARM. This is the hardest part. The oF project provides a
+Raspberry Pi platform configuration:
+
+
+
+# From the oF linux Makefile root:
+make -j4 PLATFORM_ARCH=aarch64 \
+         CROSS_COMPILE=aarch64-linux-gnu- \
+         SYSROOT=~/pi-sysroot
+
+
+
+In practice, most developers either build natively on the Pi (slow but simple) or use Docker
+with a QEMU-emulated ARM container. The Docker approach:
+
+
+
+docker run --rm --platform linux/arm64 \
+  -v $PWD:/project \
+  arm64v8/ubuntu:22.04 \
+  bash -c "apt-get install -y ... && cd /project && make Release"
+
+
+Summary
+
+
+The Linux oF workflow is entirely Makefile-driven: make Release for a release
+binary, config.make for project-level flags. ALSA is the default audio backend;
+JACK gives lower latency for audio-critical work. X11 via GLFW works transparently under
+XWayland. Missing dependencies are fixed with apt install of -dev
+packages. A portable release package bundles the binary, data/, and any non-system
+libraries, with rpath set to $ORIGIN/lib. Cross-compilation targets ARM via the
+aarch64 toolchain or a Docker/QEMU environment. Part 17 covers the same ground for Windows.
+
+
+Further Reading
+
+
+  oF Linux Install Guide
+  oF Raspberry Pi Setup Guide
+  ldconfig man page
+  patchelf - ELF rpath patcher
+  JACK Audio FAQ
+
+
+See Also
+
+
+  Cross-Platform Overview
+  Windows Builds
+  macOS Builds
+  Writing Portable oF Code
+

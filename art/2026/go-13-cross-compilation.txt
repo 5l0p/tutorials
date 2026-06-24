@@ -1,0 +1,280 @@
+Go - Part 13: Building & Cross-Compilation
+2026-07-16
+
+
+One of Go's most practical advantages over C is trivially easy cross-compilation. In C,
+producing a Windows binary from a Linux machine requires a cross-toolchain, separate
+sysroots, and build system support. In Go, you set two environment variables and run
+go build. The result is a native binary for the target platform with no
+further dependencies. This article covers the full build pipeline: GOOS/GOARCH, static
+vs dynamic binaries, CGO considerations, build flags, and producing release binaries.
+
+
+What You Will Learn
+
+
+All GOOS and GOARCH combinations and how to use them
+How to produce fully static binaries with CGO_ENABLED=0
+What CGO is, why it breaks cross-compilation, and how to work around it
+-ldflags: stripping debug info, injecting build metadata at link time
+A Makefile for multi-platform release builds
+Trimming file paths from binaries and why it matters for reproducible builds
+
+
+GOOS and GOARCH
+
+
+GOOS sets the target operating system; GOARCH sets the target
+CPU architecture. Set them as environment variables before go build:
+
+
+
+# Linux AMD64 (the default on most CI machines)
+GOOS=linux GOARCH=amd64 go build -o myapp-linux-amd64 ./cmd/myapp
+
+# Windows AMD64
+GOOS=windows GOARCH=amd64 go build -o myapp-windows-amd64.exe ./cmd/myapp
+
+# macOS ARM64 (Apple Silicon)
+GOOS=darwin GOARCH=arm64 go build -o myapp-darwin-arm64 ./cmd/myapp
+
+# Linux ARM64 (Raspberry Pi 4, AWS Graviton)
+GOOS=linux GOARCH=arm64 go build -o myapp-linux-arm64 ./cmd/myapp
+
+
+
+That is all. The Go compiler is written in Go and is itself cross-compilation aware; it
+ships with standard library implementations for every supported platform. No separate
+toolchain is needed for pure-Go code.
+
+
+
+Common GOOS values: linux, windows, darwin,
+freebsd, openbsd, netbsd, plan9,
+js (WebAssembly host), wasip1 (WASI).
+
+
+
+Common GOARCH values: amd64, arm64, arm,
+386, mips64, riscv64, wasm.
+
+
+Static Binaries
+
+
+By default, Go produces statically linked binaries for pure-Go code - the runtime,
+standard library, and all Go dependencies are compiled into the binary. There are no
+shared library dependencies to satisfy at runtime, unlike a C program that links against
+libc.
+
+
+
+This means you can copy the binary to any machine running the same OS and architecture
+and run it. You do not need to install Go, a runtime, or any shared libraries. For Docker
+deployments this means you can use a scratch or distroless base image:
+
+
+
+# Multi-stage Dockerfile
+FROM golang:1.22 AS build
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-s -w" \
+    -o /myapp ./cmd/myapp
+
+# Final image: just the binary
+FROM scratch
+COPY --from=build /myapp /myapp
+ENTRYPOINT ["/myapp"]
+
+
+
+The CGO_ENABLED=0 flag disables CGO (see below), ensuring a purely static
+binary. The -s -w linker flags strip the symbol table and debug information,
+reducing binary size.
+
+
+
+C requires explicit steps to produce a static binary (gcc -static) and it is
+often impractical because libc (particularly glibc) is designed to load
+resolvers and NSS plugins dynamically. Go avoids this by having its own implementation
+of DNS resolution and other system interfaces.
+
+
+CGO and Cross-Compilation
+
+
+CGO is Go's foreign function interface to C code. It allows Go programs to call C
+functions and use C libraries. When CGO is enabled, the build process involves the C
+compiler and linker, which breaks pure-Go cross-compilation.
+
+
+
+// A package that uses CGO (note the import "C")
+package main
+
+/*
+#include <stdio.h>
+
+void hello() {
+    printf("hello from C\n");
+}
+*/
+import "C"
+
+func main() {
+    C.hello()
+}
+
+
+
+To cross-compile code that uses CGO, you need a cross-compiler for the target. For
+example, to build a CGO-using program for Linux ARM64 from an AMD64 machine:
+
+
+
+CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build ./...
+
+
+
+This requires the gcc-aarch64-linux-gnu package (or equivalent) to be
+installed. This is similar to C cross-compilation requirements and is the main cost of
+using CGO: you lose Go's simple cross-compilation story.
+
+
+
+For most programs, CGO is not needed. Avoid it unless you genuinely need to wrap a C
+library. If you do need it, Docker multi-arch builds or QEMU emulation are common
+strategies for building in CI.
+
+
+Build Flags and ldflags
+
+
+The -ldflags option passes flags to the linker. The most useful in production:
+
+
+
+go build -ldflags="-s -w" ./cmd/myapp
+# -s: omit symbol table
+# -w: omit DWARF debug information
+# Result: significantly smaller binary
+
+
+
+You can also inject values at link time using -X. This is the standard way to
+embed version information:
+
+
+
+// In your code:
+package version
+
+var Version = "dev"
+var Commit = "unknown"
+var BuildDate = "unknown"
+
+// At build time:
+go build \
+    -ldflags="-X 'github.com/acme/myapp/version.Version=1.2.3' \
+              -X 'github.com/acme/myapp/version.Commit=$(git rev-parse --short HEAD)' \
+              -X 'github.com/acme/myapp/version.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
+    -o myapp ./cmd/myapp
+
+
+
+This is analogous to using -D defines in a C Makefile to embed build
+metadata, but it is type-safe and does not require modifying header files.
+
+
+Makefile for Multi-Platform Builds
+
+
+A typical release Makefile builds binaries for each supported platform:
+
+
+
+VERSION ?= dev
+LDFLAGS := -ldflags="-s -w -X main.version=$(VERSION)"
+
+build-all: build-linux build-windows build-darwin
+
+build-linux:
+    GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/myapp-linux-amd64 ./cmd/myapp
+    GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/myapp-linux-arm64 ./cmd/myapp
+
+build-windows:
+    GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o dist/myapp-windows-amd64.exe ./cmd/myapp
+
+build-darwin:
+    GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/myapp-darwin-amd64 ./cmd/myapp
+    GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/myapp-darwin-arm64 ./cmd/myapp
+
+
+Trimming Paths from Binaries
+
+
+By default, Go embeds absolute file paths in the binary for stack traces and debugging.
+These paths can leak your build machine's directory structure. For release builds, trim
+them:
+
+
+
+go build -trimpath -ldflags="-s -w" -o myapp ./cmd/myapp
+
+
+
+-trimpath replaces all absolute paths in the binary with module-relative
+paths. Stack traces still make sense, but the build machine's home directory is not
+visible in the binary.
+
+
+go install vs go build
+
+
+go build compiles and writes the binary to the specified output path (or the
+current directory by default). go install compiles and installs the binary to
+$GOPATH/bin (or $HOME/go/bin). Use go build when
+producing a release artifact; use go install for tools you want on your PATH.
+
+
+
+# Install a tool globally
+go install github.com/some/tool@latest
+
+# Produces $HOME/go/bin/tool - add $HOME/go/bin to your PATH
+
+
+Summary
+
+
+Set GOOS and GOARCH to cross-compile without any
+additional toolchain. The result is a fully self-contained native binary.
+Set CGO_ENABLED=0 for static linking — essential when the target
+lacks the same libc as the build machine. CGO is the main obstacle to cross-
+compilation; when you need CGO on a different target, a cross-compiler toolchain
+is required. Use -ldflags="-s -w -X ..." to strip debug info and
+inject version strings at link time. Use -trimpath to remove build
+machine paths for reproducible output.
+
+
+Further Reading
+
+
+go build: Build Constraints - pkg.go.dev
+Package cgo - pkg.go.dev
+Optional environment variables - golang.org
+GoReleaser - multi-platform release tool
+
+
+See Also
+
+
+Modules & Dependencies
+Platform-Specific Code & Build Constraints
+Formatting, Linting & Tooling
+Vendoring
+

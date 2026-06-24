@@ -1,0 +1,496 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>RPIPicoDSP - Part 4: The Audio Render Loop on Bare Metal</title>
+    <meta name="description" content="DMA interrupt-driven audio, dedicating core 1 to the real-time audio path, avoiding malloc in the ISR, and a complete dual-core setup with USB serial on core 0 and DMA audio on core 1.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, embedded, audio, pico">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="pico-04-render-loop.txt">plain/text</a> | <i>2026-11-10</i> | <i><a href="../../c.htm">c</a>, <a href="../../embedded.htm">embedded</a>, <a href="../../audio.htm">audio</a>, <a href="../../pico.htm">pico</a></i>
+        <h2>RPIPicoDSP - Part 4: The Audio Render Loop on Bare Metal</h2>
+        <p>
+Real-time audio on a microcontroller is a timing problem. Every 22.6 microseconds
+(at 44.1 kHz) the DMA engine expects a fresh sample. Miss that deadline and you get
+a click. Miss it by a whole buffer and you get silence. The architecture that makes
+this reliable on the RP2040 is simple and effective: dedicate core 1 entirely to the
+audio DMA loop, keep all non-deterministic work (USB stack, MIDI parsing, printf) on
+core 0, and pass data between them through a disciplined interface. This article builds
+that architecture from scratch and explains every decision that goes into it.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The two interrupt-driven audio patterns: DMA IRQ and I2S IRQ, and when to use each</li>
+<li>Why core 1 should own the audio path and core 0 should own everything else</li>
+<li>How to launch core 1 with <code>multicore_launch_core1</code> and what the startup sequence looks like</li>
+<li>The DMA interrupt handler pattern: clear flag, restart DMA, signal the fill side</li>
+<li>Worst-case execution time (WCET) thinking without an OS scheduler</li>
+<li>What you must never do in the audio path: malloc, printf, blocking waits</li>
+<li>A complete dual-core skeleton: core 0 runs USB serial, core 1 runs the audio DMA loop</li>
+</ul>
+
+<h3>Two Interrupt Patterns</h3>
+
+<p>
+There are two common ways to trigger the "fill a new audio buffer" callback:
+</p>
+
+<p>
+<b>DMA IRQ:</b> The DMA engine fires an interrupt when it finishes transferring one
+complete buffer to the PIO TX FIFO. The IRQ handler restarts DMA from the other buffer
+immediately. This is the pattern from Part 2. The handler runs for a very short time
+(just a few register writes), and the actual DSP computation happens in the main loop
+of core 1, polling a flag set by the handler.
+</p>
+
+<p>
+<b>PIO IRQ:</b> The PIO state machine fires an interrupt itself - for example, when it
+has consumed a certain number of words from its TX FIFO. This gives finer-grained
+timing control but requires more care in the PIO program. For I2S output the DMA IRQ
+approach is simpler and works perfectly.
+</p>
+
+<p>
+We use DMA IRQ throughout this series. The pattern is: DMA interrupt fires → handler
+restarts DMA immediately → sets a flag → core 1 main loop sees the flag → fills the
+next buffer → clears the flag.
+</p>
+
+<h3>Why Core 1 for Audio</h3>
+
+<p>
+The RP2040 has two identical Cortex-M0+ cores sharing the same bus fabric, SRAM, and
+peripherals. They run completely independently. There is no preemptive scheduler
+between them; each core runs its own code and handles its own interrupts.
+</p>
+
+<p>
+Audio needs deterministic execution. The DMA buffer must be filled within one buffer
+period (BUF_FRAMES / SAMPLE_RATE seconds). On core 0, anything that handles USB
+traffic will take unpredictable amounts of time - the TinyUSB stack processes packets
+in interrupt context, USB host polling adds jitter, and <code>printf</code> can block
+waiting for the CDC ACM transmit buffer to drain. Any of those can delay an audio fill
+by several milliseconds, which is much longer than one buffer period at typical buffer
+sizes.
+</p>
+
+<p>
+The solution: core 1 runs only the audio DMA loop. It has its own interrupt vector
+table (the SDK sets this up automatically when you call
+<code>multicore_launch_core1</code>). No USB interrupts fire on core 1. No TinyUSB code
+runs there. The only thing that can preempt the audio fill loop on core 1 is the DMA
+IRQ itself - which is by design, and which completes in microseconds.
+</p>
+
+<h3>Launching Core 1</h3>
+
+<p>
+The SDK function <code>multicore_launch_core1</code> takes a function pointer and starts
+core 1 executing that function. Core 1 wakes from its bootrom wait-loop, runs the
+SDK's own startup code (zeroing BSS, calling constructors), then calls your function.
+This takes a few hundred microseconds; do not expect core 1 to be ready instantly.
+</p>
+
+<pre>
+#include "pico/multicore.h"
+
+/* This function runs on core 1. It never returns. */
+static void core1_audio_entry(void);
+
+int main(void) {
+    /* Core 0 initialisation */
+    stdio_init_all();
+
+    /* Launch core 1 BEFORE enabling the audio DMA,
+       so the IRQ handler is installed on core 1 before any interrupts fire. */
+    multicore_launch_core1(core1_audio_entry);
+
+    /* Core 0 main loop: USB serial, parameter updates, etc. */
+    while (true) {
+        /* tud_task() must be called regularly on core 0 for TinyUSB to work */
+        /* tud_task(); */
+        tight_loop_contents();
+    }
+}
+</pre>
+
+<p>
+There is a subtle ordering issue: you should set up any shared data structures
+<em>before</em> launching core 1 if core 1 will read them during startup. After
+<code>multicore_launch_core1</code> returns, core 1 is running concurrently. Use the
+inter-core FIFO (Part 9) to synchronise if needed: core 1 can push a ready signal to
+core 0 once its initialisation is complete.
+</p>
+
+<h3>The DMA Interrupt Handler</h3>
+
+<p>
+The interrupt handler is the most critical piece of code in the system. It must:
+</p>
+
+<ol>
+<li>Clear the interrupt flag first. This is not optional. On the Cortex-M0+ the DMA
+controller's interrupt status is level-triggered: as long as the flag is set, the
+interrupt line is asserted. If you return from the handler without clearing it, the
+NVIC immediately re-enters the handler. Your audio code never runs and the chip appears
+to hang.</li>
+<li>Restart DMA from the freshly-filled buffer. The DMA channel's write (or read)
+address must be set to the new buffer before starting the transfer.</li>
+<li>Signal the fill side. Set a volatile flag or semaphore that tells the main loop
+to fill the buffer that DMA just finished playing.</li>
+</ol>
+
+<pre>
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+
+/* Two output buffers - enough for I2S at 44.1 kHz, 256 frames, stereo int16 */
+#define BUF_FRAMES 256
+static int16_t buf_a[BUF_FRAMES * 2];   /* interleaved L/R */
+static int16_t buf_b[BUF_FRAMES * 2];
+
+/* Which buffer should the DSP fill next? */
+static volatile int16_t *fill_buf = buf_a;
+
+/* Which DMA channel are we using? Set during init. */
+static int audio_dma_chan = -1;
+
+static void audio_dma_irq_handler(void) {
+    /* Step 1: Clear the interrupt flag.
+       dma_channel_acknowledge_irq0 writes to the DMA INTS0 register,
+       clearing the bit for this channel. MUST be done first. */
+    dma_channel_acknowledge_irq0(audio_dma_chan);
+
+    /* Step 2: Restart DMA from whichever buffer is not fill_buf.
+       fill_buf points to the buffer the DSP should fill.
+       The buffer we just finished playing is the OTHER one - restart from that.
+       Wait: we want to play the buffer that was JUST filled (not the one we
+       are about to fill). Let's track this explicitly. */
+
+    /* fill_buf is the buffer currently being written by DSP.
+       The buffer that was just played = the other one.
+       Restart DMA from fill_buf (the freshly-prepared one),
+       then switch fill_buf to the other buffer for DSP to fill next. */
+
+    /* This works if DSP always fills fill_buf before DMA finishes playing
+       the current one - which is guaranteed if the buffer is long enough
+       and DSP is fast enough. */
+    int16_t *just_played = (fill_buf == buf_a) ? buf_b : buf_a;
+
+    /* Restart DMA from fill_buf (ready to play) */
+    dma_channel_set_read_addr(audio_dma_chan, fill_buf, true);
+
+    /* DSP should now fill the buffer that just finished playing */
+    fill_buf = just_played;
+}
+</pre>
+
+<p>
+Notice we do not do any DSP computation inside the interrupt handler. The handler
+does three register writes and returns. The DSP happens in the core 1 main loop, which
+polls <code>fill_buf</code> to know when there is work to do.
+</p>
+
+<h3>Worst-Case Execution Time</h3>
+
+<p>
+Without an OS scheduler there is no preemption to worry about in the fill loop.
+The only source of jitter is the DMA interrupt itself pre-empting whatever the core 1
+main loop was doing. Because the handler is short, this is a bounded, small disruption.
+</p>
+
+<p>
+WCET analysis for the audio fill loop: you need to fill
+<code>BUF_FRAMES</code> samples before the DMA finishes playing the current buffer and
+calls the handler again. The deadline is:
+</p>
+
+<pre>
+deadline = BUF_FRAMES / SAMPLE_RATE seconds
+         = 256 / 44100
+         = 5.8 ms
+
+At 125 MHz: 5.8 ms * 125,000,000 cycles = 725,000 cycles available.
+</pre>
+
+<p>
+A biquad filter costs roughly 40–60 cycles per sample including soft-float. For 256
+samples: 256 * 60 = 15,360 cycles. That is 2% of budget - very comfortable. You could
+run 20 biquad filters per buffer and still have margin. Part 5 shows how to measure
+this precisely using the SysTick counter.
+</p>
+
+<h3>What Never Goes in the Audio Path</h3>
+
+<p>
+These operations are forbidden in the audio interrupt handler and in any code that
+runs in the fill loop on core 1:
+</p>
+
+<ul>
+<li><b>malloc / free.</b> The heap allocator uses locks. On Cortex-M0+ without an OS,
+a malloc call from an ISR context can deadlock if core 0 holds the heap lock. Worse,
+malloc's execution time is unbounded. Allocate everything statically at startup.</li>
+<li><b>printf.</b> <code>printf</code> on the Pico goes through the TinyUSB CDC buffer.
+Writing to it can block if the buffer is full. Blocking in the audio path is instant
+glitch death. Use a small ring buffer to pass debug strings from core 1 to core 0 for
+printing - or just use a logic analyser.</li>
+<li><b>sleep_ms / sleep_us.</b> Any blocking wait violates the real-time guarantee.
+Never call them from core 1 audio code.</li>
+<li><b>Flash writes.</b> Writing to flash (e.g. via <code>flash_range_program</code>)
+temporarily disables the XIP cache and stalls both cores for tens of milliseconds. This
+is catastrophic for audio. Never write to flash while audio is running.</li>
+<li><b>Spinlocks held across DSP computation.</b> Holding a spinlock for more than a
+few hundred cycles risks stalling core 0 in a busy wait, which can cause USB dropout.
+Design your parameter passing so locks are held only for pointer swaps or atomic
+word writes (Part 9).</li>
+</ul>
+
+<h3>Complete Dual-Core Audio Skeleton</h3>
+
+<pre>
+/* dual_core_audio.c - complete skeleton
+   Core 0: USB serial, command parsing
+   Core 1: I2S DMA audio output
+   Connect a PCM5102 DAC as in Part 2. */
+
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+#include &lt;string.h&gt;
+#include "pico/stdlib.h"
+#include "pico/multicore.h"
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+#include "hardware/pio.h"
+/* Include the generated I2S output PIO header from Part 2 */
+/* #include "i2s_out.pio.h" */
+
+#define SAMPLE_RATE  44100
+#define BUF_FRAMES   256
+#define BUF_SAMPLES  (BUF_FRAMES * 2)   /* stereo interleaved */
+
+/* Audio buffers - in SRAM, statically allocated */
+static int16_t buf_a[BUF_SAMPLES];
+static int16_t buf_b[BUF_SAMPLES];
+static volatile int16_t *fill_buf;
+static volatile bool audio_ready = false;
+
+static int  audio_dma_chan;
+static PIO  audio_pio;
+static uint audio_sm;
+
+/* --- DSP state (owned by core 1, never touched by core 0 directly) --- */
+static uint32_t osc_phase     = 0;
+static uint32_t osc_phase_inc = 0;
+
+/* Sine lookup table - computed once at startup */
+#define LUT_SIZE 1024
+static int16_t sine_lut[LUT_SIZE];
+
+static void fill_audio_buffer(int16_t *buf, uint32_t frames) {
+    for (uint32_t i = 0; i &lt; frames; i++) {
+        uint32_t idx = (osc_phase &gt;&gt; 22) &amp; (LUT_SIZE - 1);
+        int16_t s    = sine_lut[idx];
+        osc_phase   += osc_phase_inc;
+        buf[i * 2]     = s;   /* left  */
+        buf[i * 2 + 1] = s;   /* right */
+    }
+}
+
+/* --- DMA IRQ handler - runs on core 1 --- */
+static void audio_dma_irq_handler(void) {
+    dma_channel_acknowledge_irq0(audio_dma_chan);
+
+    /* Restart DMA from fill_buf (which DSP just finished writing) */
+    dma_channel_set_read_addr(audio_dma_chan, (void *)fill_buf, true);
+
+    /* Tell DSP to fill the other buffer */
+    fill_buf   = (fill_buf == buf_a) ? buf_b : buf_a;
+    audio_ready = true;
+}
+
+/* --- Core 1 entry point --- */
+static void core1_audio_entry(void) {
+    /* Build sine table */
+    for (int i = 0; i &lt; LUT_SIZE; i++) {
+        sine_lut[i] = (int16_t)(32767.0f *
+            sinf(2.0f * (float)M_PI * i / LUT_SIZE));
+    }
+
+    /* Set initial frequency: 440 Hz */
+    osc_phase_inc = (uint32_t)((440.0f / SAMPLE_RATE) * (1u &lt;&lt; 22) * LUT_SIZE);
+
+    /* Pre-fill both buffers so DMA has valid data from the start */
+    fill_audio_buffer(buf_a, BUF_FRAMES);
+    fill_audio_buffer(buf_b, BUF_FRAMES);
+    fill_buf = buf_a;
+
+    /* --- PIO / DMA setup (abbreviated - see Part 2 for full I2S init) ---
+       In a real project, call your i2s_output_init() here. */
+
+    /* Register DMA IRQ on this core (core 1).
+       Interrupts on a core are handled by that core's interrupt controller.
+       An IRQ registered after multicore_launch_core1 automatically belongs to core 1. */
+    irq_set_exclusive_handler(DMA_IRQ_0, audio_dma_irq_handler);
+    irq_set_enabled(DMA_IRQ_0, true);
+    dma_channel_set_irq0_enabled(audio_dma_chan, true);
+
+    /* Start DMA playing buf_b, DSP will fill buf_a first */
+    dma_channel_set_read_addr(audio_dma_chan, buf_b, true);
+
+    /* Signal core 0 that audio is running */
+    multicore_fifo_push_blocking(1);
+
+    /* Core 1 main loop: fill audio buffers on demand */
+    while (true) {
+        if (audio_ready) {
+            audio_ready = false;
+            fill_audio_buffer((int16_t *)fill_buf, BUF_FRAMES);
+        }
+        /* No sleep, no yield - tight loop.
+           Core 1 burns 100% CPU when idle, but it has no other work to do.
+           The DMA interrupt is the only thing that will preempt this loop. */
+        tight_loop_contents();
+    }
+}
+
+/* --- Core 0 main --- */
+int main(void) {
+    stdio_init_all();
+
+    /* Launch core 1 first */
+    multicore_launch_core1(core1_audio_entry);
+
+    /* Wait for core 1 to signal it is ready */
+    uint32_t ready = multicore_fifo_pop_blocking();
+    printf("audio core ready (signal=%u)\n", ready);
+
+    /* Core 0 main loop: handle USB serial input */
+    while (true) {
+        int c = getchar_timeout_us(0);
+        if (c != PICO_ERROR_TIMEOUT) {
+            printf("received char: %c\n", c);
+            /* In Part 7/8 we replace this with MIDI parsing */
+        }
+        /* Yield briefly so USB stack gets cycles */
+        sleep_us(100);
+    }
+}
+</pre>
+
+<p>
+The <code>tight_loop_contents()</code> in the core 1 loop is an SDK macro that expands to
+a <code>__nop()</code> or similar - its purpose is to prevent the compiler from optimising
+away what looks like an empty loop, and to give the compiler a hint that the loop body
+accesses volatile memory.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+The dual-core audio architecture is the foundation of everything in the rest of this
+series. Core 1 owns the audio DMA loop and its interrupt handler; core 0 owns USB,
+MIDI parsing, and parameter updates. The DMA IRQ handler does exactly three things:
+clear the interrupt flag, restart DMA, signal the fill side. The fill loop does exactly
+one thing: run the DSP and write samples. Nothing that can block or run for an
+unbounded time is allowed in either. With 256-frame buffers at 44.1 kHz you have 5.8
+ms per buffer - enough for dozens of biquad filters on the RP2040's soft-float.
+</p>
+
+<p>
+Part 5 takes the DSP code you may have written for a desktop (biquad filters, sine
+oscillators) and explains what changes when you port it to the RP2040 - fixed-point
+tradeoffs, stack limits, and measuring CPU usage with the SysTick counter.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 Datasheet - Chapter 2 (SIO/multicore), Chapter 4 (DMA)</a></li>
+<li><a href="https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf">Raspberry Pi Pico C/C++ SDK - pico_multicore and hardware_dma chapters</a></li>
+<li><a href="https://developer.arm.com/documentation/ddi0432/c">Cortex-M0+ Technical Reference Manual - ARM</a></li>
+<li><a href="https://www.freertos.org/RTOS_ports/pico.html">FreeRTOS on the Pico (reference only - we do not use an RTOS)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="pico-02-audio-output.htm">Pico - Part 2: Audio Output on the Pico</a></li>
+<li><a href="pico-03-audio-input.htm">Pico - Part 3: Audio Input on the Pico</a></li>
+<li><a href="pico-05-porting-dsp.htm">Pico - Part 5: Porting DSP Code from the Desktop</a></li>
+<li><a href="pico-09-multicore.htm">Pico - Part 9: Multicore Communication</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

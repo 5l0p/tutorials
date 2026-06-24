@@ -1,0 +1,316 @@
+Go - Part 7: Goroutines & Channels
+2026-07-10
+
+
+Concurrency is the area where Go most clearly diverges from both C and C#. In C you use
+pthreads or OS threads directly. In C# you use async/await with
+Task objects managed by the CLR. Go introduces goroutines - lightweight
+coroutines multiplexed over OS threads - and channels - typed message-passing pipes.
+This is not just different syntax; it is a different mental model. This article explains
+both from first principles.
+
+
+What You Will Learn
+
+
+What goroutines are, how they differ from OS threads and C# Tasks, and how the Go scheduler multiplexes them
+How to launch goroutines with go and why you must synchronise their results
+How channels work: unbuffered (synchronous handoff) and buffered (async queue)
+Closing channels and iterating with range
+The select statement: waiting on multiple channel operations simultaneously
+Implementing timeouts using select with time.After
+Goroutine leaks: how to prevent them and why they matter
+
+
+Goroutines
+
+
+A goroutine is started with the go keyword followed by a function call. That
+is the entire syntax:
+
+
+
+go fmt.Println("hello from a goroutine")
+
+go func() {
+    time.Sleep(100 * time.Millisecond)
+    fmt.Println("delayed greeting")
+}()
+
+
+
+The function runs concurrently with the goroutine that started it. There is no handle,
+no token, no Task<T> - just go and a function call.
+
+
+
+Goroutines are not OS threads. The Go runtime implements its own scheduler (the M:N
+scheduler) that multiplexes many goroutines onto a smaller number of OS threads. A
+goroutine starts with a tiny stack (a few kilobytes) that grows automatically as needed.
+You can launch a million goroutines on a laptop; launching a million OS threads would
+exhaust memory and crash the machine.
+
+
+
+In C, pthread_create creates a real OS thread - expensive, with a fixed
+64KB–8MB default stack depending on the platform. In C# a Thread object is
+similarly expensive. C#'s async/await avoids creating threads by using a
+cooperative scheduler on a thread pool - but the programming model requires explicit
+async/await annotations throughout the call chain. Go goroutines
+are cheaper than threads and require no annotations: any function can be run as a
+goroutine.
+
+
+Channels
+
+
+A channel is a typed conduit through which goroutines send and receive values. Sending to
+a channel and receiving from a channel are synchronisation points - they coordinate
+goroutines without shared memory.
+
+
+
+// Create an unbuffered channel of int
+ch := make(chan int)
+
+// Send in a goroutine (blocks until a receiver is ready)
+go func() {
+    ch <- 42
+}()
+
+// Receive (blocks until a sender is ready)
+v := <-ch
+fmt.Println(v) // 42
+
+
+
+An unbuffered channel is a synchronous rendezvous: the sender blocks until a receiver
+is ready, and the receiver blocks until a sender is ready. This is a built-in
+synchronisation primitive; you do not need a mutex or condition variable for the common
+case of passing a value between goroutines.
+
+
+
+In C, the closest analogue is a pipe or a semaphore-guarded queue. In C#,
+System.Threading.Channels.Channel<T> (added in .NET Core 3.0) provides
+the same idea, but it requires more ceremony.
+
+
+Buffered Channels
+
+
+A buffered channel has a capacity greater than zero. Sends do not block as long as the
+buffer has space; receives do not block as long as the buffer is non-empty:
+
+
+
+ch := make(chan int, 3) // buffer capacity 3
+
+ch <- 1 // does not block
+ch <- 2 // does not block
+ch <- 3 // does not block
+// ch <- 4 would block here - buffer full
+
+fmt.Println(<-ch) // 1
+fmt.Println(<-ch) // 2
+fmt.Println(<-ch) // 3
+
+
+
+Buffered channels decouple the timing of sender and receiver. Use them when you know a
+bounded amount of work can queue up. Do not use large buffers as a way to avoid thinking
+about backpressure - a buffer size of 100 is not 100 times more correct than a buffer
+size of 1.
+
+
+Closing Channels and range
+
+
+A channel can be closed with close(ch) to signal that no more values will be
+sent. Receiving from a closed channel returns the zero value immediately. The two-value
+receive form lets you detect a closed channel:
+
+
+
+ch := make(chan int, 3)
+ch <- 1
+ch <- 2
+ch <- 3
+close(ch)
+
+for v := range ch {
+    fmt.Println(v) // 1, 2, 3
+}
+// range exits when the channel is closed and drained
+
+
+
+Only the sender should close a channel - closing a channel twice, or sending to a closed
+channel, panics. If you have multiple senders, use a sync.WaitGroup to wait
+for all senders to finish before closing (pattern covered in the concurrency patterns
+article).
+
+
+The select Statement
+
+
+select lets a goroutine wait on multiple channel operations simultaneously.
+It blocks until one is ready, then executes that case. If multiple cases are ready, one
+is chosen at random.
+
+
+
+func fanIn(ch1, ch2 <-chan string) <-chan string {
+    merged := make(chan string)
+    go func() {
+        for {
+            select {
+            case v := <-ch1:
+                merged <- v
+            case v := <-ch2:
+                merged <- v
+            }
+        }
+    }()
+    return merged
+}
+
+
+
+A default case makes select non-blocking - it runs immediately
+if no channel operation is ready:
+
+
+
+select {
+case v := <-ch:
+    fmt.Println("received:", v)
+default:
+    fmt.Println("no value ready")
+}
+
+
+
+There is no equivalent single construct in C - you would use select(2) for
+file descriptors, not arbitrary typed channels. In C# you can await on
+Task.WhenAny for a similar effect, but the idiom is more verbose and tied to
+the Task abstraction.
+
+
+Timeouts with select
+
+
+Combining select with time.After (which returns a channel that
+delivers a value after a duration) is the idiomatic way to implement timeouts:
+
+
+
+func doWithTimeout(ch <-chan string, timeout time.Duration) (string, error) {
+    select {
+    case v := <-ch:
+        return v, nil
+    case <-time.After(timeout):
+        return "", fmt.Errorf("timed out after %v", timeout)
+    }
+}
+
+
+
+In C# this is await Task.WhenAny(task, Task.Delay(timeout)) followed by
+checking which task completed. Go's version is more concise and does not require returning
+a type that wraps both cases.
+
+
+Goroutine Scheduling: Cooperative vs Preemptive
+
+
+Before Go 1.14, the Go scheduler was cooperative: a goroutine would yield only at certain
+points (channel operations, system calls, explicit runtime.Gosched() calls,
+function calls). Since Go 1.14, the scheduler is asynchronously preemptive - a goroutine
+can be preempted by the scheduler at any point in its execution, similar to OS thread
+scheduling. This fixed cases where a tight CPU loop would starve other goroutines.
+
+
+
+C# async/await is cooperative: await is the yield point.
+A synchronous loop never yields. This is why blocking inside an async method (with
+Thread.Sleep instead of await Task.Delay) is a C# anti-pattern.
+In Go, a blocking call inside a goroutine is fine - the runtime moves the goroutine to
+a separate OS thread so other goroutines continue running.
+
+
+Goroutine Leaks
+
+
+Goroutines are cheap but not free. A goroutine that blocks forever - typically because it
+is waiting on a channel that nobody will ever send to - is a goroutine leak. Leaked
+goroutines hold their stack memory and any resources they reference. In long-running
+servers they accumulate and cause out-of-memory errors.
+
+
+
+// BUG: goroutine leak
+func leaky(ch chan int) {
+    go func() {
+        v := <-ch // blocks forever if nobody sends
+        fmt.Println(v)
+    }()
+}
+
+
+
+The standard fix is a done channel or a context (covered in detail in the context article)
+that signals the goroutine to stop:
+
+
+
+func notLeaky(ch chan int, done <-chan struct{}) {
+    go func() {
+        select {
+        case v := <-ch:
+            fmt.Println(v)
+        case <-done:
+            return // clean exit
+        }
+    }()
+}
+
+
+GOMAXPROCS
+
+
+The GOMAXPROCS environment variable (and runtime.GOMAXPROCS(n))
+controls how many OS threads the scheduler uses simultaneously. Since Go 1.5 it defaults
+to the number of CPU cores, so Go programs are parallel by default on multi-core machines.
+You rarely need to change this. C# controls this via the thread pool settings.
+
+
+Summary
+
+
+Goroutines are cheap (a few KB of initial stack) and multiplexed by the Go
+runtime over a pool of OS threads. Channels provide typed, synchronised
+communication: unbuffered channels block until both sides are ready; buffered
+channels queue up to their capacity. select waits on multiple
+channels simultaneously, with an optional default case for
+non-blocking polls. Always ensure goroutines can exit — a goroutine blocked on
+an unbounded channel send or receive never terminates.
+
+
+Further Reading
+
+
+Effective Go: Goroutines
+Effective Go: Channels
+Go Concurrency Patterns: Pipelines and Cancellation - The Go Blog
+Go Specification: Select Statements
+runtime.GOMAXPROCS - pkg.go.dev
+
+
+See Also
+
+
+Concurrency Patterns
+The Context Package
+defer, panic, and recover
+

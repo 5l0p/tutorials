@@ -1,0 +1,387 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 9: MCP over WebSocket</title>
+    <meta name="description" content="Build an MCP server and client using WebSocket transport for bidirectional streaming, and handle reconnection gracefully.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-09-mcp-websocket.txt">plain/text</a> | <i>2026-06-18</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 9: MCP over WebSocket</h2>
+        <p>
+HTTP with SSE (article 08) is a one-and-a-half-way channel: the client pushes requests
+via POST, the server pushes responses via the SSE stream. WebSocket is truly bidirectional
+- either side can send a message at any time on the same persistent connection. For MCP,
+this means the server can send tool progress notifications, streaming results, and
+unsolicited events without waiting for a pending request. This article builds an MCP
+server and client over WebSocket using the <code>gorilla/websocket</code> package and
+<code>mcp-go</code>'s WebSocket transport.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>When WebSocket transport is better than HTTP+SSE: server-initiated notifications, streaming results</li>
+<li>Building an MCP WebSocket server with gorilla/websocket and mcp-go</li>
+<li>Writing the WebSocket client with connection establishment and message dispatch</li>
+<li>Implementing reconnection with exponential backoff when the server drops the connection</li>
+<li>Connection multiplexing: sharing one WebSocket connection across multiple concurrent tool calls</li>
+</ul>
+
+
+<h3>When to Use WebSocket</h3>
+
+<p>
+WebSocket adds complexity over SSE. Use it when:
+</p>
+
+<ul>
+<li>Tool calls are high-frequency (many calls per second - the per-request overhead of HTTP/SSE accumulates).</li>
+<li>The server needs to stream partial results as a tool executes (e.g., streaming a long file read, progress from a running build).</li>
+<li>The server needs to push unsolicited notifications (e.g., a file-watcher tool that alerts the agent when a file changes).</li>
+</ul>
+
+<p>
+For typical agent workloads - a tool call every few seconds - SSE is simpler and sufficient.
+</p>
+
+<h3>The WebSocket Server</h3>
+
+<pre>
+// cmd/wsserver/main.go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "os"
+    "time"
+
+    "github.com/gorilla/websocket"
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
+)
+
+var upgrader = websocket.Upgrader{
+    CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func main() {
+    s := server.NewMCPServer("ws-tools", "1.0.0")
+
+    s.AddTool(
+        mcp.NewTool("stream_countdown",
+            mcp.WithDescription("Count down from N to 0, yielding each number. Demonstrates streaming via WebSocket."),
+            mcp.WithNumber("from",
+                mcp.Required(),
+                mcp.Description("Number to count down from"),
+            ),
+        ),
+        handleCountdown,
+    )
+
+    s.AddTool(
+        mcp.NewTool("ping",
+            mcp.WithDescription("Returns 'pong' with the current timestamp."),
+        ),
+        handlePing,
+    )
+
+    http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+        conn, err := upgrader.Upgrade(w, r, nil)
+        if err != nil {
+            fmt.Fprintln(os.Stderr, "upgrade:", err)
+            return
+        }
+        // Each WebSocket connection gets its own MCP session
+        wsTransport := server.NewWebSocketTransport(conn)
+        s.ServeWebSocket(context.Background(), wsTransport)
+    })
+
+    fmt.Println("WebSocket MCP server on :8081")
+    http.ListenAndServe(":8081", nil)
+}
+
+func handlePing(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    result, _ := json.Marshal(map[string]string{
+        "pong": time.Now().UTC().Format(time.RFC3339),
+    })
+    return mcp.NewToolResultText(string(result)), nil
+}
+
+func handleCountdown(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    fromVal, _ := req.Params.Arguments["from"].(float64)
+    from := int(fromVal)
+
+    // For a streaming implementation, we'd use server.SendNotification.
+    // Here we return the full sequence as a single result for simplicity.
+    var sequence []int
+    for i := from; i &gt;= 0; i-- {
+        sequence = append(sequence, i)
+    }
+    data, _ := json.Marshal(map[string]interface{}{"sequence": sequence})
+    return mcp.NewToolResultText(string(data)), nil
+}
+</pre>
+
+<h3>The WebSocket Client</h3>
+
+<pre>
+// cmd/wsclient/main.go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/mcp"
+)
+
+func main() {
+    ctx := context.Background()
+
+    mcpClient, err := client.NewWebSocketMCPClient("ws://localhost:8081/ws")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "client:", err)
+        os.Exit(1)
+    }
+    defer mcpClient.Close()
+
+    if err := mcpClient.Start(ctx); err != nil {
+        fmt.Fprintln(os.Stderr, "start:", err)
+        os.Exit(1)
+    }
+
+    _, err = mcpClient.Initialize(ctx, mcp.InitializeRequest{
+        Params: mcp.InitializeRequestParams{
+            ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+            ClientInfo:      mcp.Implementation{Name: "ws-client", Version: "1.0"},
+        },
+    })
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "initialize:", err)
+        os.Exit(1)
+    }
+
+    // Call ping
+    result, _ := mcpClient.CallTool(ctx, mcp.CallToolRequest{
+        Params: mcp.CallToolRequestParams{
+            Name:      "ping",
+            Arguments: map[string]interface{}{},
+        },
+    })
+    if len(result.Content) &gt; 0 {
+        if text, ok := result.Content[0].(mcp.TextContent); ok {
+            fmt.Println("ping result:", text.Text)
+        }
+    }
+
+    // Call stream_countdown
+    result, _ = mcpClient.CallTool(ctx, mcp.CallToolRequest{
+        Params: mcp.CallToolRequestParams{
+            Name:      "stream_countdown",
+            Arguments: map[string]interface{}{"from": 5},
+        },
+    })
+    if len(result.Content) &gt; 0 {
+        if text, ok := result.Content[0].(mcp.TextContent); ok {
+            fmt.Println("countdown result:", text.Text)
+        }
+    }
+}
+</pre>
+
+<h3>Reconnection Handling</h3>
+
+<p>
+WebSocket connections drop. Networks are unreliable, servers restart, clients go idle
+and get disconnected. Build reconnection into any production client. A simple
+exponential backoff wrapper:
+</p>
+
+<pre>
+type ResilientMCPClient struct {
+    url    string
+    client *client.WebSocketMCPClient
+}
+
+func (r *ResilientMCPClient) connect(ctx context.Context) error {
+    c, err := client.NewWebSocketMCPClient(r.url)
+    if err != nil {
+        return err
+    }
+    if err := c.Start(ctx); err != nil {
+        return err
+    }
+    _, err = c.Initialize(ctx, mcp.InitializeRequest{
+        Params: mcp.InitializeRequestParams{
+            ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+            ClientInfo:      mcp.Implementation{Name: "resilient-client", Version: "1.0"},
+        },
+    })
+    if err != nil {
+        return err
+    }
+    r.client = c
+    return nil
+}
+
+func (r *ResilientMCPClient) CallWithRetry(
+    ctx context.Context,
+    req mcp.CallToolRequest,
+    maxRetries int,
+) (*mcp.CallToolResult, error) {
+    for i := 0; i &lt; maxRetries; i++ {
+        if r.client == nil {
+            if err := r.connect(ctx); err != nil {
+                wait := time.Duration(1&lt;&lt;i) * time.Second
+                time.Sleep(wait)
+                continue
+            }
+        }
+        result, err := r.client.CallTool(ctx, req)
+        if err != nil {
+            r.client = nil // force reconnect on next attempt
+            wait := time.Duration(1&lt;&lt;i) * time.Second
+            time.Sleep(wait)
+            continue
+        }
+        return result, nil
+    }
+    return nil, fmt.Errorf("failed after %d retries", maxRetries)
+}
+</pre>
+
+<h3>Connection Multiplexing</h3>
+
+<p>
+A single WebSocket connection can handle multiple simultaneous JSON-RPC requests by
+correlating responses to requests via the <code>id</code> field. The <code>mcp-go</code>
+client does this internally - you can call <code>CallTool</code> concurrently from multiple
+goroutines and each call will receive its own response. This is a significant advantage
+over stdio, where the single stdin/stdout stream serialises all calls, and over HTTP/SSE,
+where each POST opens a new HTTP connection.
+</p>
+
+<pre>
+var wg sync.WaitGroup
+for i := 0; i &lt; 5; i++ {
+    wg.Add(1)
+    go func(n int) {
+        defer wg.Done()
+        result, _ := mcpClient.CallTool(ctx, mcp.CallToolRequest{
+            Params: mcp.CallToolRequestParams{
+                Name:      "ping",
+                Arguments: map[string]interface{}{},
+            },
+        })
+        fmt.Printf("goroutine %d: %v\n", n, result)
+    }(i)
+}
+wg.Wait()
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+WebSocket gives MCP a full-duplex channel: the server can push notifications
+and streaming output without waiting for a pending request. This is necessary
+for long-running tools (background jobs, progress updates) and for server-
+initiated events (file change watchers, alert triggers). Implement exponential
+backoff reconnection so the client recovers automatically from drops. Multiplex
+concurrent tool calls over one connection using the JSON-RPC tag field to
+match replies to requests.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://spec.modelcontextprotocol.io/specification/basic/transports/#websocket">MCP Spec: WebSocket Transport</a></li>
+<li><a href="https://github.com/gorilla/websocket">gorilla/websocket - Go WebSocket library</a></li>
+<li><a href="https://pkg.go.dev/golang.org/x/net/websocket">golang.org/x/net/websocket - standard library WebSocket</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-08-mcp-http.htm">MCP over HTTP</a> - SSE transport, simpler for most use cases</li>
+<li><a href="llm-07-mcp-stdio.htm">MCP over stdio</a> - subprocess transport for local tools</li>
+<li><a href="llm-17-multi-agent.htm">Multi-Agent Orchestration</a> - parallel tool calls become important at scale</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

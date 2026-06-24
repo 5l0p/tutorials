@@ -1,0 +1,238 @@
+openFrameworks - Part 1: What Is openFrameworks?
+2026-06-09
+
+
+openFrameworks (oF) is an open-source C++ toolkit designed for creative coding. Rather than
+being a framework that dictates your architecture, it is better understood as a thin, friendly
+layer over the operating system's graphics, audio, and input APIs. You get real-time OpenGL
+rendering, low-latency audio, mouse and keyboard input, cross-platform file I/O, and a large
+ecosystem of community addons - all accessible through a consistent, approachable C++ API.
+This article explains what oF is, where it sits relative to alternatives like Processing and
+p5.js, and why learning it through creative coding is a productive path into C++.
+
+
+What You Will Learn
+
+
+What openFrameworks is: a C++ creative coding toolkit, not a framework
+What oF provides out of the box: OpenGL rendering, audio, input, file I/O, addons
+How oF compares to Processing, p5.js, and SFML
+The ofApp lifecycle: setup, update, draw, and the event callbacks
+The addon ecosystem: how community addons extend oF for computer vision, OSC, GUI, and more
+Why C++ creative coding is a productive path to real-time audio and graphics programming
+
+
+The Philosophy: A Thin Layer
+
+
+The official description on openframeworks.cc calls it "a creative coding toolkit." The key
+word is toolkit, not framework. A framework typically owns your main loop, enforces a
+particular object model, and makes architectural decisions for you. openFrameworks hands you a
+clean ofApp class with virtual methods (setup, update,
+draw) and then largely gets out of your way.
+
+
+
+Under the hood, oF delegates to platform libraries that you would have to configure yourself
+in a bare C++ project:
+
+
+
+  Graphics: OpenGL (via GLFW on desktop, EGL on embedded targets).
+  Audio: ALSA or JACK on Linux, CoreAudio on macOS, WASAPI on Windows.
+  Window management: GLFW for the cross-platform case, with platform-specific
+  backends available.
+  Fonts: FreeType2, wrapped in ofTrueTypeFont.
+  Image loading: FreeImage and the stb family of libraries.
+  Video: GStreamer on Linux, AVFoundation on macOS, Media Foundation on Windows.
+
+
+
+The result is that a beginner can write a working interactive sketch in under twenty lines of
+C++ without knowing anything about OpenGL or ALSA. An expert can reach through the oF API to
+the raw platform layer whenever the abstraction is too coarse.
+
+
+Comparison with Processing and p5.js
+
+
+Processing (Java) and p5.js (JavaScript) are the most popular entry points for creative
+coding. They share oF's philosophy of making graphics approachable, and the conceptual model
+is deliberately similar: a setup() function that runs once, and a
+draw() function that runs every frame. If you already know Processing, reading oF
+code will feel familiar within minutes.
+
+
+
+The differences are in execution model and capability:
+
+
+
+  Performance: C++ compiles to native machine code. A tight audio DSP loop or a
+  particle system with millions of elements runs orders of magnitude faster than the JVM or
+  V8 can manage. This matters for real-time audio, physical simulations, and machine learning
+  inference at the edge.
+  Memory control: You decide when memory is allocated and freed. This removes
+  garbage-collector pauses, which are unacceptable in hard real-time audio code.
+  Access to hardware: MIDI, OSC, serial ports, GPU compute shaders, webcam at full
+  resolution - oF either wraps these directly or has a community addon that does.
+  Ecosystem: Any C or C++ library in existence - OpenCV, libfft, Bullet physics,
+  libtorch - can be linked into an oF project.
+
+
+
+The trade-off is complexity. C++ has a steeper learning curve than Java or JavaScript. You
+will encounter header files, compilation errors, memory bugs, and build system friction that do
+not exist in Processing. The bet this series makes is that the creative context makes that
+friction more tolerable: you are learning pointers because you are building a sound visualiser,
+not because a textbook told you to.
+
+
+The ofApp Structure
+
+
+Every openFrameworks application is a subclass of ofBaseApp, conventionally named
+ofApp. The project generator creates two files for you: ofApp.h
+(the declaration) and ofApp.cpp (the definitions). A minimal skeleton looks like
+this:
+
+
+
+// ofApp.h
+#pragma once
+#include <ofMain.h>
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void update();
+    void draw();
+};
+
+
+
+// ofApp.cpp
+#include "ofApp.h"
+
+void ofApp::setup() {
+    ofSetFrameRate(60);
+    ofBackground(20, 20, 20);
+}
+
+void ofApp::update() {
+    // game logic, physics, audio analysis
+}
+
+void ofApp::draw() {
+    ofSetColor(255, 100, 50);
+    ofDrawCircle(ofGetWidth() / 2, ofGetHeight() / 2, 80);
+}
+
+
+
+// main.cpp  (also generated for you)
+#include <ofMain.h>
+#include "ofApp.h"
+
+int main() {
+    ofSetupOpenGL(1280, 720, OF_WINDOW);
+    ofRunApp(new ofApp());
+}
+
+
+
+That is all you need to get a coloured circle on screen at 60 fps. The main.cpp
+creates an OpenGL window, hands control to the oF event loop, which repeatedly calls your
+update() and draw() methods until the window is closed.
+
+
+The Addon Ecosystem
+
+
+openFrameworks has a first-party set of bundled addons (prefixed ofx) that ship
+with every download: ofxGui, ofxOSC, ofxAssimpModelLoader,
+ofxXmlSettings, ofxOpenCv, and a handful of others. Beyond those,
+the community maintains hundreds of addons catalogued at
+ofxaddons.com. Installing an addon is usually a matter of
+cloning a repository into the addons/ folder of the oF distribution and
+re-running the project generator.
+
+
+
+This is different from a package manager like npm or Cargo. There is no central registry with
+versioned, audited packages. Instead you get GitHub repositories of varying quality and
+maintenance status. As you grow as an oF developer you will learn which addons are well
+maintained and which are abandoned. The bundled addons are always a safe starting point.
+
+
+Why C++ for Creative Coding?
+
+
+The pragmatic answer: when you need real-time audio DSP, millisecond-accurate MIDI, GPU
+compute, or integration with vision libraries like OpenCV, C++ is simply the language where
+all those libraries live. Python wrappers exist for many of them, but wrappers add overhead and
+often lag behind the native API.
+
+
+
+The pedagogical answer: creative coding gives you immediate visual and auditory feedback for
+every change you make. A bug in a particle system manifests as a visible glitch, not a silent
+wrong number in a spreadsheet. That feedback loop makes it easier to build intuition about
+memory, performance, and object lifetime than working through abstract exercises.
+
+
+
+openFrameworks 0.12.x, the version used throughout this series, targets C++17. You will use
+modern features - range-based for loops, auto, lambdas, smart pointers - alongside
+the low-level control that makes C++ valuable for real-time work.
+
+
+What This Series Covers
+
+
+The 25 articles in this series move from first principles to advanced topics:
+
+
+
+  Tutorials 1–8: Setup, lifecycle, 2D drawing, images, fonts, input, and GUI controls.
+  Tutorials 9–12: Audio I/O, OSC, GLSL shaders, and 3D geometry.
+  Tutorials 13–14: Addons and external libraries (yaml-cpp).
+  Tutorials 15–20: Cross-platform builds - Linux, Windows, macOS, Android.
+  Tutorials 21–25: SDL2 as an alternative, OpenGL core profile, framebuffers,
+  compute shaders, and a complete audio-visual project.
+
+
+
+By the end you will have written a real-time audio visualiser that takes microphone input,
+computes an FFT on the GPU, and displays frequency data with a custom GLSL shader - all under
+your direct control, no black boxes.
+
+
+Summary
+
+
+openFrameworks is a thin, consistent C++ layer over platform graphics, audio, and input APIs.
+It is not a game engine and not a framework — it is a toolkit you call into from an
+ofApp subclass with setup(), update(), and
+draw() methods. The addon ecosystem extends it with hundreds of community
+libraries for computer vision, networking, GUI, and hardware. Learning oF means learning
+real C++, real OpenGL, and real audio programming — without a framework hiding the details.
+
+
+Further Reading
+
+
+  openFrameworks - About
+  openFrameworks API Reference
+  ofxaddons.com - Community Addon Catalogue
+  openFrameworks on GitHub
+  Processing Overview (for comparison)
+
+
+See Also
+
+
+  Setup & Project Generator
+  The ofApp Lifecycle
+  2D Drawing Primitives
+

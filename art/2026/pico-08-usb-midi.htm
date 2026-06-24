@@ -1,0 +1,459 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Pico — Part 8: USB MIDI with TinyUSB</title>
+    <meta name="description" content="Presenting the Pico as a USB MIDI class device using TinyUSB — tusb_config.h, reading MIDI packets, sending note events to the host, and the 4-byte USB MIDI packet format.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, embedded, audio, pico">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="pico-08-usb-midi.txt">plain/text</a> | <i>2026-11-14</i> | <i><a href="../../c.htm">c</a>, <a href="../../embedded.htm">embedded</a>, <a href="../../audio.htm">audio</a>, <a href="../../pico.htm">pico</a></i>
+        <h2>Pico — Part 8: USB MIDI with TinyUSB</h2>
+        <p>
+A physical MIDI cable and a DIN connector are fine for hardware synthesisers, but for
+anything connected to a computer - a DAW, a software sequencer, a Max patch - USB MIDI
+is what you want. The Pico's USB hardware is a full-speed USB 2.0 device controller.
+TinyUSB, which is bundled in the Pico SDK, exposes it as a class-compliant USB MIDI
+device: plug in the Pico, the operating system's built-in MIDI class driver loads
+automatically, and the Pico appears as a MIDI interface with no host-side driver
+installation. This article builds that device from the ground up.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The TinyUSB build setup for the Pico SDK: which libraries to link, what <code>tusb_config.h</code> must contain</li>
+<li>The USB MIDI Class specification: 4-byte packet format, cable number, code index number</li>
+<li>Reading MIDI from the host with <code>tud_midi_available</code> and <code>tud_midi_stream_read</code></li>
+<li>Sending MIDI to the host with <code>tud_midi_stream_write</code></li>
+<li>Running <code>tud_task</code> correctly on core 0 alongside MIDI event dispatch</li>
+<li>Complete example: Pico as USB MIDI controller — button press sends note on/off to host</li>
+</ul>
+
+<h3>TinyUSB in the Pico SDK</h3>
+
+<p>
+TinyUSB is already part of the Pico SDK source tree; you do not clone it separately. To
+use it, add the appropriate target to your <code>CMakeLists.txt</code> and provide a
+<code>tusb_config.h</code> file. For USB MIDI device mode:
+</p>
+
+<pre>
+# CMakeLists.txt additions
+target_link_libraries(my_target
+    pico_stdlib
+    pico_multicore
+    hardware_uart
+    hardware_dma
+    hardware_pio
+    tinyusb_device       # TinyUSB in device mode
+    tinyusb_board        # board support (provides board_init)
+)
+
+# Tell TinyUSB where to find your tusb_config.h
+target_include_directories(my_target PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+</pre>
+
+<p>
+TinyUSB requires <code>tud_task()</code> to be called regularly on the same core that
+handles USB interrupts - which is core 0. With <code>pico_enable_stdio_usb</code>
+enabled, the SDK already calls <code>tud_task</code> internally via the stdio layer. If
+you are not using USB stdio (or want direct MIDI only), call <code>tud_task()</code>
+yourself in the core 0 main loop. The two approaches are mutually exclusive in simple
+configurations: either stdio goes over USB CDC ACM, or MIDI goes over USB MIDI, not both
+at once without additional USB descriptor work.
+</p>
+
+<h3>tusb_config.h</h3>
+
+<p>
+TinyUSB reads its configuration from a header file that must be on your include path.
+The minimum for a USB MIDI device:
+</p>
+
+<pre>
+/* tusb_config.h - minimum USB MIDI device configuration */
+#ifndef TUSB_CONFIG_H
+#define TUSB_CONFIG_H
+
+/* CFG_TUSB_MCU is set by the Pico SDK build system automatically.
+   Do not set it here. */
+
+/* Device mode only (no host) */
+#define CFG_TUD_ENABLED          1
+
+/* One MIDI interface with 1 IN jack and 1 OUT jack.
+   IN = device-to-host, OUT = host-to-device.
+   (Naming from the USB spec perspective, not audio convention.) */
+#define CFG_TUD_MIDI             1
+#define CFG_TUD_MIDI_RX_BUFSIZE  64   /* bytes, host-to-device */
+#define CFG_TUD_MIDI_TX_BUFSIZE  64   /* bytes, device-to-host */
+
+/* No other device classes needed */
+#define CFG_TUD_CDC              0
+#define CFG_TUD_MSC              0
+#define CFG_TUD_HID              0
+#define CFG_TUD_VENDOR           0
+
+#endif /* TUSB_CONFIG_H */
+</pre>
+
+<h3>USB Descriptors</h3>
+
+<p>
+TinyUSB needs USB device and configuration descriptors. For MIDI, TinyUSB provides a
+helper macro <code>TUD_MIDI_DESCRIPTOR</code> that builds the correct Audio Class
+descriptor structure. You implement the descriptor callbacks that TinyUSB calls when
+the host enumerates the device:
+</p>
+
+<pre>
+#include "tusb.h"
+
+/* USB device descriptor */
+static const tusb_desc_device_t desc_device = {
+    .bLength            = sizeof(tusb_desc_device_t),
+    .bDescriptorType    = TUSB_DESC_DEVICE,
+    .bcdUSB             = 0x0200,
+    .bDeviceClass       = 0x00,   /* defined at interface level */
+    .bDeviceSubClass    = 0x00,
+    .bDeviceProtocol    = 0x00,
+    .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
+    .idVendor           = 0xCafe, /* use your own VID/PID for production */
+    .idProduct          = 0x4001,
+    .bcdDevice          = 0x0100,
+    .iManufacturer      = 0x01,
+    .iProduct           = 0x02,
+    .iSerialNumber      = 0x03,
+    .bNumConfigurations = 0x01
+};
+
+/* TinyUSB device descriptor callback */
+uint8_t const *tud_descriptor_device_cb(void) {
+    return (uint8_t const *)&amp;desc_device;
+}
+
+/* Configuration descriptor: MIDI interface */
+#define CONFIG_TOTAL_LEN  (TUD_CONFIG_DESC_LEN + TUD_MIDI_DESC_LEN)
+#define EPNUM_MIDI_OUT    0x01
+#define EPNUM_MIDI_IN     0x81   /* 0x80 | 1 = IN endpoint 1 */
+
+static const uint8_t desc_configuration[] = {
+    TUD_CONFIG_DESCRIPTOR(1, 2, 0, CONFIG_TOTAL_LEN,
+                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    TUD_MIDI_DESCRIPTOR(0, 0, EPNUM_MIDI_OUT,
+                        (0x80 | EPNUM_MIDI_OUT), 64)
+};
+
+uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
+    (void)index;
+    return desc_configuration;
+}
+
+/* String descriptors */
+static const char *string_desc_arr[] = {
+    (const char[]){ 0x09, 0x04 },   /* English (US) */
+    "Raspberry Pi",
+    "Pico MIDI",
+    "000001"
+};
+
+static uint16_t _desc_str[32];
+
+uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
+    (void)langid;
+    uint8_t chr_count;
+    if (index == 0) {
+        memcpy(&amp;_desc_str[1], string_desc_arr[0], 2);
+        chr_count = 1;
+    } else {
+        if (index &gt;= sizeof(string_desc_arr)/sizeof(string_desc_arr[0]))
+            return NULL;
+        const char *str = string_desc_arr[index];
+        chr_count = (uint8_t)strlen(str);
+        if (chr_count &gt; 31) chr_count = 31;
+        for (uint8_t i = 0; i &lt; chr_count; i++)
+            _desc_str[1 + i] = str[i];
+    }
+    _desc_str[0] = (uint16_t)((TUSB_DESC_STRING &lt;&lt; 8) | (2 * chr_count + 2));
+    return _desc_str;
+}
+</pre>
+
+<h3>The USB MIDI Packet Format</h3>
+
+<p>
+USB MIDI does not transmit raw MIDI bytes. It wraps them in 4-byte packets defined by
+the USB MIDI Class specification (USB Device Class Definition for MIDI Devices, rev 1.0):
+</p>
+
+<pre>
+Byte 0: Cable Number (high nybble) | Code Index Number (low nybble)
+Byte 1: MIDI status byte (or first data byte for SysEx)
+Byte 2: MIDI data byte 1 (or 0x00 if unused)
+Byte 3: MIDI data byte 2 (or 0x00 if unused)
+</pre>
+
+<p>
+The <b>Cable Number</b> identifies which virtual MIDI cable the event belongs to (0 for
+a single-cable device). The <b>Code Index Number (CIN)</b> identifies the type of event:
+</p>
+
+<pre>
+CIN 0x08 = Note Off (3 bytes: status, note, velocity)
+CIN 0x09 = Note On  (3 bytes: status, note, velocity)
+CIN 0x0B = Control Change (3 bytes)
+CIN 0x0E = Pitch Bend     (3 bytes)
+CIN 0x0C = Program Change (2 bytes)
+CIN 0x0F = Single Byte    (1 byte, e.g. Active Sensing)
+</pre>
+
+<p>
+The TinyUSB MIDI API handles this framing transparently. When you call
+<code>tud_midi_stream_read</code> it unpacks the 4-byte packets and gives you raw MIDI
+bytes. When you call <code>tud_midi_stream_write</code> it packs raw MIDI bytes into
+4-byte packets. You only need to deal with the packet format directly if you call the
+lower-level <code>tud_midi_n_packet_read</code> or <code>tud_midi_n_packet_write</code>
+functions.
+</p>
+
+<h3>Reading MIDI from the Host</h3>
+
+<pre>
+/* Call this in the core 0 main loop after tud_task().
+   Parses incoming USB MIDI bytes and pushes messages to the core 1 ring buffer
+   (the same midi_msg_push() from Part 7). */
+static void usb_midi_poll(void) {
+    static MidiParser parser = {0};
+
+    /* tud_midi_available() returns number of bytes in the RX buffer */
+    while (tud_midi_available()) {
+        uint8_t buf[64];
+        /* tud_midi_stream_read returns raw MIDI bytes (unpacked from 4-byte packets) */
+        uint32_t n = tud_midi_stream_read(buf, sizeof(buf));
+        for (uint32_t i = 0; i &lt; n; i++) {
+            MidiMsg msg;
+            if (midi_parser_feed(&amp;parser, buf[i], &amp;msg)) {
+                midi_msg_push(&amp;msg);
+            }
+        }
+    }
+}
+</pre>
+
+<p>
+Re-using <code>MidiParser</code> and <code>midi_msg_push</code> from Part 7 means the
+synthesiser on core 1 does not care whether MIDI arrived over USB or UART - both paths
+produce <code>MidiMsg</code> structs in the same ring buffer.
+</p>
+
+<h3>Sending MIDI to the Host</h3>
+
+<p>
+The Pico can send MIDI events to the host - useful when the Pico is acting as a
+controller (buttons, knobs, sensors) rather than (or in addition to) a sound generator.
+</p>
+
+<pre>
+/* Send a Note On message to the host on channel 0 */
+static void usb_midi_send_note_on(uint8_t note, uint8_t velocity) {
+    uint8_t msg[3] = { 0x90, note, velocity };
+    /* tud_midi_stream_write(cable_num, bytes, count) */
+    tud_midi_stream_write(0, msg, 3);
+}
+
+static void usb_midi_send_note_off(uint8_t note) {
+    uint8_t msg[3] = { 0x80, note, 0 };
+    tud_midi_stream_write(0, msg, 3);
+}
+</pre>
+
+<h3>Complete Example: Pico as USB MIDI Controller</h3>
+
+<p>
+This complete main.c sends a note on when a button connected to GPIO 15 is pressed and
+note off when it is released. GPIO 15 is configured as input with internal pull-up, so
+the button connects GPIO 15 to GND.
+</p>
+
+<pre>
+/* usb_midi_controller.c
+   Build: link pico_stdlib, tinyusb_device, tinyusb_board
+   Hardware: tactile button between GPIO 15 and GND */
+
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include "pico/stdlib.h"
+#include "tusb.h"
+
+/* Include the descriptor and config callbacks from above */
+
+#define BUTTON_GPIO  15
+#define MIDI_NOTE    60   /* Middle C */
+
+static bool last_button = false;
+
+int main(void) {
+    /* Do not enable USB stdio here - we are using USB for MIDI only */
+    board_init();
+    tusb_init();
+
+    gpio_init(BUTTON_GPIO);
+    gpio_set_dir(BUTTON_GPIO, GPIO_IN);
+    gpio_pull_up(BUTTON_GPIO);
+
+    while (true) {
+        tud_task();   /* must be called regularly to keep USB alive */
+
+        /* Debounce is omitted for clarity; add a small delay or shift register */
+        bool button_down = !gpio_get(BUTTON_GPIO);  /* active low */
+
+        if (button_down &amp;&amp; !last_button) {
+            /* Button just pressed: Note On */
+            usb_midi_send_note_on(MIDI_NOTE, 100);
+        } else if (!button_down &amp;&amp; last_button) {
+            /* Button just released: Note Off */
+            usb_midi_send_note_off(MIDI_NOTE);
+        }
+        last_button = button_down;
+
+        /* Also poll for incoming MIDI from host */
+        usb_midi_poll();
+    }
+}
+</pre>
+
+<h3>Running tud_task on Core 0</h3>
+
+<p>
+<code>tud_task()</code> processes USB interrupts pending in the TinyUSB internal queue.
+It must be called from the same core that owns the USB interrupts - core 0. Do not call
+it from core 1. Do not call it from a DMA interrupt handler. Call it in the core 0 main
+loop as often as possible; once per millisecond or faster is typical for MIDI
+applications. USB full-speed has 1 ms frame intervals; polling faster than that costs
+you nothing since <code>tud_task</code> returns immediately when there is nothing to
+process.
+</p>
+
+<p>
+When the Pico also runs an audio DMA loop on core 1, core 0's main loop looks like this:
+</p>
+
+<pre>
+/* Core 0 main loop when combined with audio on core 1 */
+while (true) {
+    tud_task();          /* keep USB alive             */
+    usb_midi_poll();     /* dispatch incoming MIDI      */
+    /* Parameter updates to core 1 go through FIFO or spinlock (Part 9) */
+}
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+The Pico presents as a USB MIDI class device using TinyUSB, which is bundled in the Pico
+SDK. You provide <code>tusb_config.h</code>, implement three descriptor callbacks, link
+<code>tinyusb_device</code>, and call <code>tud_task()</code> in the core 0 main loop.
+<code>tud_midi_stream_read</code> delivers raw MIDI bytes unpacked from the USB 4-byte
+packet format; <code>tud_midi_stream_write</code> packs bytes and sends them to the host.
+By feeding the raw bytes through the same <code>MidiParser</code> from Part 7 and into
+the same ring buffer, the synthesiser on core 1 is agnostic about the MIDI transport.
+</p>
+
+<p>
+Part 9 details the RP2040's hardware spinlocks and the SIO FIFO, the tools you need
+for safely passing parameter updates from core 0 to the running audio engine on core 1
+without glitches or data races.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf">Raspberry Pi Pico C/C++ SDK Reference - TinyUSB sections</a></li>
+<li><a href="https://docs.tinyusb.org/en/latest/">TinyUSB Documentation</a></li>
+<li><a href="https://github.com/hathach/tinyusb/tree/master/examples/device/midi_test">TinyUSB MIDI device example on GitHub</a></li>
+<li><a href="https://www.usb.org/sites/default/files/midi10.pdf">USB Device Class Definition for MIDI Devices v1.0 - usb.org</a></li>
+<li><a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 Datasheet - Chapter 4 (USB controller)</a></li>
+<li><a href="https://github.com/raspberrypi/pico-examples">pico-examples on GitHub</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="pico-07-midi-uart.htm">Pico - Part 7: UART MIDI Input</a></li>
+<li><a href="pico-09-multicore.htm">Pico - Part 9: Multicore Communication</a></li>
+<li><a href="pico-10-synth-voice.htm">Pico - Part 10: Complete Synthesiser Voice</a></li>
+<li><a href="pico-04-render-loop.htm">Pico - Part 4: The Audio Render Loop on Bare Metal</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

@@ -1,0 +1,255 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 6: Intro to MCP Servers</title>
+    <meta name="description" content="What the Model Context Protocol is, why it exists, and how its three transport types relate to the agent loop you already have.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-06-mcp-intro.txt">plain/text</a> | <i>2026-06-15</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 6: Intro to MCP Servers</h2>
+        <p>
+The Model Context Protocol (MCP) is an open standard - proposed by Anthropic and adopted
+across the industry - for connecting language models to external tools, data sources, and
+services. Where the previous articles built tool calling directly into a single Go binary,
+MCP separates the tool server from the agent. The server runs independently, the agent
+connects to it, and the same server can be reused by different agents and different models.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why MCP exists: decoupling tool servers from agents so they can be shared and versioned independently</li>
+<li>The MCP protocol: JSON-RPC 2.0 messages, capabilities negotiation</li>
+<li>The three transport types: stdio, HTTP+SSE, and WebSocket — when each is appropriate</li>
+<li>The three primitives: Resources (data), Tools (callable functions), Prompts (reusable templates)</li>
+<li>How MCP maps to the agent loop you already have</li>
+</ul>
+
+<h3>Why MCP Exists</h3>
+
+<p>
+Without a standard, every agent implements its own protocol for talking to tools. If you
+have a filesystem tool, a GitHub tool, and a database tool, you either bundle them all
+into one binary or write custom integration code for each. This does not compose well.
+</p>
+
+<p>
+MCP defines a common wire protocol. A tool server that speaks MCP can be used by any MCP
+client - Claude, GPT-4, a local model via llama.cpp, or a custom agent. You write the
+tool server once. The agent side is equally generic: one MCP client implementation works
+with any MCP server.
+</p>
+
+<p>
+From the agent's perspective, an MCP server is just a source of tools - the same
+<code>[]Tool</code> slice sent to the API. The agent loop from article 04 does not need
+to change. Only the <code>Registry</code> from article 05 gains a new source: instead of
+locally defined skills, it can pull tool definitions from an MCP server at startup and
+route calls to it at runtime.
+</p>
+
+<h3>The Protocol</h3>
+
+<p>
+MCP runs over JSON-RPC 2.0. Every message is a JSON object with a method name and
+parameters. The client sends requests; the server sends responses and, optionally,
+notifications. The schema is published at <a href="https://spec.modelcontextprotocol.io">spec.modelcontextprotocol.io</a>.
+</p>
+
+<p>
+The key methods:
+</p>
+
+<ul>
+<li><b>initialize</b> - client sends its capabilities; server responds with its capabilities and protocol version. Must be the first exchange.</li>
+<li><b>tools/list</b> - client requests the list of available tools. Server responds with an array of tool definitions (name, description, input schema). This is how the agent discovers what the server can do.</li>
+<li><b>tools/call</b> - client requests execution of a named tool with JSON arguments. Server responds with the result (or an error).</li>
+<li><b>resources/list</b> and <b>resources/read</b> - for data sources (files, database records, web pages) that the model can read as context.</li>
+<li><b>prompts/list</b> and <b>prompts/get</b> - for pre-written prompt templates the server exposes.</li>
+</ul>
+
+<p>
+For this series, we focus on <b>tools</b>. Resources and prompts are useful features but
+orthogonal to the agent loop.
+</p>
+
+<h3>Three Transport Types</h3>
+
+<p>
+JSON-RPC needs a transport - a channel for passing messages. MCP defines three:
+</p>
+
+<p><b>stdio</b> - the client spawns the server as a subprocess and communicates via stdin/stdout.
+Each message is a newline-delimited JSON object. Simple to implement, no networking,
+the server dies when the client exits. Ideal for local tools - filesystem access,
+shell commands, code execution.</p>
+
+<p><b>HTTP (with SSE)</b> - the server is a long-running HTTP process. The client sends requests
+as POST to <code>/message</code>; the server pushes responses and notifications as
+Server-Sent Events on a <code>/sse</code> endpoint. Suitable for shared services that
+multiple clients connect to, and for tools that need to survive client restarts.</p>
+
+<p><b>WebSocket</b> - a persistent bidirectional connection. Better than SSE for high-frequency
+tool calls or streaming results. More complex to implement. Appropriate when latency
+matters or when the server needs to push events to the client without a pending request.</p>
+
+<h3>Resources, Tools, and Prompts</h3>
+
+<p>
+MCP has three first-class primitives:
+</p>
+
+<ul>
+<li><b>Tools</b> - functions the model can invoke. Execution has side effects. Equivalent to what we built in articles 03–05.</li>
+<li><b>Resources</b> - read-only data sources. The model can request a resource by URI and receive its content. No side effects. Examples: a file, a database row, a web page.</li>
+<li><b>Prompts</b> - parameterised prompt templates. The server exposes named templates; the client instantiates them by passing arguments. Useful for enforcing prompt consistency across agents.</li>
+</ul>
+
+<h3>Mapping MCP to the Agent Loop</h3>
+
+<p>
+With a registry-backed agent (article 05), adding MCP support is a matter of:
+</p>
+
+<ol>
+<li>At startup, connect to the MCP server and call <code>tools/list</code>. Convert the response to <code>[]Tool</code> and add them to the registry.</li>
+<li>When a tool call arrives with a name that maps to an MCP tool, call <code>tools/call</code> on the server instead of executing locally.</li>
+<li>Return the server's response as the tool result.</li>
+</ol>
+
+<p>
+The agent loop, the model, and the user are unaware of whether a tool runs locally or
+via MCP. The abstraction is complete.
+</p>
+
+<h3>The mcp-go Library</h3>
+
+<p>
+Writing JSON-RPC from scratch is tedious. The <code>github.com/mark3labs/mcp-go</code>
+library implements the MCP spec for Go on both the server and client sides. It handles
+the initialize handshake, the SSE lifecycle for HTTP transport, and the message framing
+for stdio. Articles 07, 08, and 09 use this library to build concrete servers.
+</p>
+
+<pre>
+# Add to your go.mod
+go get github.com/mark3labs/mcp-go
+</pre>
+
+<h3>Security Considerations</h3>
+
+<p>
+An MCP server that exposes filesystem access or shell execution is a powerful thing to
+expose on a network. For local development:
+</p>
+
+<ul>
+<li>stdio servers are only reachable by the parent process - low risk.</li>
+<li>HTTP servers should bind to <code>127.0.0.1</code> for local use, not <code>0.0.0.0</code>.</li>
+<li>Use authentication on any server reachable from outside localhost.</li>
+<li>Scope tools to the minimum capability the agent needs.</li>
+</ul>
+
+<h3>Summary</h3>
+
+<p>
+MCP is JSON-RPC 2.0 over a transport. The client sends <code>tools/list</code>
+to discover what the server provides, and <code>tools/call</code> to invoke a
+tool by name. The three transports serve different deployment patterns: stdio
+for local co-process tools, HTTP+SSE for shared network services, WebSocket
+for bidirectional streaming. The three primitives are Tools (functions),
+Resources (data endpoints), and Prompts (templates). Any compliant MCP server
+can be connected to any compliant agent.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://spec.modelcontextprotocol.io">MCP Specification</a></li>
+<li><a href="https://modelcontextprotocol.io/introduction">MCP Introduction (modelcontextprotocol.io)</a></li>
+<li><a href="https://github.com/mark3labs/mcp-go">mcp-go library on GitHub</a></li>
+<li><a href="https://www.jsonrpc.org/specification">JSON-RPC 2.0 Specification</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-05-skills.htm">Skills &amp; Structured Tool Libraries</a> - the local tool model MCP extends</li>
+<li><a href="llm-07-mcp-stdio.htm">MCP over stdio</a> - building and connecting your first MCP server</li>
+<li><a href="llm-08-mcp-http.htm">MCP over HTTP</a> - running MCP as a shared network service</li>
+<li><a href="llm-09-mcp-websocket.htm">MCP over WebSocket</a> - bidirectional streaming transport</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

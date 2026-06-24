@@ -1,0 +1,291 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Elektron Synthesis - Part 13: Monomachine DigiPro Engine</title>
+    <meta name="description" content="Recreating the Monomachine DigiPro synthesis engine in Pure Data: phase distortion synthesis (Casio CZ-style), wavetable scanning, and the DigiPro machine variants (DP SIN, DP TRI, DP SAW, DP SQR, DP TBLX). How phase shaping transforms a sine wave into complex timbres.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, puredata, audio, synthesis, elektron">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="elektron-13-mnm-digipro.txt">plain/text</a> | <i>2026-01-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../synthesis.htm">synthesis</a>, <a href="../../elektron.htm">elektron</a></i>
+        <h2>Elektron Synthesis - Part 13: Monomachine DigiPro Engine</h2>
+        <p>
+The Monomachine's DigiPro engine uses digital oscillator techniques that go beyond
+simple analogue waveform emulation: phase distortion synthesis (Casio CZ-inspired),
+wavetable scanning, and combinations of shaped waveforms. The key idea is that
+distorting the phase accumulator's output — before feeding it into a sine lookup —
+produces complex, harmonically rich timbres from a single oscillator cycle without
+aliasing artifacts that would occur from hard-clipping the waveform directly.
+</p>
+
+<h3>DigiPro Machine Variants</h3>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Machine</th><th>Description</th><th>Character</th></tr>
+<tr><td>DP SIN</td><td>Phase-distorted sine (basic CZ model)</td><td>From pure sine to buzzy complex waveform</td></tr>
+<tr><td>DP TRI</td><td>Phase-distorted triangle</td><td>Soft, glassy, flute-like</td></tr>
+<tr><td>DP SAW</td><td>Phase-distorted sawtooth</td><td>Bright, string-like</td></tr>
+<tr><td>DP SQR</td><td>Phase-distorted square (pulse)</td><td>Hollow, clarinet-like</td></tr>
+<tr><td>DP TBLX</td><td>Wavetable scanning (multiple waveform tables)</td><td>Complex, evolving timbres</td></tr>
+</table>
+
+<h3>Phase Distortion Synthesis</h3>
+
+<p>
+In standard wavetable synthesis, the output is:
+<code>y = lookup_table[phase]</code> where phase increments linearly from 0 to 1
+at the oscillator frequency.
+</p>
+
+<p>
+In phase distortion, a nonlinear function is applied to the phase before the table
+lookup:
+<code>y = lookup_table[distort(phase)]</code>
+</p>
+
+<p>
+The distortion function reshapes how quickly the phase traverses the table — faster
+at some points (producing higher-frequency content in that portion of the waveform)
+and slower at others (producing lower-frequency content). The overall fundamental
+pitch is unchanged because the distorted phase still completes one full cycle per period.
+</p>
+
+<h3>The CZ-Style Distortion Function</h3>
+
+<p>
+The Casio CZ series uses a simple piecewise linear distortion: the phase moves quickly
+through the first half of the cycle and slowly through the second half, controlled
+by a single "distortion" parameter D:
+</p>
+
+<pre>
+; Casio CZ phase distortion:
+; input_phase: 0 to 1 (linear)
+; output_phase: 0 to 1 (distorted)
+
+; If D = 0: linear (no distortion)
+; If D = 1: maximum distortion
+
+; Algorithm:
+; if input_phase < 0.5:
+;     output_phase = input_phase × (1 + D)   ; moves faster
+; else:
+;     output_phase = 0.5 × (1 + D) + (input_phase - 0.5) × (1 - D)
+;                                              ; moves slower
+
+; This produces output_phase that covers 0–(0.5+0.5D) in the first half
+; and (0.5+0.5D)–1 in the second half
+</pre>
+
+<pre>
+; Pd implementation:
+[phasor~ $freq]           ; 0 to 1 linear phase
+|
+[t a a a]                 ; fan out for piecewise comparison
+|        |        |
+[< 0.5]  [*...]   [*...]
+
+; Branch: if phase < 0.5:
+phase_lt_half = phase × (1 + D)
+; else:
+phase_ge_half = 0.5*(1+D) + (phase - 0.5) × (1 - D)
+
+; In Pd, use [expr~] for the conditional:
+[expr~ ($v1 < 0.5) ? ($v1 * (1 + $f2)) : (0.5*(1+$f2) + ($v1-0.5)*(1-$f2))]
+; where $v1 = phase, $f2 = D parameter
+
+→ distorted_phase (0 to 1)
+|
+[cos~]    ; lookup using cosine (same as reading from a cosine table)
+; or use [tabread4~] with a sine table
+</pre>
+
+<h3>Effect of Phase Distortion on Spectrum</h3>
+
+<p>
+As D increases from 0 to 1, harmonics are progressively added to the output:
+</p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>D value</th><th>Spectrum</th><th>Character</th></tr>
+<tr><td>0.0</td><td>Pure sine (fundamental only)</td><td>Clean, flute-like</td></tr>
+<tr><td>0.2</td><td>2nd, 3rd harmonic added</td><td>Slightly nasal</td></tr>
+<tr><td>0.5</td><td>Rich odd harmonics</td><td>Clarinet-like</td></tr>
+<tr><td>0.8</td><td>Very bright, many harmonics</td><td>Buzzy, oboe-like</td></tr>
+<tr><td>1.0</td><td>Near-square wave harmonic content</td><td>Full harmonics</td></tr>
+</table>
+
+<h3>DigiPro Parameters</h3>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Knob</th><th>Name</th><th>Function</th><th>Range</th></tr>
+<tr><td>1</td><td>DIST1 (d1)</td><td>Phase distortion amount on carrier half-cycle</td><td>0–1</td></tr>
+<tr><td>2</td><td>DIST2 (d2)</td><td>Phase distortion on modulator / second waveform</td><td>0–1</td></tr>
+<tr><td>3</td><td>WAVE MIX (wm)</td><td>Blend between primary and secondary waveform</td><td>0–1</td></tr>
+<tr><td>4</td><td>TABLE (tbl)</td><td>Wavetable position (DP TBLX only)</td><td>0–1 (scans tables)</td></tr>
+<tr><td>5</td><td>RESONANCE (res)</td><td>Resonant sine reset (CZ "resonance 1/2/3")</td><td>0–7</td></tr>
+<tr><td>6</td><td>PW</td><td>Symmetry / pulse width offset</td><td>0–1</td></tr>
+<tr><td>7</td><td>CUTOFF</td><td>Shared MNM filter cutoff</td><td>0–1</td></tr>
+<tr><td>8</td><td>LEVEL</td><td>Output level</td><td>0–1</td></tr>
+</table>
+
+<h3>CZ Resonance Modes</h3>
+
+<p>
+The Casio CZ series has an additional feature called "resonance" (not filter resonance)
+that adds a sub-cycle reset of the waveform's phase. At resonance=0, the waveform
+completes one full cycle per period. At resonance=N, the waveform completes N+1 or
+more sub-cycles within one fundamental period — creating a much brighter, formant-like
+spectrum:
+</p>
+
+<pre>
+; CZ-style resonance: multiply the waveform phase by (1 + resonance)
+; but reset to 0 at the fundamental period boundary (wrap to 0 at full period):
+
+[phasor~ $freq]          ; fundamental period phase (0 to 1)
+|
+[* (1 + resonance)]      ; sub-cycle frequency multiplier
+|
+[wrap~]                  ; stays 0–1 within each sub-cycle
+|
+[cos~]                   ; lookup
+
+; Combine with amplitude envelope that also tracks fundamental period:
+; The amplitude of the waveform decreases as it reaches the fundamental period
+; boundary, creating a formant-like amplitude pattern:
+[phasor~ $freq]
+|
+[* -1][+~ 1]             ; 1 to 0 ramp (amplitude window)
+→ multiply waveform output by this ramp
+</pre>
+
+<p>
+Resonance modes 1–7 create progressively brighter, formant-like spectra — useful for
+string, brass, and vocal-like sounds.
+</p>
+
+<h3>DP TBLX: Wavetable Scanning</h3>
+
+<p>
+The DP TBLX variant adds a wavetable dimension — instead of a fixed CZ-style
+distortion, the TABLE parameter scans through a sequence of stored waveforms. As TABLE
+moves from 0 to 1, the oscillator transitions smoothly between different timbres:
+</p>
+
+<pre>
+; Wavetable scanning with linear interpolation:
+[array dp_table_0 1024]   ; waveform at table position 0
+[array dp_table_1 1024]   ; waveform at table position 0.33
+[array dp_table_2 1024]   ; waveform at table position 0.67
+[array dp_table_3 1024]   ; waveform at table position 1.0
+
+[r $0-tbl]     → $tbl_pos   ; 0 to 1
+
+; Interpolated table read:
+; find which two tables to blend and their mix ratio:
+; table_index = tbl_pos × 3         ; 0 to 3
+; table_floor = floor(table_index)  ; 0, 1, 2, or 3
+; blend_frac  = table_index - floor ; 0 to 1 fractional blend
+
+[phasor~ $freq]    → phase signal (0 to 1)
+|
+[tabread4~ dp_table_0] × (1 - blend) ─┐
+[tabread4~ dp_table_1] × blend         ─┘  → [+~] interpolated output
+</pre>
+
+<p>
+By LFO-modulating the TABLE parameter, continuously evolving pads can be created.
+By ADSR-shaping the TABLE parameter, the timbre can transform as the note decays.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+The DigiPro engine uses phase distortion synthesis: a nonlinear mapping applied to the
+phase accumulator before sine lookup. The distortion parameter D controls harmonic
+content from pure sine (D=0) to square-wave-rich (D=1). The resonance parameter adds
+sub-cycle reset for formant-like spectra. The DP TBLX variant replaces phase distortion
+with wavetable scanning — smoothly interpolating between stored waveform tables via the
+TABLE parameter. All variants share the MNM's 2-pole multimode filter and amplitude ADSR.
+</p>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="elektron-12-mnm-superwave.htm">Monomachine SuperWave Engine</a> - detuned unison oscillators as an alternative approach</li>
+<li><a href="elektron-14-mnm-perc.htm">Monomachine Percussion Toolbox</a> - built-in drum voices using DigiPro-related techniques</li>
+<li><a href="dsp-10-wavetable-oscillators.htm">Wavetable Oscillators</a> - [tabread4~] interpolated wavetable scanning technique</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

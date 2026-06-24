@@ -1,0 +1,365 @@
+Lua - Part 1: Why Lua? The Embedding Case
+2026-06-09
+
+
+World of Warcraft's addon system runs Lua. So does the Roblox game engine, the Redis
+scripting layer, the nginx configuration system, the Defold game engine, and hundreds
+of commercial game titles you have shipped code against without knowing it. These are
+not accidents of history. Lua was designed from the outset to be embedded - to live
+inside another application as a scripting and configuration layer, not to be a
+standalone language with its own ecosystem of tools and runtimes. That design
+decision, made by Roberto Ierusalimschy, Luiz Henrique de Figueiredo, and Waldemar
+Celes at PUC-Rio in 1993, produced a language with properties that no other embeddable
+option matches in combination: a 250 KB binary, a clean C API, deterministic memory
+management, and a stack-based VM that maps naturally onto C function call conventions.
+This article explains why Lua is the right choice for embedding, what the core embedding
+pattern looks like, and how Lua 5.4 fits into the landscape of embeddable languages today.
+
+
+What You Will Learn
+
+
+Why Lua's design goals make it uniquely suited to embedding in C applications.
+How the stack-based VM makes the C API natural to reason about.
+Where Lua is used in production and why those teams chose it.
+How Lua compares to embedding Python and JavaScript as alternative choices.
+The core embedding pattern: C owns performance, Lua describes behaviour.
+What Lua 5.4 brings and why it is the version to target today.
+
+
+Designed to Be Embedded
+
+
+Most languages are designed to run programs. Embedding support is added later, as an
+afterthought. Python grew a C extension API after the language was established. V8 was
+originally the JavaScript engine inside Chrome and acquired an embedding API when
+other projects needed it. Lua went the other direction: it was created specifically to
+replace SOL and DEL, two ad hoc configuration languages inside a Brazilian oil company's
+software, and the design brief was "a language that can be embedded inside C programs".
+Every design decision follows from that brief.
+
+
+
+The implementation is pure ANSI C89. Not C99, not C11, not POSIX - C89. That means
+Lua compiles on every platform that has a C compiler: embedded microcontrollers, game
+consoles, WASM targets, mainframes. The entire source is about 30,000 lines spread
+across roughly 20 files. You can read the whole interpreter in a weekend. You can
+vendor the source directly into your project with no build system dependencies: just
+add the .c files to your build.
+
+
+
+The binary footprint matches. A statically linked Lua interpreter is around 250 KB on
+x86-64. The standard library adds another 150 KB or so. For comparison, the CPython
+3.12 shared library alone is over 4 MB, and that does not count the standard library
+or the site-packages directory. V8 is measured in tens of megabytes.
+On platforms where binary size matters - game consoles, embedded systems, applications
+that ship their scripting runtime - Lua's footprint is a genuine advantage.
+
+
+The Stack-Based VM
+
+
+Lua's VM communicates with C through a virtual stack. When C code calls into Lua, it
+pushes arguments onto the stack and reads return values from the stack. When Lua calls
+a C function, it pushes arguments onto the stack; the C function reads them and pushes
+return values. The stack is the only communication channel between the two languages.
+
+
+
+This is not just an implementation detail - it is the key insight that makes embedding
+work cleanly. Consider what the alternative would look like. If Lua passed values to C
+as heap-allocated objects, C would need to hold references that the Lua garbage
+collector respects. The GC would need to scan C stack frames for live references.
+C code would need to inform the GC when it is done with a value. This is
+essentially what Python's reference-counting approach requires, and it produces the
+notorious complexity of CPython's C extension API: Py_INCREF, Py_DECREF, borrowed
+references, stolen references, and the ever-present risk of reference leaks.
+
+
+
+The Lua stack avoids all of this. Values on the stack are GC roots automatically -
+the GC scans the stack as part of its normal operation. When a C function returns, its
+stack frame is popped and any Lua values that were on it are no longer roots. There is
+no manual reference counting, no explicit GC barrier, no borrowed-vs-owned distinction.
+C code interacts with Lua values through integer indices into the stack, not through
+pointers. This is fundamentally safe: an index into the stack cannot dangle the way a
+pointer to a GC'd object can.
+
+
+
+Stack indices in Lua are one-based. Index 1 is the bottom of the current frame, index
+2 is the next value, and so on. Negative indices count from the top: -1 is always
+the top of the stack, -2 is one below the top. Most C API code uses negative indices
+because they remain valid regardless of how many values have been pushed since the
+frame started.
+
+
+Where Lua Is Used in Production
+
+
+The production deployments give a clearer picture of what "embeddable" means in
+practice than any feature list:
+
+
+
+World of Warcraft. Blizzard ships the WoW client with a Lua interpreter embedded
+in the game engine. Every addon - quest trackers, damage meters, UI skins - is Lua
+code that runs inside the engine process. The engine exposes a C API surface to Lua
+(unit frames, events, API calls). Player-written Lua cannot crash the engine or access
+the filesystem; it can only call the documented C API. This is the canonical example of
+Lua as a safe extension language for untrusted code.
+
+
+
+Roblox. The Roblox platform runs every game in a Lua (specifically Luau, a
+typed superset) environment. The engine is C++; all game logic is script. The embedding
+gives Roblox strong isolation: scripts cannot access the OS, the filesystem, or the
+network directly - only the engine's exposed API. The platform has billions of active
+users.
+
+
+
+Redis. Redis 7 embedded Lua 5.1 for server-side scripting. Scripts run inside
+the Redis process with direct access to the key-value store, atomically. The embedding
+means scripts can call Redis commands as C function calls with no network round-trip.
+EVAL executes a Lua script; SCRIPT LOAD caches one. The pattern is identical to what
+you would write manually: push args, call into Lua, read result.
+
+
+
+nginx / OpenResty. The OpenResty platform embeds LuaJIT into nginx, allowing
+request handling logic to be written in Lua. A Lua function runs at any phase of the
+nginx request lifecycle: access control, header rewriting, content generation, logging.
+Companies like Cloudflare run billions of requests per day through Lua-scripted nginx
+workers.
+
+
+
+Defold. The Defold game engine (used commercially and available as open source)
+uses Lua for all game logic. The engine handles rendering, physics, and audio in C++;
+scripts handle game state, animation logic, and UI in Lua. Hot-reload of scripts during
+development is built in - a property that falls out naturally from embedding: call
+luaL_loadfile again, run the new chunk, continue.
+
+
+Embedding Python: What Goes Wrong
+
+
+Python is a more powerful language than Lua and has a vastly larger ecosystem. For
+some embedding use cases that matters. But the embedding story is difficult in ways
+that are intrinsic to Python's design, not implementation bugs that future versions will fix.
+
+
+
+The GIL. The Global Interpreter Lock means only one thread can execute Python
+bytecode at a time. If your host application is multithreaded - and most non-trivial C
+applications are - Python scripts executing in different threads will contend on the
+GIL. You can release the GIL around C calls with Py_BEGIN_ALLOW_THREADS, but the
+coordination overhead is substantial and the semantics are error-prone.
+
+
+
+Binary size and startup. CPython requires a stdlib that is hundreds of megabytes
+on disk. Startup time (importing sys, loading site.py, scanning
+sys.path) is measured in hundreds of milliseconds even for trivial programs. For
+embedded use cases where scripts might be loaded and reloaded frequently, this is
+prohibitive.
+
+
+
+Versioning. Python makes no binary API compatibility guarantee across minor
+versions. An extension module compiled against Python 3.10 does not necessarily load
+under 3.11. If your application ships its own embedded Python, you own the entire
+versioning problem: users cannot substitute their system Python, and you cannot easily
+update without potential compatibility breaks across your entire extension surface.
+
+
+
+The C API complexity. As described above, the reference-counting C API requires
+careful discipline to avoid leaks and double-frees. The Py_INCREF/Py_DECREF
+discipline has been the source of bugs in major Python embedding projects for thirty
+years. Tools like Cython and pybind11 exist specifically to paper over this complexity.
+
+
+
+None of this makes Python wrong for all embedding. If your users need NumPy, pandas,
+or the Python ML ecosystem, the complexity is worth it. But if what you need is a safe,
+fast scripting layer with a clean C interface, Python is the wrong tool.
+
+
+Embedding JavaScript: The V8 and QuickJS Options
+
+
+JavaScript has two serious embedding options: V8 (the engine inside Chrome and Node.js)
+and QuickJS (a small, complete ES2023 implementation by Fabrice Bellard).
+
+
+
+V8 is the fastest JavaScript runtime available and has an embedding API.
+The problems are size (the V8 shared library is 20–30 MB) and API stability.
+V8's embedding API changes frequently - there is no promise of stability across
+versions. Projects that embed V8 (Electron, Node.js, Deno) pin specific versions
+and carry significant maintenance burden keeping up with API churn. The API itself
+is C++ and requires dealing with Isolates, Contexts, HandleScopes, and
+EscapableHandleScopes - a model that is functionally similar to Lua's stack but
+expressed in a much more complex idiom. V8 is the right choice when you need
+the absolute fastest JavaScript execution. It is not the right choice for a
+lightweight embeddable scripting layer.
+
+
+
+QuickJS is much more Lua-like in character: it is a small C implementation
+(around 200 KB), has a clean embedding API, supports modern JavaScript (ES2023),
+and includes a JIT-capable mode (QuickJS-NG). If you need JavaScript specifically -
+because your users already know it, or because you need to share logic with a browser
+- QuickJS is a serious option and worth evaluating alongside Lua. For everything
+else, Lua's smaller surface area and more stable API gives it the edge.
+
+
+The Core Embedding Pattern
+
+
+Every Lua embedding follows the same fundamental pattern: C owns the
+performance-critical work, Lua describes structure and behaviour. The division
+is not arbitrary - it is a precise allocation of responsibilities between what each
+language is good at:
+
+
+
+C does: audio processing, rendering, physics simulation, file I/O, network
+I/O, memory management, threading. Things that must run at a known cost in a known
+time budget.
+Lua describes: which audio nodes connect to which, what a UI panel looks
+like, what events trigger what responses, how an entity behaves, what parameters
+a DSP chain uses. Things that change frequently, are authored by people who may
+not be C experts, and where flexibility matters more than microsecond performance.
+
+
+
+The interface between the two is defined entirely in C. You expose a C API to Lua
+by registering C functions under Lua names. Lua scripts call those functions as if
+they were ordinary Lua functions. From the script author's perspective, the scripting
+environment has whatever capabilities the C code decided to expose - no more, no less.
+This is the security model that makes WoW addons safe and Redis EVAL isolated.
+
+
+
+The simplest possible embedding - a C program that evaluates a Lua expression:
+
+
+
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#include <stdio.h>
+
+int main(void) {
+    lua_State *L = luaL_newstate();   /* create a new Lua interpreter */
+    luaL_openlibs(L);                 /* load standard libraries */
+
+    if (luaL_dostring(L, "print('hello from Lua')") != LUA_OK) {
+        fprintf(stderr, "error: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+
+    lua_close(L);                     /* shut down the interpreter */
+    return 0;
+}
+
+
+
+# Compile against Lua 5.4
+gcc -o hello hello.c $(pkg-config --cflags --libs lua5.4)
+./hello
+# hello from Lua
+
+
+
+The lua_State pointer is the interpreter instance. It is opaque - you
+never look inside it directly, only call API functions that take it as their first
+argument. You can create multiple independent states in the same process; they share
+nothing unless you explicitly arrange sharing. Each state has its own stack, its own
+globals, its own GC. This isolation matters for sandboxing: a script running in one
+state cannot corrupt another.
+
+
+Lua 5.4 - The Current Version
+
+
+Lua 5.4 was released in June 2020 and is the current stable version. The series uses
+5.4 throughout. Key changes from earlier versions that affect embedding:
+
+
+
+Generational GC. Lua 5.4 introduced a generational garbage collector alongside
+the existing incremental collector. For typical embedding use cases (short-lived
+temporaries in scripting), the generational collector reduces GC pause time. You
+select the collector with lua_gc(L, LUA_GCGEN, 0, 0).
+
+
+
+Integer/float split. Lua 5.3 introduced a distinction between integer and
+floating-point numbers that Lua 5.4 keeps. lua_Integer is typically a
+64-bit signed integer; lua_Number is typically a double. The C API has
+separate push/get functions for each: lua_pushinteger/
+lua_pushnumber and lua_tointeger/lua_tonumber.
+This matters when interfacing with C code that distinguishes int from float.
+
+
+
+to-be-closed variables. Lua 5.4 introduced local f <close> = io.open(...)
+syntax for RAII-style cleanup in Lua code. Less relevant to embedding directly, but
+useful to know when writing Lua scripts for your host application.
+
+
+
+LuaJIT compatibility. LuaJIT implements Lua 5.1 with extensions. If you need
+LuaJIT's performance (covered in Part 10), be aware that 5.4 APIs are not available
+there. The split is real and you must choose: standard Lua 5.4 for the latest
+language features and GC improvements, or LuaJIT for maximum runtime performance.
+
+
+Summary
+
+
+Lua is the dominant embeddable language because it was designed for exactly that
+purpose. Its ANSI C implementation means it compiles everywhere. Its 250 KB binary
+means it fits in constrained environments. Its stack-based VM means the C API is
+clean and memory-safe without manual reference counting. Its production deployments -
+WoW, Roblox, Redis, nginx, Defold - demonstrate that the embedding model scales from
+tiny config files to billion-user platforms.
+
+
+
+The comparison with Python and JavaScript is not a dismissal of those languages.
+Python is right when you need its ecosystem. QuickJS is right when your users expect
+JavaScript. V8 is right when you need JIT performance for JavaScript specifically.
+Lua is right when you need a small, safe, fast, easily embedded scripting layer in a
+C or C++ application - which is the use case this series addresses.
+
+
+
+The next article digs into the C API at the level you need to use it: the stack model
+in detail, how indices work, and how to push and read every basic Lua type from C.
+
+
+Further Reading
+
+
+About Lua - lua.org
+Lua 5.4 Reference Manual - lua.org
+Programming in Lua (4th ed.) - Roberto Ierusalimschy
+LuaJIT - luajit.org
+QuickJS - Fabrice Bellard
+Defold game engine - github.com/defold
+
+
+See Also
+
+
+The Lua C API - The Stack Model
+Running Lua from C
+Sandboxing Lua
+LuaJIT
+

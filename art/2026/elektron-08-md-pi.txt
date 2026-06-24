@@ -1,0 +1,233 @@
+Elektron Synthesis - Part 8: Machinedrum PI — Pitched Instruments
+2026-01-01
+
+
+The PI machines add a set of non-drum percussion instruments to the Machinedrum's
+toolkit: clave, maracas, bongos, congas, and timbales. Unlike the TRX and EFM machines
+which model general-purpose drum sounds, each PI machine is tuned to a specific physical
+instrument model. Understanding the physical acoustics of each instrument is the
+key to recreating the PI machines accurately in Pd.
+
+
+PI Machine Roster
+
+
+MachineInstrumentSynthesis Model
+PI CLAVEClave (struck hardwood cylinder)Damped resonator bank
+PI MARACAMaracas (shaken beads)Particle/granular noise model
+PI HI BONGHigh bongo (small drum head)Membrane resonance model
+PI LO BONGLow bongo (large drum head)Membrane resonance model
+PI HI CONGHigh congaDeep membrane resonance model
+PI LO CONGLow congaDeep membrane resonance model
+PI TIMBTimbales (thin metal shell)Resonator bank with shell modes
+
+
+PI CLAVE: Struck Metal Rod Model
+
+PI CLAVE Parameters
+
+
+KnobNameFunction
+1TUNEFundamental frequency (400–3000 Hz)
+2DECAYResonator decay time (10–1000 ms)
+3METALInharmonic spread of overtones (0–1)
+4NOISEAttack noise click level (0–1)
+5LEVELOutput level
+
+
+
+A clave is a hard cylinder struck against another. Its acoustic spectrum is dominated
+by a small number of damped resonant modes — not harmonic overtones but a specific
+set of modes determined by the cylinder's geometry. Model these as a bank of damped
+resonators:
+
+
+
+; Clave mode frequencies (approximate ratios from acoustic analysis):
+; mode 1: fundamental f
+; mode 2: 2.76 × f
+; mode 3: 5.40 × f
+; mode 4: 8.93 × f
+; mode 5: 13.35 × f
+
+; These are the (n,0,1) modes of a free-free cylindrical beam.
+; The METAL parameter adjusts these ratios slightly from pure theory:
+; metal=0: exact theoretical ratios (most clave-like)
+; metal=1: ratios shifted ×1.15 progressively (brighter, more metallic)
+
+f_n = tune × mode_ratio_n × (1 + (n-1) × metal × 0.05)
+
+; Each mode is a damped sine:
+[osc~ f_n]
+|
+[*~]  ← [vline~]: 1 0, 0 dcy 0    ; same decay for all modes
+; (real clave: higher modes decay faster, but simplified here)
+|
+[*~ gain_n]        ; relative amplitude: mode 1 loudest, higher modes quieter
+
+
+
+Relative mode amplitudes (approximate): 1.0, 0.4, 0.2, 0.1, 0.05.
+
+
+
+; Sum of 5 modes + noise transient:
+[+~] modes_sum
+|
+[+~] [noise~] × [vline~] 5ms × nse    ; click noise
+|
+[*~ level * vel]
+|
+[outlet~]
+
+
+PI MARACA: Particle Noise Model
+
+PI MARACA Parameters
+
+
+KnobNameFunction
+1DECAYDecay time (10–500 ms)
+2TONEFilter cutoff/brightness (1000–15000 Hz)
+3ATTACKEnvelope attack shape (0=sharp, 1=soft)
+4DENSITYGrain density (affects texture)
+5LEVELOutput level
+
+
+
+Maracas produce a burst of rolling noise from beads bouncing inside a hollow shell.
+The synthesis model uses highpass-filtered noise with a very fast attack and a shaped
+decay. The DENSITY parameter attempts to model the granularity of the bead sound:
+
+
+
+; Maraca synthesis:
+[noise~]
+|
+[hip~ tone * 0.5]      ; remove sub content, centre on tone
+|
+[bp~ tone 0.8]         ; mild bandpass shaping
+|
+[*~]  ← amplitude envelope:
+      ; attack: 0 → 1 over attack*10 ms
+      ; decay: 1 → 0 over dcy ms (exponential)
+      [vline~]: 1 attack*10, 0 dcy attack*10
+|
+[*~ level * vel]
+|
+[outlet~]
+
+; DENSITY: not easily modelled in vanilla Pd without granular tools
+; Approximation: add a second noise burst delayed by 5ms × density
+; to simulate the wave of beads reaching the far shell then bouncing back
+[delay $density * 5]
+→ [noise~] × [vline~] 5ms × 0.4
+→ [+~] with main output
+
+
+PI HI/LO BONG and PI HI/LO CONG: Membrane Models
+
+Bongo/Conga Parameters
+
+
+KnobNameFunction
+1TUNEFundamental membrane frequency
+2DECAYAmplitude decay (50–3000 ms)
+3HPITCHHigh mode frequency ratio
+4NOISEAttack noise (slap character)
+5SWEEPPitch sweep on attack (0–octave)
+6LEVELOutput level
+
+
+
+A circular membrane (bongo/conga head) resonates at modal frequencies related to the
+zeros of Bessel functions — specifically: 1.000, 1.593, 2.136, 2.296, 2.653, 2.917...
+(relative to the fundamental). These ratios give bongo/conga their characteristically
+non-harmonic but somewhat periodic sound:
+
+
+
+; Membrane mode frequencies:
+; f_n = tune × bessel_ratio_n
+; bessel_ratios = [1.000, 1.593, 2.136, 2.296, 2.653, 2.917, 3.156]
+
+; Four dominant modes are sufficient for a convincing bongo:
+f1 = tune × 1.000
+f2 = tune × 1.593
+f3 = tune × 2.136
+f4 = tune × 2.653
+
+; Amplitude envelopes — higher modes decay faster than lower:
+; mode 1: decay × 1.0
+; mode 2: decay × 0.6
+; mode 3: decay × 0.35
+; mode 4: decay × 0.2
+
+
+
+; Bongo synthesis:
+[osc~ f1] *~ [vline~ decay]     → [*~ 1.0]  ─┐
+[osc~ f2] *~ [vline~ decay*0.6] → [*~ 0.7]  ─┤ membrane bus
+[osc~ f3] *~ [vline~ decay*0.35]→ [*~ 0.4]  ─┤
+[osc~ f4] *~ [vline~ decay*0.2] → [*~ 0.2]  ─┘
+                                               │
+[+~]
+│
+[+~] ← pitch sweep on f1 at trigger onset (swp × oct shift, 10–30 ms)
+│
+[+~] ← [noise~] × [hip~ tune*6] × [vline~ 15ms] × nse   ; slap attack
+│
+[*~ level * vel]
+│
+[outlet~]
+
+
+
+The HI BONG uses higher tune values (200–600 Hz) and shorter decay. The LO BONG uses
+lower tune (80–200 Hz) and longer decay. The HI/LO CONG use the same model but with
+even lower fundamental frequencies (50–150 Hz) and much longer decays (500–4000 ms),
+giving the characteristic resonant conga thump.
+
+
+PI TIMB: Timbales
+
+
+Timbales have a thin metal shell that resonates along with the drumhead. The PI TIMB
+model adds a "shell ring" component on top of the membrane modes — a short metallic
+ring at a high frequency (1–5 kHz) superimposed over the lower-frequency membrane
+resonance:
+
+
+
+; Timbales = membrane model + shell resonance:
+membrane_output (from bongo model above, tune 200–600 Hz)
+    +
+shell_ring:
+    [osc~ tune*8]                      ; shell mode at 8× membrane freq
+    |
+    [*~] ← [vline~] 1 2, 0 decay*0.08 2   ; very fast decay
+    |
+    [*~ 0.3]
+→ [+~] timbales_output
+
+
+Summary
+
+
+PI machines use instrument-specific physical models. The CLAVE model uses a 5-mode
+damped resonator bank tuned to free-free cylindrical beam mode ratios. The MARACA
+model uses highpass-filtered noise with optional bead-delay simulation. The BONG/CONG
+models use 4-mode Bessel function resonators with independently decaying modes and a
+pitch sweep on attack. The TIMB adds a high-frequency shell ring component. The key
+synthesis principle: each instrument has specific inharmonic modal frequency ratios
+that define its acoustic identity, and these must be correct for the instrument to be
+recognisable.
+
+
+See Also
+
+
+Monomachine GND Machines - basic oscillator-based synthesis in the MNM
+TRX-MA Metallic Percussion - related resonator bank approach for metallic sounds
+Physical Modelling Synthesis - Karplus-Strong and waveguide approaches for membrane models
+

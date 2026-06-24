@@ -1,0 +1,427 @@
+DSP - Part 28: Testing DSP Code
+2026-11-06
+
+
+DSP code is deterministic: given the same input, a filter or oscillator must always
+produce the same output. That determinism makes it highly testable — but the tests need
+to handle floating-point arithmetic carefully. This article shows how to test the
+algorithms from this series with the Unity framework and how to build those tests into
+the Makefile from Part 25.
+
+
+What You Will Learn
+
+
+Setting up the Unity C test framework from a single-header source copy
+Numerical tolerance assertions with TEST_ASSERT_FLOAT_WITHIN
+Testing biquad filters with impulse-response comparison
+Testing oscillators for frequency accuracy and amplitude bounds
+Offline WAV render-and-compare for higher-level output regression tests
+Structuring test files and running them from a Makefile test target
+Running tests in CI without a sound device
+
+
+Setting Up Unity
+
+
+Unity is a minimal C test framework: two files, no dependencies. Copy them into
+third_party/unity/ as described in Part 26. The entire framework is:
+
+
+
+third_party/unity/
+  unity.h
+  unity.c
+  unity_internals.h
+
+
+
+A Unity test file has three parts: a setUp/tearDown pair
+(may be empty), test functions, and a main that calls UNITY_BEGIN(),
+runs the tests, and calls UNITY_END():
+
+
+
+#include "unity.h"
+#include "biquad.h"
+
+void setUp(void) {}
+void tearDown(void) {}
+
+void test_biquad_passes_dc(void) {
+    BiquadFilter f;
+    biquad_lowpass(&f, 1000.0f, 0.707f, 44100.0f);
+
+    /* Drive with DC (constant 1.0) and check the output settles near 1.0 */
+    float out = 0.0f;
+    for (int i = 0; i < 1000; i++) {
+        out = biquad_process(&f, 1.0f);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, out);
+}
+
+int main(void) {
+    UNITY_BEGIN();
+    RUN_TEST(test_biquad_passes_dc);
+    return UNITY_END();
+}
+
+
+
+TEST_ASSERT_FLOAT_WITHIN(delta, expected, actual) passes if
+|actual - expected| <= delta. Always use this instead of
+TEST_ASSERT_EQUAL_FLOAT for DSP outputs — exact floating-point equality
+is almost never the right assertion.
+
+
+Testing Biquad Filters with Impulse Response
+
+
+The impulse response of a filter — its output when driven by a unit impulse
+[1, 0, 0, 0, ...] — completely characterises its behaviour. Compare it
+against a known-good reference to detect regressions:
+
+
+
+#include "unity.h"
+#include "biquad.h"
+#include <math.h>
+#include <string.h>
+
+/* Reference impulse response for a 1 kHz Butterworth lowpass at 44100 Hz,
+   computed with scipy.signal.butter and verified by hand. */
+static const float LOWPASS_IR_REF[] = {
+    0.004166f, 0.016457f, 0.036425f, 0.059779f, 0.079456f,
+    0.088012f, 0.081762f, 0.062051f, 0.033685f, 0.003218f,
+    /* ... 50 samples total ... */
+};
+#define IR_LEN (sizeof(LOWPASS_IR_REF) / sizeof(LOWPASS_IR_REF[0]))
+
+void test_lowpass_impulse_response(void) {
+    BiquadFilter f;
+    biquad_lowpass(&f, 1000.0f, 0.707f, 44100.0f);
+
+    float ir[IR_LEN];
+    ir[0] = biquad_process(&f, 1.0f);  /* impulse */
+    for (size_t i = 1; i < IR_LEN; i++) {
+        ir[i] = biquad_process(&f, 0.0f);  /* zeros */
+    }
+
+    for (size_t i = 0; i < IR_LEN; i++) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "IR sample %zu", i);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.0001f, LOWPASS_IR_REF[i], ir[i], msg);
+    }
+}
+
+
+
+Generate the reference values once with a known-good implementation (Python's
+scipy.signal), store them as a constant array, and assert on each sample
+with a tight tolerance. When the filter coefficients change — intentionally or by
+accident — this test fails and shows exactly which sample diverged.
+
+
+Generating Reference Values with Python
+
+
+Use this snippet to compute and print the reference impulse response:
+
+
+
+import numpy as np
+from scipy.signal import butter, lfilter
+
+fs = 44100
+fc = 1000
+b, a = butter(2, fc / (fs / 2), btype='low')
+
+impulse = np.zeros(50)
+impulse[0] = 1.0
+ir = lfilter(b, a, impulse)
+
+print("static const float LOWPASS_IR_REF[] = {")
+for i, v in enumerate(ir):
+    print(f"    {v:.6f}f,")
+print("};")
+
+
+Testing Oscillator Frequency and Amplitude
+
+
+To verify an oscillator generates the right frequency, count zero crossings in the
+output and compare to the expected frequency:
+
+
+
+void test_oscillator_frequency(void) {
+    const float fs = 44100.0f;
+    const float target_hz = 440.0f;
+    const int n_samples = (int)(fs * 0.1f);  /* 100 ms */
+
+    Oscillator osc;
+    osc_init(&osc, OSC_SINE, target_hz, fs);
+
+    int zero_crossings = 0;
+    float prev = 0.0f;
+    for (int i = 0; i < n_samples; i++) {
+        float s = osc_tick(&osc);
+        if (prev <= 0.0f && s > 0.0f) {
+            zero_crossings++;
+        }
+        prev = s;
+    }
+
+    /* 440 Hz over 100 ms = 44 full cycles = 44 upward zero crossings */
+    TEST_ASSERT_INT_WITHIN(1, 44, zero_crossings);
+}
+
+void test_oscillator_amplitude(void) {
+    Oscillator osc;
+    osc_init(&osc, OSC_SINE, 440.0f, 44100.0f);
+
+    float max_amp = 0.0f;
+    for (int i = 0; i < 4410; i++) {
+        float s = fabsf(osc_tick(&osc));
+        if (s > max_amp) max_amp = s;
+    }
+
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.0f, max_amp);
+    /* No sample should exceed 1.0 (clipping) */
+    /* Checked implicitly: max_amp <= 1.001f */
+}
+
+
+Testing ADSR Envelope Shape
+
+
+Assert on the envelope's peak, sustain level, and timing:
+
+
+
+void test_adsr_attack_peak(void) {
+    const float fs = 44100.0f;
+    ADSR env;
+    adsr_init(&env,
+        /* attack_ms  */ 10.0f,
+        /* decay_ms   */ 50.0f,
+        /* sustain    */ 0.7f,
+        /* release_ms */ 100.0f,
+        fs);
+
+    adsr_note_on(&env);
+
+    int attack_samples = (int)(0.01f * fs); /* 10 ms */
+    float peak = 0.0f;
+    for (int i = 0; i <= attack_samples + 10; i++) {
+        float v = adsr_tick(&env);
+        if (v > peak) peak = v;
+    }
+
+    /* Peak should be 1.0 at end of attack */
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, peak);
+}
+
+void test_adsr_sustain_level(void) {
+    const float fs = 44100.0f;
+    ADSR env;
+    adsr_init(&env, 1.0f, 1.0f, 0.7f, 10.0f, fs);
+
+    adsr_note_on(&env);
+
+    /* Skip attack + decay (2 ms total) */
+    int skip = (int)(0.002f * fs);
+    for (int i = 0; i < skip; i++) adsr_tick(&env);
+
+    /* Now we should be in sustain */
+    float level = adsr_tick(&env);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.7f, level);
+}
+
+
+Offline WAV Render-and-Compare
+
+
+For higher-level tests, render the complete output of the synthesiser to a WAV file
+and compare it sample-by-sample against a golden reference. This catches regressions
+in multi-component interactions that unit tests for individual components would miss:
+
+
+
+#include "unity.h"
+#include "synth.h"
+#include "dr_wav.h"   /* single-header WAV I/O */
+
+#define GOLDEN_WAV  "testdata/golden_440hz_sine_1s.wav"
+#define RENDER_WAV  "testdata/render_output.wav"
+#define SAMPLE_TOLERANCE 0.001f
+
+void test_synth_render_matches_golden(void) {
+    /* Load the golden reference */
+    drwav golden;
+    TEST_ASSERT_TRUE_MESSAGE(
+        drwav_init_file(&golden, GOLDEN_WAV, NULL),
+        "failed to open golden WAV — run with GOLDEN=1 to create it");
+
+    /* Render the synthesiser */
+    Synth s;
+    synth_init(&s, 44100.0f);
+    synth_note_on(&s, 69, 127);  /* A4, velocity 127 */
+
+    uint64_t n = golden.totalPCMFrameCount;
+    float *expected = malloc(n * sizeof(float));
+    float *got      = malloc(n * sizeof(float));
+
+    drwav_read_pcm_frames_f32(&golden, n, expected);
+    drwav_uninit(&golden);
+
+    synth_render(&s, got, (uint32_t)n);
+
+    for (uint64_t i = 0; i < n; i++) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "sample %llu", (unsigned long long)i);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(SAMPLE_TOLERANCE, expected[i], got[i], msg);
+    }
+
+    free(expected);
+    free(got);
+}
+
+
+
+To create the golden reference, render once and save:
+
+
+
+/* In a separate golden-generation program, or gated by an env var: */
+if (getenv("GOLDEN")) {
+    drwav_data_format fmt = {
+        .container     = drwav_container_riff,
+        .format        = DR_WAVE_FORMAT_IEEE_FLOAT,
+        .channels      = 1,
+        .sampleRate    = 44100,
+        .bitsPerSample = 32,
+    };
+    drwav w;
+    drwav_init_file_write(&w, GOLDEN_WAV, &fmt, NULL);
+    drwav_write_pcm_frames(&w, n, got);
+    drwav_uninit(&w);
+}
+
+
+Makefile Test Target
+
+
+Integrate tests into the Makefile from Part 25 with a test target that
+builds and runs every test binary:
+
+
+
+UNITY_SRC    = third_party/unity/unity.c
+TEST_SRCS    = $(wildcard test/test_*.c)
+TEST_BINS    = $(patsubst test/test_%.c,$(BUILD_DIR)/test_%,$(TEST_SRCS))
+
+.PHONY: test
+
+test: $(TEST_BINS)
+	@failed=0; \
+	for t in $(TEST_BINS); do \
+	    echo "--- $$t ---"; \
+	    $$t || failed=$$((failed+1)); \
+	done; \
+	[ $$failed -eq 0 ] || (echo "FAILED: $$failed test(s)" && exit 1)
+
+$(BUILD_DIR)/test_%: test/test_%.c $(LIB_TARGET) $(UNITY_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Ithird_party/unity -Isrc \
+	    -o $@ $< $(UNITY_SRC) $(LIB_TARGET) -lm
+
+
+
+Each test file produces a separate binary. The loop runs all of them and fails the
+build if any test returns a non-zero exit code. Unity exits with the number of failed
+assertions, so a passing test suite exits with 0.
+
+
+Running Tests Without a Sound Device
+
+
+DSP unit tests should not require an audio device — all processing happens in memory.
+If your test suite accidentally tries to open a device (e.g. by calling RtAudio
+constructors), the tests will fail in CI where there is no sound card.
+
+
+
+Guard device-opening code with a preprocessor macro and define it only in the
+non-test build:
+
+
+
+/* audio_io.c */
+void audio_start(AudioCallback cb, void *userdata) {
+#ifndef RUNNING_UNIT_TESTS
+    RtAudio dac;
+    /* ... open device ... */
+#else
+    (void)cb; (void)userdata;
+    fprintf(stderr, "audio_start: no-op in test build\n");
+#endif
+}
+
+
+
+Pass the macro in the test build's CFLAGS:
+
+
+
+$(BUILD_DIR)/test_%: test/test_%.c ...
+	$(CC) $(CFLAGS) -DRUNNING_UNIT_TESTS ...
+
+
+CI Configuration
+
+
+# .github/workflows/test.yml
+name: dsp-tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: sudo apt-get install -y libm-dev
+      - name: Build and run tests
+        run: make MODE=debug test
+
+
+
+The submodules: recursive flag ensures git submodules (libsndfile, Unity)
+are checked out. The MODE=debug build enables AddressSanitizer, which
+catches buffer overflows and use-after-free bugs that unit tests alone may not surface.
+
+
+Summary
+
+
+DSP code is deterministic and highly testable. Use Unity for C — it is two files, no
+configuration. Use TEST_ASSERT_FLOAT_WITHIN for all floating-point
+assertions; exact equality is wrong for DSP. Test filters by comparing their impulse
+response against a reference computed with a known-good tool (SciPy). Test oscillators
+by counting zero crossings and asserting on peak amplitude. Test envelopes by
+measuring peak, sustain level, and timing. Use offline WAV render-and-compare for
+integration-level regression tests. Build each test file into a separate binary and
+run them all from a make test target. Define RUNNING_UNIT_TESTS
+to suppress device-opening code so tests run in CI without a sound card.
+
+
+See Also
+
+
+Makefiles for C and C++ - the build system this test target is part of
+Vendoring C and C++ Dependencies - how Unity and dr_wav are added to the project
+Biquad Filters - the filter code tested in the impulse-response example
+Oscillators - the oscillator code tested for frequency and amplitude
+

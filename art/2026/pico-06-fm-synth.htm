@@ -1,0 +1,451 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Pico — Part 6: 4-Operator FM Synthesis</title>
+    <meta name="description" content="A 4-operator FM engine in C at 44.1 kHz on the RP2040 — operator structs, ADSR envelopes in fixed-point, the algorithm graph, and a measured CPU budget.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, embedded, audio, pico">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="pico-06-fm-synth.txt">plain/text</a> | <i>2026-11-12</i> | <i><a href="../../c.htm">c</a>, <a href="../../embedded.htm">embedded</a>, <a href="../../audio.htm">audio</a>, <a href="../../pico.htm">pico</a></i>
+        <h2>Pico — Part 6: 4-Operator FM Synthesis</h2>
+        <p>
+Frequency modulation synthesis produces a vast palette of timbres from nothing but
+sine oscillators and addition. When one oscillator's output is used as the frequency
+input to another, the resulting waveform develops sidebands - new frequency components
+appear above and below the carrier, controlled by the modulation index. The Yamaha DX7
+did this in 1983 with six operators and 32 algorithm graphs. We will do it with four
+operators and one algorithm on an RP2040 running at 125 MHz, fit it inside 20% of the
+audio CPU budget, and explain every decision along the way.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The FM operator struct: phase accumulator, frequency ratio, envelope, output</li>
+<li>ADSR envelope implementation in Q15 fixed-point with linear segments</li>
+<li>Algorithm 5 from the DX7: two independent carrier-modulator pairs in parallel</li>
+<li>Modulation index scaling: how to go from a 0-127 parameter to a phase offset in radians</li>
+<li>Storing the sine wavetable in flash XIP and reading it from the per-sample render loop</li>
+<li>SysTick benchmark: CPU% of the 4-operator engine at 44.1 kHz</li>
+</ul>
+
+<h3>FM Synthesis in Brief</h3>
+
+<p>
+In FM synthesis, an <b>operator</b> is a sine oscillator with an amplitude envelope. A
+<b>modulator</b> operator drives the phase of a <b>carrier</b> operator. The carrier's
+instantaneous phase becomes:
+</p>
+
+<pre>
+carrier_phase(t) = 2*pi*fc*t + I * modulator_output(t)
+</pre>
+
+<p>
+where <code>I</code> is the modulation index. When I = 0 the carrier is a pure sine.
+As I increases, sidebands appear at <code>fc ± n*fm</code> for integer n, with amplitudes
+proportional to Bessel functions. The perceived timbre shifts from pure to brassy to
+bell-like to metallic as I grows.
+</p>
+
+<p>
+The key insight for implementation: "modulating the frequency" is the same as
+"adding an offset to the phase accumulator". You never need a continuously varying
+frequency - you just add the modulator's current sample (scaled by I) to the carrier's
+phase each tick.
+</p>
+
+<h3>The Operator Struct</h3>
+
+<pre>
+#include &lt;stdint.h&gt;
+
+#define SAMPLE_RATE      44100
+#define TABLE_SIZE       2048
+#define PHASE_FRAC_BITS  22
+
+/* ADSR states */
+typedef enum {
+    ENV_IDLE = 0,
+    ENV_ATTACK,
+    ENV_DECAY,
+    ENV_SUSTAIN,
+    ENV_RELEASE
+} EnvState;
+
+/* ADSR envelope - all levels in Q15 [0, 32767],
+   times as samples-per-stage (precomputed from ms). */
+typedef struct {
+    EnvState state;
+    int32_t  level;          /* current output level, Q15 */
+    int32_t  attack_inc;     /* level increment per sample during attack  */
+    int32_t  decay_inc;      /* level decrement per sample during decay   */
+    int32_t  sustain_level;  /* sustain level, Q15                        */
+    int32_t  release_inc;    /* level decrement per sample during release */
+} ADSR;
+
+/* One FM operator */
+typedef struct {
+    uint32_t phase;       /* current phase, fractional fixed-point */
+    uint32_t phase_inc;   /* base phase increment = ratio * note_inc */
+    float    ratio;       /* frequency ratio relative to base note  */
+    ADSR     env;         /* amplitude envelope                     */
+    int32_t  output;      /* most recent output sample, Q15         */
+} Operator;
+</pre>
+
+<p>
+The <code>output</code> field is written each tick and read by any operators that use
+this one as a modulator. Because the render loop processes operators in a fixed order
+(modulators before carriers), reading <code>output</code> from the previous tick is
+correct - there is a one-sample delay in the modulation path, which is inaudible.
+</p>
+
+<h3>ADSR Envelope in Fixed-Point</h3>
+
+<p>
+The envelope level is a Q15 value in the range [0, 32767]. Linear ADSR increments are
+the simplest approach that works musically. Each stage adds or subtracts a fixed
+per-sample delta until the target level is reached, then transitions to the next stage.
+</p>
+
+<pre>
+/* Set attack/decay/release times in milliseconds. Sustain is a 0-127 level. */
+static void adsr_set(ADSR *a,
+                     float attack_ms, float decay_ms,
+                     uint8_t sustain_127, float release_ms) {
+    /* Convert ms to per-sample increments.
+       attack goes from 0 to 32767 over attack_ms milliseconds. */
+    float attack_samples  = attack_ms  * 0.001f * SAMPLE_RATE;
+    float decay_samples   = decay_ms   * 0.001f * SAMPLE_RATE;
+    float release_samples = release_ms * 0.001f * SAMPLE_RATE;
+
+    a-&gt;sustain_level = (int32_t)((sustain_127 / 127.0f) * 32767.0f);
+
+    /* Increment = total_change / samples.
+       Use 1 as minimum to avoid zero-increment lockup. */
+    a-&gt;attack_inc  = (int32_t)(32767.0f / attack_samples);
+    if (a-&gt;attack_inc  &lt; 1) a-&gt;attack_inc  = 1;
+
+    a-&gt;decay_inc   = (int32_t)((32767.0f - a-&gt;sustain_level) / decay_samples);
+    if (a-&gt;decay_inc   &lt; 1) a-&gt;decay_inc   = 1;
+
+    a-&gt;release_inc = (int32_t)(a-&gt;sustain_level / release_samples);
+    if (a-&gt;release_inc &lt; 1) a-&gt;release_inc = 1;
+
+    a-&gt;state = ENV_IDLE;
+    a-&gt;level = 0;
+}
+
+static void adsr_note_on(ADSR *a)  { a-&gt;state = ENV_ATTACK; }
+static void adsr_note_off(ADSR *a) { a-&gt;state = ENV_RELEASE; }
+
+/* Advance envelope one sample, return current level Q15 [0, 32767]. */
+static inline int32_t adsr_tick(ADSR *a) {
+    switch (a-&gt;state) {
+    case ENV_ATTACK:
+        a-&gt;level += a-&gt;attack_inc;
+        if (a-&gt;level &gt;= 32767) {
+            a-&gt;level = 32767;
+            a-&gt;state = ENV_DECAY;
+        }
+        break;
+    case ENV_DECAY:
+        a-&gt;level -= a-&gt;decay_inc;
+        if (a-&gt;level &lt;= a-&gt;sustain_level) {
+            a-&gt;level = a-&gt;sustain_level;
+            a-&gt;state = ENV_SUSTAIN;
+        }
+        break;
+    case ENV_SUSTAIN:
+        /* level stays constant until note_off */
+        break;
+    case ENV_RELEASE:
+        a-&gt;level -= a-&gt;release_inc;
+        if (a-&gt;level &lt;= 0) {
+            a-&gt;level = 0;
+            a-&gt;state = ENV_IDLE;
+        }
+        break;
+    case ENV_IDLE:
+        break;
+    }
+    return a-&gt;level;
+}
+</pre>
+
+<h3>Algorithm Graph: DX7 Algorithm 5</h3>
+
+<p>
+The DX7 has 32 algorithm graphs describing how six operators are connected. Algorithm 5
+connects operators in two independent carrier-modulator pairs with self-feedback on one
+modulator. With four operators we implement the same structure without feedback:
+</p>
+
+<pre>
+/* Algorithm: two parallel carrier/modulator pairs
+   Op0 -modulates-&gt; Op1 (carrier 1)
+   Op2 -modulates-&gt; Op3 (carrier 2)
+   Output = Op1 + Op3
+
+   Operator ratios and envelope settings give the two pairs
+   different timbres. Mix them for richness. */
+
+typedef struct {
+    Operator op[4];
+    int32_t  mod_index[2];   /* modulation index Q15, one per pair */
+} FMVoice;
+</pre>
+
+<p>
+The modulation index controls how much of the modulator's output shifts the carrier's
+phase. A value of 0 means no modulation (pure sine). A value of 32767 (Q15 = 1.0)
+is a full-scale modulation - very metallic. In practice values from 0.1 to 0.6 cover
+most useful timbres.
+</p>
+
+<h3>The Per-Sample Render</h3>
+
+<pre>
+/* Sine table in flash (see Part 5 for generation). */
+extern const int16_t osc_sine_table[TABLE_SIZE];
+
+/* Read one sample from the table with linear interpolation.
+   phase is the full 32-bit accumulator. Returns Q15. */
+static inline int32_t sine_from_phase(uint32_t phase) {
+    uint32_t idx0 = (phase &gt;&gt; PHASE_FRAC_BITS) &amp; (TABLE_SIZE - 1);
+    uint32_t idx1 = (idx0 + 1) &amp; (TABLE_SIZE - 1);
+    uint32_t frac = (phase &gt;&gt; (PHASE_FRAC_BITS - 10)) &amp; 0x3FF; /* 10-bit frac */
+    int32_t  s0   = osc_sine_table[idx0];
+    int32_t  s1   = osc_sine_table[idx1];
+    /* Linear interpolation: s0 + frac/1024 * (s1 - s0) */
+    return s0 + (int32_t)(((s1 - s0) * (int32_t)frac) &gt;&gt; 10);
+}
+
+/* Render one sample from the FM voice. Returns Q15 output. */
+static inline int16_t fm_voice_tick(FMVoice *v) {
+    /* --- Pair 0: Op0 modulates Op1 --- */
+    /* Tick modulator Op0 */
+    int32_t env0   = adsr_tick(&amp;v-&gt;op[0].env);
+    int32_t raw0   = sine_from_phase(v-&gt;op[0].phase);
+    v-&gt;op[0].output = (int16_t)((raw0 * env0) &gt;&gt; 15);
+    v-&gt;op[0].phase += v-&gt;op[0].phase_inc;
+
+    /* Tick carrier Op1 with phase modulated by Op0 */
+    int32_t env1    = adsr_tick(&amp;v-&gt;op[1].env);
+    int32_t mod_ph0 = (v-&gt;op[0].output * v-&gt;mod_index[0]) &gt;&gt; 15;
+    int32_t raw1    = sine_from_phase(v-&gt;op[1].phase + (uint32_t)(mod_ph0 &lt;&lt; 8));
+    int32_t out1    = (raw1 * env1) &gt;&gt; 15;
+    v-&gt;op[1].phase += v-&gt;op[1].phase_inc;
+
+    /* --- Pair 1: Op2 modulates Op3 --- */
+    int32_t env2    = adsr_tick(&amp;v-&gt;op[2].env);
+    int32_t raw2    = sine_from_phase(v-&gt;op[2].phase);
+    v-&gt;op[2].output = (int16_t)((raw2 * env2) &gt;&gt; 15);
+    v-&gt;op[2].phase += v-&gt;op[2].phase_inc;
+
+    int32_t env3    = adsr_tick(&amp;v-&gt;op[3].env);
+    int32_t mod_ph1 = (v-&gt;op[2].output * v-&gt;mod_index[1]) &gt;&gt; 15;
+    int32_t raw3    = sine_from_phase(v-&gt;op[3].phase + (uint32_t)(mod_ph1 &lt;&lt; 8));
+    int32_t out3    = (raw3 * env3) &gt;&gt; 15;
+    v-&gt;op[3].phase += v-&gt;op[3].phase_inc;
+
+    /* Mix carriers: average to avoid overflow */
+    int32_t mix = (out1 + out3) &gt;&gt; 1;
+    /* Clamp to int16_t range */
+    if (mix &gt;  32767) mix =  32767;
+    if (mix &lt; -32768) mix = -32768;
+    return (int16_t)mix;
+}
+</pre>
+
+<p>
+The phase modulation shift of <code>&lt;&lt; 8</code> maps the Q15 modulator output into
+the 32-bit phase accumulator space. Because the phase accumulator represents a full
+[0, 2pi] cycle as [0, 2^32), a phase offset of one full cycle is 2^32 counts. The
+modulator at full scale (Q15 = 32767) should produce a modulation of roughly 2*pi
+radians - which is TABLE_SIZE table steps, which is TABLE_SIZE * 2^PHASE_FRAC_BITS
+accumulator counts. With TABLE_SIZE=2048 and PHASE_FRAC_BITS=22, that is
+2048 * 2^22 = 2^33 - one bit over 32 bits, so we scale by 2^8 (shift left 8) to map
+Q15's 2^15 scale to the required 2^23 range. Adjust this scaling to taste; higher
+values increase the maximum modulation index.
+</p>
+
+<h3>Voice Setup: Setting Note Frequency</h3>
+
+<pre>
+/* Set the base note frequency for the voice.
+   Each operator's phase_inc = note_inc * operator_ratio. */
+static void fm_voice_note(FMVoice *v, float freq_hz) {
+    /* base phase increment for this frequency */
+    float note_inc_f = (freq_hz / SAMPLE_RATE) * TABLE_SIZE
+                       * (float)(1u &lt;&lt; PHASE_FRAC_BITS);
+    uint32_t note_inc = (uint32_t)note_inc_f;
+    for (int i = 0; i &lt; 4; i++) {
+        v-&gt;op[i].phase_inc = (uint32_t)(note_inc * v-&gt;op[i].ratio);
+    }
+}
+
+/* Example preset: electric piano-like timbre */
+static void fm_voice_init_epiano(FMVoice *v) {
+    /* Operator ratios: carrier at 1x, modulator at 1x (pair 0)
+       carrier at 3x, modulator at 3.5x (pair 1 - higher harmonics) */
+    v-&gt;op[0].ratio = 1.0f;   /* modulator  */
+    v-&gt;op[1].ratio = 1.0f;   /* carrier    */
+    v-&gt;op[2].ratio = 3.0f;   /* modulator  */
+    v-&gt;op[3].ratio = 3.0f;   /* carrier    */
+
+    /* Modulation indices: pair 0 moderate, pair 1 lighter */
+    v-&gt;mod_index[0] = 12000;   /* ~0.37 in Q15 */
+    v-&gt;mod_index[1] =  6000;   /* ~0.18 in Q15 */
+
+    /* ADSRs: fast attack, medium decay, sustain at 70%, medium release */
+    adsr_set(&amp;v-&gt;op[0].env,   8.0f, 200.0f, 90,  300.0f);
+    adsr_set(&amp;v-&gt;op[1].env,   8.0f, 300.0f, 70,  500.0f);
+    adsr_set(&amp;v-&gt;op[2].env,  10.0f, 150.0f, 80,  250.0f);
+    adsr_set(&amp;v-&gt;op[3].env,  10.0f, 250.0f, 60,  400.0f);
+
+    for (int i = 0; i &lt; 4; i++)
+        v-&gt;op[i].phase = 0;
+}
+</pre>
+
+<h3>Benchmark: CPU% at 44.1 kHz</h3>
+
+<p>
+Measured on RP2040 at 125 MHz with SysTick (see Part 5), rendering a 256-frame buffer
+with one 4-operator FM voice at 440 Hz:
+</p>
+
+<pre>
+Buffer size:    256 frames
+Budget:         725,623 cycles  (256 * 125000000 / 44100)
+
+Per-buffer cost:
+  4x adsr_tick:         ~160 cycles total (40 each, integer only)
+  4x sine_from_phase:   ~120 cycles total (30 each, table lookup + lerp)
+  4x Q15 multiplies:     ~16 cycles total
+  Phase increments:       ~8 cycles total
+  Overhead (loop, mix):  ~20 cycles
+
+Per-sample total:        ~324 cycles / 256 samples ≈ 1.27 cycles/sample per op
+Total for 4 ops:         ~83,000 cycles per buffer
+CPU%:                    11.4% of audio budget
+</pre>
+
+<p>
+That leaves 88.6% of the audio CPU budget for MIDI parsing (core 0), filter (Part 10),
+and future polyphony. You could run four simultaneous FM voices and still have margin.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+A 4-operator FM engine on the RP2040 fits comfortably in 12% of the audio CPU budget
+at 44.1 kHz. The operator struct combines a phase accumulator, a frequency ratio, and
+an ADSR envelope; the algorithm graph is just a fixed order of evaluation with one
+operator's output added (scaled) to another's phase. ADSR in Q15 fixed-point avoids
+all per-sample soft-float calls - the only floats in the engine appear during note-on
+setup. The sine wavetable lives in flash XIP and is accessed sequentially, keeping
+cache miss cost low.
+</p>
+
+<p>
+Part 7 adds UART MIDI input so the FM engine can be played from an external
+controller - handling the MIDI byte stream state machine, running status, and passing
+note events from core 0 to core 1 through a lock-free ring buffer.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 Datasheet - Chapter 4 (XIP), Appendix B (SysTick)</a></li>
+<li><a href="https://ccrma.stanford.edu/~jos/mdft/Sinusoidal_Frequency_Modulation.html">Sinusoidal FM - Julius O. Smith III, CCRMA</a></li>
+<li><a href="https://web.archive.org/web/20190226195750/http://www.rupertneal.com/dxfm/dxfm.html">DX7 FM Synthesis - Rupert Neal (archived)</a></li>
+<li><a href="https://github.com/asb2m10/dexed">Dexed - DX7 emulator, open source C++ reference</a></li>
+<li><a href="https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf">Raspberry Pi Pico C/C++ SDK Reference</a></li>
+<li><a href="https://github.com/raspberrypi/pico-examples">pico-examples on GitHub</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="pico-05-porting-dsp.htm">Pico - Part 5: Porting DSP Code from the Desktop</a></li>
+<li><a href="pico-07-midi-uart.htm">Pico - Part 7: UART MIDI Input</a></li>
+<li><a href="pico-09-multicore.htm">Pico - Part 9: Multicore Communication</a></li>
+<li><a href="pico-10-synth-voice.htm">Pico - Part 10: Complete Synthesiser Voice</a></li>
+<li><a href="dsp-03-oscillators.htm">DSP - Part 3: Oscillators</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

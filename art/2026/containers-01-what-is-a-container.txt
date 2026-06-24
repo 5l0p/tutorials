@@ -1,0 +1,281 @@
+Containers - Part 1: What Is a Container?
+2026-06-09
+
+
+When you run docker run nginx, nothing magic happens. The kernel does not
+switch into a special "container mode". No hypervisor fires up. What actually
+happens is that a new process is created with a carefully arranged set of
+restrictions: a limited view of the filesystem, its own PID numbering, a
+private network stack, a hostname it controls, and hard limits on the CPU and
+memory it can consume. This article maps out the six building blocks that
+together produce what we call a container, and explains why there is no
+container() syscall.
+
+
+What You Will Learn
+
+
+Why there is no container() syscall and how containers are assembled from six separate kernel primitives
+What each primitive does: namespaces (visibility), cgroups (resources), rootfs (filesystem), capabilities, and seccomp
+How to use unshare from the shell to create the simplest possible namespace isolation
+How clone() in C creates a process in new namespaces in a single call
+What /proc/<pid>/ns/ contains and how namespace inode numbers identify shared membership
+What the rest of this series will build, article by article
+
+
+The Six Building Blocks
+
+
+A container is not a kernel object. It is a process - or a tree of processes -
+that has been placed inside a combination of six Linux kernel features:
+
+
+
+Namespaces - restrict what a process can see
+cgroups - restrict what a process can use
+Rootfs / pivot_root - restrict what a process can access on disk
+Capabilities - restrict what a process can do
+seccomp - restrict which syscalls a process can make
+Networking - give the process a private network stack
+
+
+
+Remove any one of these and you still have a process with unusual isolation, but
+you do not have a production-safe container. Container runtimes like runc
+configure all six. Understanding each one separately is how you understand
+containers as a whole.
+
+
+Why There Is No container() Syscall
+
+
+Linux grows features incrementally and conservatively. Namespaces were added
+piecemeal: mount namespaces in 2002, UTS and IPC in 2006, PID and network in
+2008, user namespaces reaching full usability around 2013, and time namespaces
+in 2020. cgroups v1 landed in 2008; cgroups v2 in 2016. seccomp BPF filtering
+in 2012.
+
+
+
+No single designer sat down and specified "the container interface". The
+primitives evolved to serve different purposes: namespaces came partly from the
+Plan 9 operating system's per-process namespace model; cgroups came from
+Google's internal workload isolation needs; seccomp came from sandboxing
+untrusted code. Containers are the combination of all of them applied together
+to a process at launch time.
+
+
+
+This also means that "container" is a policy decision made by userspace, not a
+kernel guarantee. Two processes can share some namespaces and not others. A
+process can be in a PID namespace but not a network namespace. Docker, runc,
+and other runtimes decide which combination to apply.
+
+
+A Process Is a Process
+
+
+The simplest demonstration: run a shell inside a new UTS namespace so it has
+its own hostname, but share everything else with the host.
+
+
+
+# On the host
+hostname
+# linux-host
+
+sudo unshare --uts bash
+# Now inside the new UTS namespace
+hostname container-one
+hostname
+# container-one
+
+# Exit, back on host
+hostname
+# linux-host
+
+
+
+That shell is a container in the narrowest sense: a process with a private
+hostname. It can still see every host process, every host network interface, the
+full filesystem. Namespaces are additive restrictions; you apply as many as you
+need.
+
+
+The Minimal C Program That "Makes a Container"
+
+
+The clone(3) syscall creates a new process, like fork(), but
+accepts flags that put the child into new namespaces immediately. This is how
+every container runtime starts a container. Here is the absolute minimum:
+
+
+
+#define _GNU_SOURCE
+#include <sched.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+static int child_fn(void *arg) {
+    printf("child PID (in new ns): %d\n", getpid());
+    return 0;
+}
+
+int main(void) {
+    const int STACK_SIZE = 65536;
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) { perror("malloc"); return 1; }
+
+    pid_t pid = clone(child_fn,
+                      stack + STACK_SIZE,   /* stack grows down */
+                      CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD,
+                      NULL);
+
+    if (pid == -1) { perror("clone"); return 1; }
+
+    printf("child host PID: %d\n", pid);
+    waitpid(pid, NULL, 0);
+    free(stack);
+    return 0;
+}
+
+
+
+Compile and run as root: gcc -o mini mini.c && sudo ./mini. The
+child reports PID 1 (inside the new PID namespace) while the host sees a normal
+PID like 48372. That gap between the two numbers is a namespace in action.
+
+
+Namespaces Restrict the View
+
+
+Linux currently has eight namespace types, each isolating a different resource:
+
+
+
+pid - process ID numbering
+mnt - the filesystem mount table
+net - network interfaces, routing tables, iptables rules
+uts - hostname and NIS domain name
+ipc - System V IPC objects and POSIX message queues
+user - UID/GID mappings (fake root inside)
+cgroup - which cgroup root the process sees
+time - per-process clock offsets (Linux 5.6+)
+
+
+
+Each namespace is a kernel object. You can see them as files under
+/proc/<pid>/ns/:
+
+
+
+ls -la /proc/self/ns/
+# lrwxrwxrwx ... cgroup -> cgroup:[4026531835]
+# lrwxrwxrwx ... ipc    -> ipc:[4026531839]
+# lrwxrwxrwx ... mnt    -> mnt:[4026531840]
+# lrwxrwxrwx ... net    -> net:[4026531992]
+# lrwxrwxrwx ... pid    -> pid:[4026531836]
+# lrwxrwxrwx ... time   -> time:[4026531834]
+# lrwxrwxrwx ... user   -> user:[4026531837]
+# lrwxrwxrwx ... uts    -> uts:[4026531838]
+
+
+
+The inode numbers in brackets are the namespace identifiers. Two processes that
+share the same inode number for a given namespace type are in the same
+namespace. lsns shows you all active namespaces on the host.
+
+
+cgroups Restrict Resources
+
+
+Namespaces restrict visibility but not consumption. A process in its own PID
+namespace can still fork-bomb the host. cgroups (control groups) are the kernel
+mechanism that limits CPU, memory, disk I/O, and process count. They are
+exposed as a virtual filesystem, traditionally at
+/sys/fs/cgroup/. Writing to files in that hierarchy sets limits; reading
+them reports current usage.
+
+
+
+# Create a cgroup and limit it to 100 MB of memory (cgroups v1)
+mkdir /sys/fs/cgroup/memory/mycontainer
+echo 104857600 > /sys/fs/cgroup/memory/mycontainer/memory.limit_in_bytes
+echo $$ > /sys/fs/cgroup/memory/mycontainer/tasks
+
+
+
+The process writing its own PID into tasks (or cgroup.procs in v2)
+joins that cgroup. From that point the kernel enforces the limit.
+
+
+Rootfs Restricts the Filesystem
+
+
+Even with namespaces and cgroups, the process can still read and write the
+host's /etc/passwd, its kernel modules, everything. A container gets its
+own filesystem tree - typically a minimal Linux distribution image. The kernel
+call pivot_root() changes the root of the filesystem for the process so
+that what it sees as / is a directory prepared by the container runtime,
+not the host's real root.
+
+
+Capabilities and seccomp Drop Privilege
+
+
+Even running as a non-root UID inside the container, there are dangerous
+operations available if the process retains capabilities. Container runtimes
+drop most of the ~40 Linux capabilities at startup. For example, dropping
+CAP_NET_RAW prevents raw socket access; dropping CAP_SYS_ADMIN
+prevents a wide range of kernel operations.
+
+
+
+seccomp goes further: it installs a BPF filter that intercepts every syscall
+before it reaches the kernel and returns EPERM (or kills the process) for
+anything on the blocklist. Docker's default seccomp profile blocks about 40
+syscalls including keyctl, ptrace, and mount.
+
+
+What This Series Covers
+
+
+Each article in this series implements one primitive from scratch. By the end
+you will have written a working mini container runtime in Go that applies all
+six building blocks to a real process. The final article maps that runtime
+against the OCI Runtime Specification that runc implements. The goal is to leave
+you with a clear, mechanical understanding of what happens - in kernel terms -
+when anyone runs a container.
+
+
+Summary
+
+
+A container is a process configured with six Linux kernel primitives: namespaces
+restrict what it can see, cgroups limit what it can consume, pivot_root
+gives it a private filesystem, and capabilities plus seccomp drop dangerous
+privileges. There is no container() syscall because the features were
+developed independently over two decades and combined by userspace tooling.
+Understanding each primitive separately is the foundation for understanding what
+Docker, Podman, and runc actually do.
+
+
+Further Reading
+
+
+namespaces(7) - Linux man page
+cgroups(7) - Linux man page
+Namespaces in operation, part 1: namespaces overview (LWN)
+Control Group v2 - kernel documentation
+runc - OCI reference runtime (GitHub)
+
+
+See Also
+
+
+Linux Namespaces Overview
+The clone() and unshare() Syscalls
+cgroups v1
+Building a Mini Container Runtime in Go
+

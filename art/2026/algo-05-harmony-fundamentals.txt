@@ -1,0 +1,297 @@
+Algorithmic Composition - Part 5: Harmony Fundamentals
+2026-01-15
+
+
+A melody generator from Parts 3 and 4 outputs notes one at a time. Add simultaneous
+notes — two, three, or four pitches sounding together — and you have harmony. Harmony
+is not just decoration. The relationship between pitches in a chord, and between
+consecutive chords, determines whether the music feels tense or relaxed, moving or
+stable, resolved or suspended. An algorithm that generates chord progressions needs
+a model of these relationships.
+
+
+
+That model starts with physics. The frequency ratios between pitches determine their
+acoustic interaction: some ratios produce simple, consonant relationships; others
+produce complex, beating interactions that the ear perceives as tension. This is
+not a cultural convention — it follows from the overtone series and the mechanics of
+how the cochlea resolves frequency differences.
+
+
+What You Will Learn
+
+
+The overtone series and why integer frequency ratios produce consonance
+Why equal temperament is a compromise and what that means in practice
+How to construct the four basic triad types from semitone intervals
+Roman numeral analysis: naming chords by their scale degree
+Tonic, subdominant, and dominant function: why I, IV, and V behave differently
+The Lua data structures used in Parts 6 and 7
+
+
+The Overtone Series
+
+
+A vibrating string produces not just its fundamental frequency f, but also overtones at
+integer multiples: 2f, 3f, 4f, 5f, and so on. These overtones are always present in
+any naturally produced pitch. The first few intervals they define:
+
+
+
+Fundamental (1f) → octave (2f):   ratio 2:1
+Octave (2f) → fifth (3f):         ratio 3:2
+Fifth (3f) → fourth (4f):         ratio 4:3
+Fourth (4f) → major third (5f):   ratio 5:4
+Major third (5f) → minor third (6f): ratio 6:5
+
+
+
+The simpler the ratio, the more consonant the interval. A perfect fifth (3:2) is more
+consonant than a major third (5:4), which is more consonant than a minor third (6:5),
+which is more consonant than a tritone (45:32 in just intonation — not a simple ratio).
+
+
+
+Consonance is not binary. It exists on a spectrum from the unison (1:1, maximally
+consonant) through the octave, fifth, fourth, third, sixth, second, and seventh to the
+tritone (maximally dissonant in Western tonal music). The tritone is the interval
+exactly halfway around the chromatic circle — six semitones — and its lack of a simple
+integer ratio makes it acoustically unstable.
+
+
+Equal Temperament: The Compromise
+
+
+Just intonation uses exact integer ratios. A perfect fifth is exactly 3:2 = 1.5000.
+In twelve-tone equal temperament, a fifth is 2^(7/12) = 1.4983 — 1.96 cents flat of
+just. The difference is small enough that most listeners cannot detect it in isolation.
+
+
+
+The reason for the compromise: just intonation produces slightly different tunings for
+the same note in different keys. A keyboard instrument tuned just in C will be audibly
+out of tune in F# major. Equal temperament spreads the mistuning evenly across all keys,
+making every key equally (slightly) out of tune and enabling free modulation.
+
+
+
+For algorithmic composition with MIDI, you always work in equal temperament. The
+consonance relationships from just intonation are approximately preserved.
+
+
+Constructing Triads
+
+
+A triad is three pitches: a root, a third above, and a fifth above. The four basic
+triad types, specified as semitone intervals from root:
+
+
+
+local triad_types = {
+    major      = {0, 4, 7},   -- root, major third (4 semitones), perfect fifth (7)
+    minor      = {0, 3, 7},   -- root, minor third (3), perfect fifth (7)
+    diminished = {0, 3, 6},   -- root, minor third (3), diminished fifth (6)
+    augmented  = {0, 4, 8},   -- root, major third (4), augmented fifth (8)
+}
+
+
+
+To build a C major triad rooted at MIDI 60: add offsets {0, 4, 7} to get {60, 64, 67}
+(C4, E4, G4). To build A minor rooted at 69: add {0, 3, 7} to get {69, 72, 76}
+(A4, C5, E5).
+
+
+
+The perfect fifth (7 semitones, present in both major and minor) is the interval closest
+to a just 3:2 ratio. It is the most acoustically stable interval after the octave, which
+is why triads built on it feel grounded. The difference between major and minor is the
+third: 4 semitones (close to 5:4 just major third) versus 3 semitones (close to 6:5 just
+minor third).
+
+
+Diatonic Triads
+
+
+In a major scale, you can build a triad on each of the seven degrees using only scale
+tones (no chromatic alterations). The triad type is determined by the scale:
+
+
+
+-- Diatonic triad types in a major scale
+-- I=major, II=minor, III=minor, IV=major, V=major, VI=minor, VII=diminished
+local major_diatonic = {
+    major, minor, minor, major, major, minor, diminished
+}
+-- (using indices 1-7 for degrees)
+
+
+
+In Lua, build the diatonic triads for a given root and scale:
+
+
+
+local pitch = require("pitch")
+
+local function diatonic_triads(root, scale, triad_types)
+    local n = #scale
+    local triads = {}
+    for d = 1, n do
+        -- The three scale degrees of the triad: d, d+2, d+4 (with wrap)
+        local function sc_pitch(deg)
+            -- deg is 1-based, possibly  n
+            local i = ((deg - 1) % n) + 1
+            local octave_bump = math.floor((deg - 1) / n) * 12
+            return root + scale[i] + octave_bump
+        end
+        triads[d] = {
+            sc_pitch(d),
+            sc_pitch(d + 2),
+            sc_pitch(d + 4),
+        }
+    end
+    return triads
+end
+
+-- C major, root C4 = 60
+local triads = diatonic_triads(60, pitch.scales.major, triad_types)
+
+for d, t in ipairs(triads) do
+    print(string.format("Degree %d: %s %s %s",
+        d, pitch.name(t[1]), pitch.name(t[2]), pitch.name(t[3])))
+end
+
+
+
+Output:
+
+
+
+Degree 1: C4 E4 G4
+Degree 2: D4 F4 A4
+Degree 3: E4 G4 B4
+Degree 4: F4 A4 C5
+Degree 5: G4 B4 D5
+Degree 6: A4 C5 E5
+Degree 7: B4 D5 F5
+
+
+Roman Numeral Analysis
+
+
+Western music theory names chords by their scale degree using Roman numerals: I, II, III,
+IV, V, VI, VII. Uppercase means major quality; lowercase means minor or diminished. In C
+major: I (C major), ii (D minor), iii (E minor), IV (F major), V (G major), vi (A minor),
+vii° (B diminished).
+
+
+
+The numbering is key-independent: I is always the tonic triad of whatever key you are in.
+This lets you describe a chord progression as I–IV–V–I and have it apply in any key by
+substituting the appropriate root. In Lua, Roman numeral analysis means working with
+degree indices (1–7) rather than absolute pitch classes. This is why the algorithms
+in Parts 3 and 4 work in scale degrees and only convert to MIDI at output time.
+
+
+Harmonic Function
+
+
+The three primary triads — I (tonic), IV (subdominant), V (dominant) — have distinct
+harmonic functions that transcend their specific pitches:
+
+
+
+Tonic (I, and by extension iii, vi): Stability. Home. The ear's default resting
+state. A piece can end here. Tension does not need to resolve when you are on a tonic chord.
+
+
+
+Subdominant (IV, and ii): Movement away from tonic. A mild raising of tension, a
+sense of departure. Often precedes the dominant. IV–V–I is the cadential archetype.
+
+
+
+Dominant (V, and vii°): Strong tension, strong pull toward resolution. The V chord
+contains the leading tone (degree 7), which has a strong gravitational pull upward to the
+tonic. V–I is the strongest cadential motion in tonal music.
+
+
+
+Functional labels T (tonic), S (subdominant), and D (dominant) abstract away the specific
+chord and capture the harmonic role. The Markov chain in Part 6 operates on T, S, D —
+not on chord degrees — so the progression grammar is key-independent.
+
+
+Modal Interchange
+
+
+Modal interchange borrows chords from the parallel minor (or other modes) without fully
+modulating. In C major, the parallel minor is C minor. Its diatonic chords include
+bVII (Bb major), bVI (Ab major), and iv (F minor) — none of which appear in C major.
+Borrowing bVII into a C major progression adds colour without abandoning the key.
+
+
+
+In Lua, represent borrowed chords as additional entries with a flag:
+
+
+
+local chord_db = {
+    -- diatonic major chords
+    [1]  = {root_offset=0,  type="major",      function_="T"},
+    [2]  = {root_offset=2,  type="minor",      function_="S"},
+    [3]  = {root_offset=4,  type="minor",      function_="T"},
+    [4]  = {root_offset=5,  type="major",      function_="S"},
+    [5]  = {root_offset=7,  type="major",      function_="D"},
+    [6]  = {root_offset=9,  type="minor",      function_="T"},
+    [7]  = {root_offset=11, type="diminished", function_="D"},
+    -- borrowed from parallel minor
+    [8]  = {root_offset=10, type="major",      function_="D", borrowed=true},  -- bVII
+    [9]  = {root_offset=8,  type="major",      function_="S", borrowed=true},  -- bVI
+    [10] = {root_offset=5,  type="minor",      function_="S", borrowed=true},  -- iv
+}
+
+-- Build absolute MIDI pitches for a chord entry
+local function build_chord(entry, root)
+    local cr = root + entry.root_offset
+    local t  = triad_types[entry.type]
+    return {cr + t[1], cr + t[2], cr + t[3]}
+end
+
+
+
+The chord_db table is the data structure Part 6 uses when generating
+progressions. Part 7 uses it to look up the chord tones for voice leading.
+
+
+Summary
+
+
+Consonance follows from the overtone series: simple integer frequency ratios produce
+stable intervals (octave 2:1, fifth 3:2, major third 5:4); complex ratios produce
+tension (tritone 45:32). Equal temperament approximates just intonation closely enough
+for practical use while enabling free key modulation. Triads are three-note chords built
+by stacking thirds; the four types (major, minor, diminished, augmented) differ in the
+size of those thirds. Roman numeral analysis names chords by scale degree; harmonic
+function (T, S, D) captures their role in creating and releasing tension. Modal
+interchange borrows chords from parallel modes for colour. These are the data structures
+that the chord progression generator in Part 6 and the voice leading algorithm in
+Part 7 operate on.
+
+
+Further Reading
+
+
+musictheory.net — Triads
+musictheory.net — Harmonic Function
+Dmitri Tymoczko — A Geometry of Music (Princeton UP, 2011)
+Julius O. Smith — Consonance and Dissonance (CCRMA)
+
+
+See Also
+
+
+Part 4: Markov Chains for Melody - scale degrees and transition matrices
+Part 6: Generating Chord Progressions - uses the chord_db and functional labels from this article
+Part 7: Voice Leading - uses the triad types and chord building code
+FM Synthesis - how frequency ratios produce timbre (related physics)
+

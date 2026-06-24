@@ -1,0 +1,404 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Algorithmic Composition - Part 3: Random Walks and Brownian Motion</title>
+    <meta name="description" content="Why pure random pitch selection is musically useless, how Brownian motion models melodic contour as a walk through pitch space, step size and register boundaries as musical parameters, and fractional Brownian motion with the Hurst exponent for controlling phrase shape.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="lua, puredata, audio, music-theory, generative">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="algo-03-random-walks-brownian-motion.txt">plain/text</a> | <i>2026-01-13</i> | <i><a href="../../lua.htm">lua</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../music-theory.htm">music-theory</a>, <a href="../../generative.htm">generative</a></i>
+        <h2>Algorithmic Composition - Part 3: Random Walks and Brownian Motion</h2>
+        <p>
+The simplest generative melody picks each note at random from a scale. The result is
+statistically in-key but musically incoherent: no phrase shape, no sense of direction,
+no reason for any note to follow the previous one. It sounds like a scale demonstration
+played by someone who has lost the ability to hear what they just played.
+</p>
+
+<p>
+The problem is that random selection has no memory. Each note is chosen independently,
+so the sequence has no momentum or contour. Real melodies — whether composed by a human
+or perceived as natural — have correlation between consecutive pitches. A melody that
+leaps up tends to step down next; a melody that has been climbing tends to keep climbing
+for a while before turning around.
+</p>
+
+<p>
+Brownian motion models exactly this. Instead of choosing each pitch independently, choose
+each <i>change in pitch</i> independently and accumulate the changes. The result is a
+random walk through pitch space: each step is random, but the current position depends on
+all previous steps, so the melody has shape and direction.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why uncorrelated random pitch selection lacks melodic coherence</li>
+<li>Brownian motion as a 1D random walk: the recurrence <code>x[t+1] = x[t] + ε</code></li>
+<li>How step size σ controls the character of the melody (stepwise vs. leaping)</li>
+<li>Reflective register boundaries for keeping the walk in range</li>
+<li>Fractional Brownian motion (fBm) and the Hurst exponent H for phrase-shape control</li>
+<li>A complete Lua implementation of both standard and fractional Brownian melody generators</li>
+</ul>
+
+<h3>Standard Brownian Motion</h3>
+
+<p>
+Standard 1D Brownian motion is defined by the recurrence:
+</p>
+
+<pre>
+x[0] = start
+x[t+1] = x[t] + ε
+</pre>
+
+<p>
+where ε is drawn independently at each step from a Gaussian distribution with mean 0 and
+standard deviation σ. The parameter σ is the step size. After applying scale quantisation
+from Part 2, the walk produces a melody.
+</p>
+
+<p>
+The musical effect of σ:
+</p>
+
+<ul>
+<li><b>σ ≈ 1.0:</b> mostly semitone steps; very stepwise, conjunct melody with rare leaps.</li>
+<li><b>σ ≈ 2.5:</b> mix of steps and small leaps (thirds, fourths); sounds like folk melody.</li>
+<li><b>σ ≈ 5.0:</b> frequent large leaps; angular, jazz or atonal character.</li>
+<li><b>σ ≈ 10.0:</b> register-spanning jumps; effectively disjunct.</li>
+</ul>
+
+<p>
+The Gaussian step requires sampling from a normal distribution. Lua's <code>math.random()</code>
+produces uniform random numbers in [0,1). The Box-Muller transform converts two uniform
+samples to one Gaussian sample:
+</p>
+
+<pre>
+local function gaussian(sigma)
+    local u1 = math.random()
+    local u2 = math.random()
+    -- Box-Muller: produces a standard normal; scale by sigma
+    return math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2) * sigma
+end
+</pre>
+
+<h3>Register Boundaries</h3>
+
+<p>
+An unbounded Brownian walk will drift arbitrarily far from its starting point. A melody
+must stay within a register (say, MIDI 48–84, covering two octaves around middle C).
+Hard clipping — clamping to the boundary — creates a flat ceiling effect: the melody
+hits the boundary and sits there until random steps bring it back down. Musically, this
+sounds wrong.
+</p>
+
+<p>
+Reflective boundaries are better: when the walk tries to cross a boundary, the excess
+distance is reflected back. If the current pitch is 80, the boundary is 84, and the next
+step is +6 semitones, the new position would be 86 — 2 above the boundary. Reflect: the
+new position becomes 84 - (86 - 84) = 82. The walk bounces.
+</p>
+
+<pre>
+local function reflect(x, lo, hi)
+    -- reflect x into [lo, hi]
+    while x &lt; lo or x &gt; hi do
+        if x &lt; lo then x = 2 * lo - x end
+        if x &gt; hi then x = 2 * hi - x end
+    end
+    return x
+end
+</pre>
+
+<h3>The Standard Brownian Melody Generator</h3>
+
+<pre>
+local pitch = require("pitch")
+
+local function brown_melody(params)
+    local root  = params.root  or 60              -- root note (MIDI)
+    local scale = params.scale or pitch.scales.pentatonic
+    local start = params.start or root + 12       -- starting pitch
+    local sigma = params.sigma or 2.5             -- step size in semitones
+    local lo    = params.lo    or root            -- lower register bound
+    local hi    = params.hi    or root + 24       -- upper register bound
+    local n     = params.n     or 32              -- number of notes
+
+    local state  = start
+    local result = {}
+
+    for i = 1, n do
+        local step = gaussian(sigma)
+        state = reflect(state + step, lo, hi)
+        result[i] = pitch.quantise(math.floor(state + 0.5), root, scale)
+    end
+
+    return result
+end
+
+-- Example: 32 notes, D dorian, root D3 (50)
+math.randomseed(42)
+local melody = brown_melody({
+    root  = 50,
+    scale = pitch.scales.dorian,
+    start = 62,   -- D4, one octave up from root
+    sigma = 2.0,
+    lo    = 50,
+    hi    = 74,
+    n     = 32,
+})
+
+for i, note in ipairs(melody) do
+    io.write(pitch.name(note) .. " ")
+    if i % 8 == 0 then print() end
+end
+</pre>
+
+<p>
+Sample output (seed 42, D dorian, σ=2):
+</p>
+
+<pre>
+D4  C4  D4  C4  A3  C4  D4  E4
+F4  G4  F4  G4  A4  G4  F4  E4
+D4  E4  D4  C4  D4  F4  E4  D4
+C4  D4  E4  F4  E4  D4  C4  D4
+</pre>
+
+<p>
+The walk moves in small steps, reverses when it reaches the register limits, and produces
+a melody with clear phrase arcs — nothing you would compose consciously, but something
+that sounds like it was.
+</p>
+
+<h3>Fractional Brownian Motion</h3>
+
+<p>
+Standard Brownian motion has no correlation between consecutive steps — knowing the
+direction of the last step gives no information about the next. This is the Hurst
+exponent H = 0.5. Fractional Brownian motion generalises this:
+</p>
+
+<ul>
+<li><b>H = 0.5:</b> standard Brownian motion; uncorrelated steps.</li>
+<li><b>H &gt; 0.5 (e.g. 0.7–0.9):</b> positively correlated steps. If the last step went up, the next step is more likely to go up. This produces smooth, arcing melodies that feel "directional".</li>
+<li><b>H &lt; 0.5 (e.g. 0.2–0.4):</b> negatively correlated steps. The walk reverses more often than chance. This produces a nervous, oscillating quality.</li>
+</ul>
+
+<p>
+Exact fBm generation requires the Cholesky method (expensive) or the spectral method
+(FFT). A practical approximation for music uses an exponentially weighted moving average
+of Gaussian steps. The mixing coefficient α derived from H:
+</p>
+
+<pre>
+α = 2H - 1    (maps H ∈ [0.5, 1] to α ∈ [0, 1])
+</pre>
+
+<p>
+At each step, the "velocity" (current momentum) is mixed with new random noise:
+</p>
+
+<pre>
+velocity[t+1] = α × velocity[t] + (1 - α) × noise[t]
+x[t+1] = x[t] + velocity[t+1]
+</pre>
+
+<p>
+When α = 0 (H = 0.5): velocity is just the new noise each step — standard BM. When
+α → 1 (H → 1): velocity barely changes — the walk has strong momentum and drifts in
+one direction for long runs.
+</p>
+
+<pre>
+local function fbm_melody(params)
+    local root  = params.root  or 60
+    local scale = params.scale or pitch.scales.pentatonic
+    local start = params.start or root + 12
+    local sigma = params.sigma or 2.5
+    local H     = params.H     or 0.7     -- Hurst exponent
+    local lo    = params.lo    or root
+    local hi    = params.hi    or root + 24
+    local n     = params.n     or 32
+
+    -- α = 0 is pure Brownian (H=0.5), α = 1 is full momentum (H=1)
+    local alpha    = math.max(0, 2 * H - 1)
+    local state    = start
+    local velocity = 0
+    local result   = {}
+
+    for i = 1, n do
+        local noise = gaussian(sigma)
+        velocity = alpha * velocity + (1 - alpha) * noise
+
+        local next = state + velocity
+        -- reflective boundary: also reverse velocity so momentum respects walls
+        if next &gt; hi then
+            next = 2 * hi - next
+            velocity = -math.abs(velocity)
+        end
+        if next &lt; lo then
+            next = 2 * lo - next
+            velocity = math.abs(velocity)
+        end
+
+        state = math.max(lo, math.min(hi, next))
+        result[i] = pitch.quantise(math.floor(state + 0.5), root, scale)
+    end
+
+    return result
+end
+</pre>
+
+<h3>The 1/f Connection</h3>
+
+<p>
+Standard Brownian motion has a power spectrum of 1/f² (brown noise): low frequencies
+have much more energy than high frequencies. Analyses of Western melodic corpora by
+Voss and Clarke (1978) found that pitch sequences in music have a 1/f spectrum — between
+white noise (1/f⁰) and brown noise (1/f²). This corresponds to H ≈ 0.7–0.8 in fBm.
+</p>
+
+<p>
+This is not a prescription but an observation: melodies that humans find natural tend to
+have Hurst exponents in this range. Setting H = 0.75 and tuning σ to match the desired
+phrase density is a reasonable starting point for any new algorithmic instrument.
+</p>
+
+<h3>Sending the Melody to Pure Data</h3>
+
+<p>
+The Pd side only needs a receiver that accepts note-on events. A minimal Pd patch for
+driving the Monomachine VO engine from Part 11:
+</p>
+
+<pre>
+; In Pure Data:
+[receive algo-note]
+|
+[sel 0]          ; filter out rests (note 0 = rest convention)
+|
+[route float]
+|
+[mtof]           ; MIDI → Hz
+|
+[osc~]
+</pre>
+
+<p>
+In Lua, iterate the melody array and send each note with a timing delay:
+</p>
+
+<pre>
+local step_ms = 250   -- 16th note at 120 BPM = 125ms; use 250 for 8th notes
+
+for i, note in ipairs(melody) do
+    pd.send("algo-note", note)
+    pd.delay(step_ms)   -- non-blocking delay in the libpd scheduler
+end
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+Pure random pitch selection is memoryless and produces no melodic shape. Brownian motion
+generates melodic contour by accumulating random steps: each note depends on the previous
+one, giving the melody momentum and direction. Step size σ controls the character (stepwise
+vs. leaping). Reflective boundaries keep the walk in a defined register. Fractional
+Brownian motion adds a Hurst exponent H that controls how correlated consecutive steps
+are: H ≈ 0.75 produces the smooth arcing quality found in natural-sounding melodies.
+Both generators live in Lua and deliver MIDI note numbers to Pure Data via <code>pd.send</code>.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://asa.scitation.org/doi/10.1121/1.381945">Voss &amp; Clarke — "1/f noise in music" (J. Acoust. Soc. Am., 1978)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Fractional_Brownian_motion">Wikipedia — Fractional Brownian Motion</a></li>
+<li><a href="https://www.researchgate.net/publication/265045576_Algorithmic_Composition_A_Gentle_Introduction_to_Music_Composition_Using_Common_LISP_and_Common_Music">Taube — Algorithmic Composition: A Gentle Introduction (Ch. 4: Stochastic Methods)</a></li>
+<li><a href="https://ccrma.stanford.edu/~jos/sasp/Spectral_Audio_Signal_Processing.html">Julius O. Smith — Spectral Audio Signal Processing (noise chapter)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="algo-02-pitch-as-numbers.htm">Part 2: Pitch as Numbers</a> - the <code>pitch.lua</code> module and quantise function used here</li>
+<li><a href="algo-04-markov-chains.htm">Part 4: Markov Chains for Melody</a> - encoding musical tendency as a transition matrix</li>
+<li><a href="dsp-17-granular.htm">Granular Synthesis</a> - another stochastic technique: random grain scheduling</li>
+<li><a href="algo-11-putting-it-together.htm">Part 11: Putting It All Together</a> - the Brownian generator drives the melodic voice</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

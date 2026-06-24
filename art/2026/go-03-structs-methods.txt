@@ -1,0 +1,328 @@
+Go - Part 3: Structs & Methods
+2026-07-06
+
+
+Go has no classes. The two things C# classes give you - data grouping and behaviour
+attached to data - are provided by structs and methods respectively, but the mechanisms are
+different enough to warrant a careful look. There is no inheritance hierarchy, no virtual
+dispatch table, and no this keyword. Instead Go uses composition via
+embedding, and behaviour is attached to types through methods with explicit receivers.
+
+
+What You Will Learn
+
+
+How to define structs and initialise them with field names or positional literals
+Value vs pointer receivers: when to use each and what the method set rules are
+How to attach methods to non-struct types
+Embedding as composition: how promoted fields and methods work, and where they differ from inheritance
+Method set rules and why they matter for interface satisfaction
+Struct tags and how encoding/json uses them
+
+
+Defining Structs
+
+
+Struct syntax in Go is similar to C:
+
+
+
+type Point struct {
+    X float64
+    Y float64
+}
+
+type Person struct {
+    Name string
+    Age  int
+}
+
+
+
+Exported fields start with an uppercase letter; unexported fields start with a lowercase
+letter. This is the Go visibility rule - it applies to everything, not just struct fields.
+There are no public, private, or protected keywords.
+
+
+
+Struct literals can be written two ways:
+
+
+
+// Positional (fragile - breaks if you add a field)
+p1 := Point{1.0, 2.0}
+
+// Named (preferred)
+p2 := Point{X: 1.0, Y: 2.0}
+
+// Partial - unspecified fields get zero values
+p3 := Point{X: 3.0} // Y is 0.0
+
+
+
+In C, struct members are accessed with . or -> depending on
+whether you have a value or pointer. In Go, the dot operator works for both - the compiler
+dereferences automatically.
+
+
+
+p := Point{X: 1.0, Y: 2.0}
+ptr := &p
+
+fmt.Println(p.X)   // 1.0
+fmt.Println(ptr.X) // 1.0 - auto-dereferenced, no - needed
+
+
+Methods
+
+
+A method is a function with a receiver - a parameter before the function name that
+specifies which type the method belongs to. In C# this is implicit (the class itself is the
+receiver). In Go it is explicit:
+
+
+
+func (p Point) Distance() float64 {
+    return math.Sqrt(p.X*p.X + p.Y*p.Y)
+}
+
+// Call it:
+pt := Point{X: 3.0, Y: 4.0}
+fmt.Println(pt.Distance()) // 5
+
+
+
+Here p is the receiver. It is a copy of the struct - modifications to
+p inside the method do not affect the caller. To modify the struct, use a
+pointer receiver:
+
+
+
+func (p *Point) Scale(factor float64) {
+    p.X *= factor
+    p.Y *= factor
+}
+
+pt := Point{X: 3.0, Y: 4.0}
+pt.Scale(2.0)
+fmt.Println(pt) // {6 8}
+
+
+
+The choice between value and pointer receivers is significant:
+
+
+
+Use a pointer receiver when the method needs to modify the receiver, or when the struct is large and you want to avoid copying it on every call.
+Use a value receiver when the struct is small and the method does not modify it.
+Be consistent: if any method on a type uses a pointer receiver, all methods should - mixing them leads to subtle bugs with interfaces.
+
+
+
+In C#, all instance methods implicitly have a pointer receiver (they operate on the
+heap-allocated object). In Go you choose explicitly, which gives you control over
+allocation and copy semantics.
+
+
+Methods on Non-Struct Types
+
+
+Methods are not limited to structs. You can define them on any named type defined in the
+same package:
+
+
+
+type Celsius float64
+
+func (c Celsius) Fahrenheit() float64 {
+    return float64(c)*9/5 + 32
+}
+
+temp := Celsius(100)
+fmt.Println(temp.Fahrenheit()) // 212
+
+
+
+This cannot be done with predeclared types like int directly - you must
+create a named type first. This is stricter than C# extension methods, which can be
+applied to any type including those from other packages.
+
+
+Embedding: Composition Over Inheritance
+
+
+Go has no class inheritance. Instead it has embedding - you can include one struct
+inside another, and the outer struct automatically gains the embedded type's fields and
+methods. This is similar to aggregation in C but with automatic method promotion.
+
+
+
+type Animal struct {
+    Name string
+}
+
+func (a Animal) Speak() string {
+    return a.Name + " makes a sound"
+}
+
+type Dog struct {
+    Animal        // embedded - not a named field
+    Breed string
+}
+
+d := Dog{
+    Animal: Animal{Name: "Rex"},
+    Breed:  "Labrador",
+}
+
+// Dog gets Animal's fields and methods promoted:
+fmt.Println(d.Name)    // "Rex" - Animal.Name promoted to Dog
+fmt.Println(d.Speak()) // "Rex makes a sound" - Animal.Speak promoted
+fmt.Println(d.Breed)   // "Labrador"
+
+
+
+This looks like inheritance but it is not. Dog does not is-a
+Animal - it has-a Animal embedded in it. You cannot
+pass a Dog where an Animal is expected. If you want
+polymorphism, you use interfaces (covered in the next article).
+
+
+
+You can embed multiple types, and you can override a promoted method by defining one with
+the same name on the outer type:
+
+
+
+type Dog struct {
+    Animal
+    Breed string
+}
+
+func (d Dog) Speak() string {
+    return d.Name + " barks"
+}
+
+d := Dog{Animal: Animal{Name: "Rex"}, Breed: "Labrador"}
+fmt.Println(d.Speak())        // "Rex barks" - Dog's own method wins
+fmt.Println(d.Animal.Speak()) // "Rex makes a sound" - explicit access still works
+
+
+
+In C# you achieve the same by having a base class field and manually delegating calls.
+Embedding is Go's way of removing that boilerplate.
+
+
+Method Sets and Interface Satisfaction
+
+
+The method set of a type is the set of methods callable on a value of that type.
+This matters because interface satisfaction depends on it:
+
+
+
+The method set of type T includes all methods with value receivers of type T.
+The method set of type *T includes all methods with value or pointer receivers of type T.
+
+
+
+Concretely: if you define a method with a pointer receiver, only a pointer to the type
+satisfies interfaces requiring that method. A value does not - because the value may be
+unaddressable (for example, stored in an interface or a map):
+
+
+
+type Stringer interface {
+    String() string
+}
+
+type MyType struct{ val int }
+
+func (m *MyType) String() string {
+    return fmt.Sprintf("MyType(%d)", m.val)
+}
+
+var s Stringer = &MyType{val: 42} // OK: *MyType has String()
+// var s Stringer = MyType{val: 42} // compile error: MyType does not implement Stringer
+
+
+Struct Tags
+
+
+Struct fields can carry metadata called tags - raw strings in backtick literals
+placed after the field type. They are not used by the Go compiler itself; they are read
+at runtime via reflection. The most common use is JSON serialisation:
+
+
+
+type User struct {
+    ID       int    `json:"id"`
+    Username string `json:"username"`
+    Password string `json:"-"`           // omit from JSON
+    Email    string `json:"email,omitempty"` // omit if empty
+}
+
+
+
+The encoding/json package reads these tags to determine JSON key names and
+behaviour. Other packages like database/sql scanners and validation libraries
+use the same mechanism. C has no equivalent (you would use a parallel array of metadata
+or a code generator). C# uses attributes ([JsonPropertyName("id")]), which
+work similarly but require attribute types to be defined as classes.
+
+
+Anonymous Structs
+
+
+Go allows struct types without a name - useful for one-off data shapes, especially in
+tests and table-driven test cases:
+
+
+
+tests := []struct {
+    input    int
+    expected int
+}{
+    {1, 1},
+    {2, 4},
+    {3, 9},
+}
+
+for _, tc := range tests {
+    got := tc.input * tc.input
+    if got != tc.expected {
+        fmt.Printf("FAIL: %d*%d = %d, want %d\n", tc.input, tc.input, got, tc.expected)
+    }
+}
+
+
+Summary
+
+
+Go structs group fields; methods attach behaviour. Use a pointer receiver when
+the method mutates state or the struct is large; use a value receiver otherwise.
+Embedding promotes the embedded type's fields and methods to the outer struct —
+this is Go's composition mechanism, not inheritance. A type's method set
+determines which interfaces it satisfies: a pointer type's set includes both
+pointer and value receiver methods; a value type's set includes only value
+receiver methods. Struct tags annotate fields for external tools like
+encoding/json.
+
+
+Further Reading
+
+
+Go Specification: Struct Types
+Effective Go: Methods
+Effective Go: Embedding
+Go Specification: Method Sets
+
+
+See Also
+
+
+Syntax & Types
+Interfaces & Structural Typing
+Error Handling Best Practices
+Clean Code & Project Layout
+

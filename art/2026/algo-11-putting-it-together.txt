@@ -1,0 +1,337 @@
+Algorithmic Composition - Part 11: Putting It All Together
+2026-01-21
+
+
+The techniques in this series — Brownian walks, Markov chains, harmonic voice leading,
+L-systems, cellular automata, Euclidean rhythms — each produce a different kind of
+musical output from a different algorithmic principle. This article assembles them into
+a single patch: a self-generating system that runs without external input, producing
+melody, harmony, and rhythm continuously.
+
+
+
+The architecture is based on the Krell patch: instead of a master clock driving
+everything, envelope outputs trigger subsequent events. The end of one note triggers the
+start of the next, with the duration of each event determined by the synthesis envelope.
+The system breathes at its own rate, which changes as the envelope parameters evolve.
+
+
+What You Will Learn
+
+
+The Krell patch architecture: clock-free triggering through envelope follower feedback
+How to wire the Brownian melody generator to the Monomachine VO FM engine
+How to wire the Markov chord generator and voice leading to the SuperWave engine
+How to wire Euclidean rhythm patterns to the drum machine from Series 9
+Seeded PRNG in Lua for reproducible compositions
+The complete Pd patch structure and Lua module layout
+
+
+System Architecture
+
+
+Three independent layers, each with its own timing:
+
+
+
+Layer 1 — Melody (Monomachine VO FM from elektron-10):
+  Lua: walk.lua generates Brownian pitch sequence
+  Pd:  envelope follower on VO output → triggers next note when envelope falls below threshold
+
+Layer 2 — Harmony (Monomachine SuperWave from elektron-12):
+  Lua: chords.lua generates 4-bar Markov progression + voice leading
+  Pd:  progression changes every 4 bars (counted by bar counter)
+
+Layer 3 — Rhythm (drum machine from Series 9):
+  Lua: rhythm.lua generates Euclidean patterns, updated each bar
+  Pd:  metro at BPM drives 16-step sequencer
+
+
+
+The only shared clock is the [metro] in the drum layer. Melody and harmony
+run at their own rates, creating a natural sense of rhythmic independence between layers.
+
+
+The Krell Mechanism in Pure Data
+
+
+The Krell patch eliminates a master clock for the melody layer. Instead:
+
+
+
+A note is triggered: the VO synthesis voice begins playing.
+An [env~] follower monitors the VO output amplitude.
+When the amplitude falls below a threshold, a [bang] fires.
+The bang sends to Lua, which generates the next pitch and sends it back.
+The pitch triggers the next note, restarting the cycle.
+
+
+
+In Pure Data text notation:
+
+
+
+; Krell melody self-trigger loop
+
+[receive vo-out~]                ; tap the VO audio output
+|
+[env~ 512]                       ; RMS envelope with 512-sample window
+|
+[< 0.002]                        ; threshold: below -54 dBFS
+|
+[change]                         ; fire only on 0→1 and 1→0 transitions
+|
+[sel 1]                          ; only on fall-below-threshold (note ended)
+|
+[bang]                           ; → trigger next note
+|
+[lua algo-next-pitch]            ; call Lua function, returns a float
+|
+[receive vo-pitch]               ; Lua sends to this receiver
+|
+[mtof]
+|
+[r $0-vo-freq]                   ; feed into VO FM engine frequency param
+
+
+
+The [lua] object is a hypothetical external; in practice, use the libpd
+architecture from Series 6: the Pd patch sends a bang to a named receiver, Lua's
+pd.register_receiver hook calls next_pitch() and
+pd.sends the result back.
+
+
+Lua Module Layout
+
+
+Three Lua files, each independently loadable and testable:
+
+
+
+; File: walk.lua — Brownian melody generator
+local pitch = require("pitch")
+
+local state = {
+    pos      = 62,     -- current pitch (float, quantised on output)
+    velocity = 0,      -- fBm momentum
+    root     = 50,     -- D3
+    scale    = pitch.scales.dorian,
+    sigma    = 1.8,
+    H        = 0.72,
+    lo       = 50,
+    hi       = 74,
+}
+
+local alpha = 2 * state.H - 1
+
+local function gaussian(s)
+    local u1 = math.random()
+    local u2 = math.random()
+    return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2) * s
+end
+
+local function reflect(x, lo, hi)
+    if x > hi then return 2 * hi - x end
+    if x < lo then return 2 * lo - x end
+    return x
+end
+
+function next_pitch()
+    local noise      = gaussian(state.sigma)
+    state.velocity   = alpha * state.velocity + (1 - alpha) * noise
+    local next       = state.pos + state.velocity
+    next             = reflect(next, state.lo, state.hi)
+    state.pos        = math.max(state.lo, math.min(state.hi, next))
+    local midi_pitch = pitch.quantise(math.floor(state.pos + 0.5),
+                                      state.root, state.scale)
+    pd.send("vo-pitch", midi_pitch)
+end
+
+
+
+; File: chords.lua — Markov progression + voice leading
+local pitch  = require("pitch")
+-- (include chord_db, function_chain, sample, voice_lead from Parts 5-7)
+
+local current_voicing = {50, 54, 57}   -- D3 F3 A3 (D minor root position)
+local bar_count       = 0
+local prog            = {}
+local prog_pos        = 1
+
+local function new_progression()
+    prog     = generate_progression(4, state.root)
+    prog_pos = 1
+end
+
+function on_bar()
+    bar_count = bar_count + 1
+    if #prog == 0 or prog_pos > #prog then
+        new_progression()
+    end
+
+    local chord       = prog[prog_pos]
+    local target_pcs  = to_pcs(chord.notes)
+    local new_voicing = voice_lead(current_voicing, target_pcs)
+    new_voicing       = fix_parallels(current_voicing, new_voicing, target_pcs)
+    current_voicing   = new_voicing
+
+    pd.send("voice-1", new_voicing[1])
+    pd.send("voice-2", new_voicing[2])
+    pd.send("voice-3", new_voicing[3])
+
+    prog_pos = prog_pos + 1
+end
+
+
+
+; File: rhythm.lua — Euclidean + CA rhythm generation
+local bar        = 0
+local ca_cells   = {}
+for i = 1, 16 do ca_cells[i] = (i == 8) and 1 or 0 end
+
+local function euclidean(k, n)
+    local p = {}
+    for i = 0, n - 1 do p[i+1] = ((i*k) % n < k) and 1 or 0 end
+    return p
+end
+
+function on_rhythm_bar()
+    bar = bar + 1
+    -- Kick: fixed E(4,16)
+    local kick = euclidean(4, 16)
+    -- Snare: fixed E(2,16)
+    local snare = euclidean(2, 16)
+    -- Hi-hat: CA evolves
+    ca_cells    = ca_step(ca_cells, 110)
+    local hat   = ca_cells
+
+    pd.send("kick-pattern",  table.unpack(to_velocities(kick)))
+    pd.send("snare-pattern", table.unpack(to_velocities(snare, 90)))
+    pd.send("hat-pattern",   table.unpack(to_velocities(hat, 70)))
+end
+
+
+The Pure Data Patch Structure
+
+
+A single top-level Pd patch, algo-machine.pd:
+
+
+
+; Top level: algo-machine.pd
+; Subpatches (one per layer):
+;   [pd melody-layer]   — VO FM engine + Krell trigger
+;   [pd harmony-layer]  — 3× SuperWave voices + bar counter
+;   [pd rhythm-layer]   — drum machine from drums-07
+; Lua bridge:
+;   [pd lua-bridge]     — libpd init, loads walk.lua, chords.lua, rhythm.lua
+
+; Metro at global BPM drives rhythm layer and bar counter:
+[metro 500]         ; 120 BPM: 500ms per 16th at 4/4, or 125ms per 16th
+|
+[counter 0 15]      ; 0-15 steps
+|
+[route 0]           ; every 16 steps = one bar
+|
+[bang]
+|
++-------+-------+
+|               |
+[on_bar→chords] [on_bar→rhythm]
+; both call into Lua via [lua] or libpd hooks
+
+
+Reproducibility with Seeds
+
+
+A seeded PRNG makes every run with the same seed produce identical output. This turns an
+algorithmic system into an instrument with saveable "presets" — not presets of synthesis
+parameters but presets of the entire generated composition:
+
+
+
+; In Lua, at patch load:
+local seed = 42    -- change this to get a different "composition"
+math.randomseed(seed)
+-- All calls to math.random() after this point are deterministic.
+
+
+
+Send the seed as a Pd float to a Lua receiver to allow live seed changes from the Pd
+interface:
+
+
+
+; Pd:
+[number box: 42]
+|
+[send algo-seed]
+
+; Lua:
+pd.register_receiver("algo-seed", function(seed)
+    math.randomseed(math.floor(seed))
+    -- Optionally reset state to beginning:
+    state.pos      = 62
+    state.velocity = 0
+    current_voicing = {50, 54, 57}
+    prog = {}
+    bar_count = 0
+end)
+
+
+Connecting to Series 9 and 10 Engines
+
+
+The melody layer uses the VO FM patch from elektron-10-mnm-vo with one
+change: the $0-freq receiver is driven by [mtof] on
+vo-pitch messages rather than a keyboard.
+
+
+
+The harmony layer uses three instances of the SuperWave patch from
+elektron-12-mnm-superwave. Each instance has its own $0
+prefix; the Lua bridge maps voice-1 through voice-3 to the
+correct $0-freq receiver for each instance.
+
+
+
+The rhythm layer is the drum machine from drums-07-machine with the
+static kick_patterns and hat_patterns tables replaced by
+dynamic sends from rhythm.lua.
+
+
+Summary
+
+
+The complete algorithmic composition system has three layers: a Brownian fBm melody
+generator driving a Monomachine VO FM voice via Krell-style envelope feedback; a Markov
+chord progression generator with three-voice leading driving three Monomachine SuperWave
+voices, updated every four bars; and Euclidean kick and snare patterns with a CA-driven
+hi-hat updating the drums-07 sequencer each bar. All generation logic lives in three Lua
+files; all audio runs in Pure Data. A seed parameter makes any run reproducible. The
+system runs indefinitely without external input, producing music that evolves but never
+exactly repeats. This series has built, from first principles, every component of that
+system: pitch encoding, stochastic melody, harmony fundamentals, chord progressions, voice
+leading, grammar-based structure, cellular automaton rhythm, and Euclidean patterns.
+
+
+Further Reading
+
+
+The Krell Patch — historical context and Max/MSP implementation
+Pure Data official tutorials
+Nierhaus — Algorithmic Composition, Ch. 9: System Integration
+Xenakis — Formalized Music (stochastic and deterministic system design)
+
+
+See Also
+
+
+Part 3: Random Walks and Brownian Motion - the Brownian melody generator used in Layer 1
+Part 7: Voice Leading - the voice leading algorithm in the harmony layer
+Part 10: Euclidean Rhythms - the drum pattern generator in Layer 3
+Monomachine VO - the FM synthesis engine for the melody layer
+Monomachine SuperWave - the three-voice engine for the harmony layer
+Assembling the Drum Machine - the drum machine layer that this series extends
+The Audio Render Loop - the libpd render loop connecting Lua scheduling to Pd audio
+

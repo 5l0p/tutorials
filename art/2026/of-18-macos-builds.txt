@@ -1,0 +1,328 @@
+openFrameworks - Part 18: macOS Builds
+2026-10-09
+
+
+macOS is in many ways the smoothest desktop platform for openFrameworks work: CoreAudio gives
+you low latency with zero configuration, the Xcode debugger is excellent, and the Metal/OpenGL
+driver stack is stable. But the macOS build process has a few sharp edges that trip up every
+developer sooner or later: app bundle path resolution, code signing requirements, and the
+ARM/x86 split introduced by Apple Silicon. This article maps those edges so your first macOS
+release ships without a day lost to Gatekeeper dialogs or "file not found" crashes on someone
+else's machine.
+
+
+What You Will Learn
+
+
+  How to generate and open an Xcode project with the oF project generator.
+  How CoreAudio integrates with ofSoundStream and what to set for low latency.
+  The app bundle structure and why bare relative paths break inside a .app.
+  How ofToDataPath() resolves paths correctly inside a bundle.
+  Ad-hoc signing for local development and notarisation for public distribution.
+  Building universal binaries (ARM + x86_64) for Apple Silicon and Intel Macs.
+
+
+Project Generator Workflow
+
+
+Download the macOS oF package from openframeworks.cc. Launch
+projectGenerator/projectGenerator.app. Set the project name and path (within
+the oF apps/myApps/ tree), check any addons you need, and click
+Generate. The generator creates an Xcode project (.xcodeproj) and
+associated source files.
+
+
+
+Open the .xcodeproj in Xcode. Select your Mac as the target device, choose
+Debug or Release in the scheme selector, and press Cmd+R to build and run.
+
+
+
+Important: The oF installation path must not contain spaces. Place it at
+/Users/you/of_v0.12.0/, not /Users/you/My Projects/oF/.
+
+
+
+From the command line you can also build with xcodebuild:
+
+
+
+xcodebuild -project myProject.xcodeproj \
+           -scheme myProject \
+           -configuration Release \
+           build
+
+
+CoreAudio Backend
+
+
+On macOS, ofSoundStream uses RTAudio's CoreAudio backend. CoreAudio is macOS's
+native audio API and is tightly integrated with the OS; you do not need to install any extra
+software or daemon. It supports sample rates from 44100 to 192000 Hz and buffer sizes as low
+as 64 samples without special privileges.
+
+
+
+ofSoundStreamSettings ss;
+ss.setInListener(this);
+ss.sampleRate        = 44100;
+ss.numInputChannels  = 1;
+ss.numOutputChannels = 2;
+ss.bufferSize        = 256;   // achievable on most Macs; try 128 on Apple Silicon
+soundStream.setup(ss);
+
+
+
+Device names on macOS follow Apple's naming conventions (e.g. "Built-in Microphone",
+"MacBook Pro Speakers"). Enumerate them to find the index you need:
+
+
+
+for (const auto &d : soundStream.getDeviceList()) {
+    ofLogNotice() << d.deviceID << ": " << d.name;
+}
+
+
+
+Microphone permission: Since macOS Mojave (10.14), accessing the microphone requires
+the NSMicrophoneUsageDescription key in the app's Info.plist. The
+oF Xcode template includes a placeholder; edit the string to describe why your app needs
+microphone access. If this key is absent, CoreAudio silently opens a zero-signal input
+stream - no error, no sound.
+
+
+The App Bundle Structure
+
+
+When you build for macOS in Xcode, the output is a .app bundle - a directory
+that looks like a single file in Finder. Its layout:
+
+
+
+myProject.app/
+  Contents/
+    MacOS/
+      myProject          (the compiled executable)
+    Resources/
+      data/              (your bin/data/ folder, copied here by the Xcode build script)
+        shaders/
+        images/
+        config.yaml
+    Info.plist           (metadata: bundle ID, version, permissions)
+    Frameworks/          (bundled dylibs, if any)
+
+
+
+The executable runs with its working directory set to Contents/MacOS/ - not
+Contents/Resources/data/. A bare relative path like "shaders/plasma.frag"
+will not find anything because the file is in ../Resources/data/shaders/ relative
+to the executable. This is why ofToDataPath() is not optional on macOS.
+
+
+ofToDataPath() Inside a Bundle
+
+
+ofToDataPath(relativePath) on macOS uses
+CFBundleCopyResourcesDirectoryURL() to locate the Resources/
+directory of the running bundle, then appends data/ and your relative path.
+The result is the correct absolute path regardless of where the bundle is installed.
+
+
+
+// WRONG: works in Debug from Xcode (working dir is set specially), breaks in Release:
+std::string p = "shaders/plasma.frag";
+
+// CORRECT: works everywhere, including inside .app bundles:
+std::string p = ofToDataPath("shaders/plasma.frag");
+
+
+
+The Xcode build phase titled "Copy bin/data to bundle" (added by the oF project
+generator) copies everything from bin/data/ into
+Contents/Resources/data/ during every build. You only need to keep files in
+bin/data/; the bundle stays in sync automatically.
+
+
+Ad-Hoc Signing for Development
+
+
+Since macOS Catalina (10.15), all executables must be signed before they can run. For
+development and local distribution, ad-hoc signing is sufficient - it does not require an
+Apple Developer account.
+
+
+
+Xcode signs the app automatically during every build if you set Signing Certificate
+to Sign to Run Locally (which uses an ad-hoc identity). To sign manually:
+
+
+
+codesign --force --deep --sign - myProject.app
+# "-" means ad-hoc identity
+
+
+
+An ad-hoc signed app can run on the machine that signed it and on machines with the same
+Apple ID. It cannot be distributed outside your team without a Developer ID certificate.
+
+
+Notarisation for Public Distribution
+
+
+To distribute an oF app outside the Mac App Store (direct download from your website,
+USB stick, Airdrop to a stranger), you need a Developer ID Application certificate,
+which requires a paid Apple Developer account ($99/year).
+
+
+
+The workflow:
+
+
+
+  Sign the app with your Developer ID certificate:
+
+
+
+codesign --force --deep --options runtime \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  myProject.app
+
+
+
+  Create a ZIP or DMG for submission:
+
+
+
+ditto -c -k --keepParent myProject.app myProject.zip
+
+
+
+  Submit for notarisation:
+
+
+
+xcrun notarytool submit myProject.zip \
+  --apple-id you@example.com \
+  --password "@keychain:AC_PASSWORD" \
+  --team-id TEAMID \
+  --wait
+
+
+
+  Staple the notarisation ticket:
+
+
+
+xcrun stapler staple myProject.app
+
+
+
+After stapling, the app opens on any Mac without a Gatekeeper warning, even without an
+internet connection.
+
+
+Hardened Runtime Gotchas
+
+
+Notarisation requires the hardened runtime (--options runtime in the codesign
+call). The hardened runtime restricts certain capabilities by default. You may need
+entitlements for:
+
+
+
+  Microphone: com.apple.security.device.audio-input
+  Camera: com.apple.security.device.camera
+  JIT compilation: com.apple.security.cs.allow-jit (needed if you use
+  a scripting language or JIT audio engine inside oF)
+
+
+
+Add these to an entitlements .plist file and pass it to codesign:
+
+
+
+codesign --force --deep --options runtime \
+  --entitlements myProject.entitlements \
+  --sign "Developer ID Application: ..." \
+  myProject.app
+
+
+Apple Silicon and Universal Binaries
+
+
+Apple Silicon (M-series) Macs run ARM64 natively; Intel Macs run x86_64. Xcode can build a
+universal binary that contains both architectures in one file, running natively on
+both processor families.
+
+
+
+In Xcode, set Architectures to Standard Architectures (Apple Silicon, Intel)
+in Build Settings. All linked libraries must also be universal or you must provide separate
+builds.
+
+
+
+oF 0.12.x ships universal pre-built library variants for macOS. Verify with:
+
+
+
+lipo -info libs/openFrameworksCompiled/lib/osx/libopenFrameworksDebug.a
+# Expected: Architectures in the fat file: ... arm64 x86_64
+
+
+
+If a third-party library you bundle is not universal, build it yourself with:
+
+
+
+# Build for both archs and combine:
+clang -target arm64-apple-macos11 -c mylib.c -o mylib_arm64.o
+clang -target x86_64-apple-macos10.14 -c mylib.c -o mylib_x86.o
+lipo -create mylib_arm64.o mylib_x86.o -output mylib_universal.o
+
+
+
+Or build a fat static library:
+
+
+
+lipo -create libmylib_arm64.a libmylib_x86.a -output libmylib.a
+
+
+
+Rosetta 2 translates x86_64 binaries to ARM64 at runtime, so an x86_64-only oF app will
+still run on Apple Silicon - but at lower performance and with a launch warning. Build
+universal from the start.
+
+
+Summary
+
+
+The macOS workflow is: project generator creates the Xcode project, build with Cmd+R or
+xcodebuild. CoreAudio requires only an NSMicrophoneUsageDescription
+key in Info.plist for audio input. Asset paths must go through
+ofToDataPath() because the app bundle's working directory is not
+Resources/data/. Ad-hoc signing covers local development; a paid Developer ID
+certificate plus notarisation is required for public distribution. Set Architectures to
+Standard Architectures in Xcode to produce a universal ARM64/x86_64 binary. Part 19 covers
+the most constrained target in the series: Android via the NDK.
+
+
+Further Reading
+
+
+  oF Xcode Setup Guide
+  Apple: Notarising macOS Software
+  Apple: Building a Universal macOS Binary
+  AVAudioSession / CoreAudio Documentation
+  NSMicrophoneUsageDescription reference
+
+
+See Also
+
+
+  Cross-Platform Overview
+  Linux Builds
+  Windows Builds
+  Writing Portable oF Code
+

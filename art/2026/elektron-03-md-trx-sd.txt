@@ -1,0 +1,280 @@
+Elektron Synthesis - Part 3: Machinedrum TRX-SD Snare and TRX-XT Hi-Hats
+2026-01-01
+
+
+The TRX-SD and TRX-HH/XT are the Machinedrum's analog-modeled snare and hi-hat
+machines. The TRX-SD uses a dual-resonator body fed through a noise shaper, with
+independently decaying body and snap components. The TRX-HH and TRX-XT share the
+same oscillator bank — only their default decay times differ, and triggering a TRX-HH
+while a TRX-XT is open chokes the open hat tail. This article recreates both in Pd.
+
+
+TRX-SD Parameters
+
+
+KnobNameFunctionRange
+1TONE (tn)Body oscillator base frequency100–500 Hz
+2SNAPPY (sn)Noise component level0–1
+3DECAY (dcy)Body decay time20–2000 ms
+4HDECAY (hdcy)Hi-noise (snap) decay time5–500 ms
+5SWEEP (swp)Body pitch sweep depth0–400 Hz
+6SWEEP DECAY (sdcy)Body pitch sweep duration5–200 ms
+7DIST (dst)Waveshaper drive0–1
+8TUNE (tun)Fine tune±24 st
+
+
+TRX-SD Synthesis Architecture
+
+
+; TRX-SD signal flow:
+
+TRIGGER
+  │
+  ├─ [BODY OSC] ─────────────────────────────────────────────
+  │   Two detuned sine oscillators:
+  │     Osc A: freq = tone
+  │     Osc B: freq = tone * 1.52  (resonance mode above fundamental)
+  │   Both swept from (tone + sweep) to tone over sdcy ms
+  │   Amplitude: [vline~] 0→1→0 over dcy ms
+  │   [+~][*~ 0.5] → body bus
+  │
+  ├─ [SNAP NOISE] ────────────────────────────────────────────
+  │   [noise~]
+  │   → [bp~ tone*8 2.0]            ; bandpass at 8× tone freq
+  │   → [hip~ tone*3]               ; highpass removes body content
+  │   Amplitude: [vline~] 0→1→0 over hdcy ms   ; fast snap
+  │   [*~ sn]
+  │
+  ├─ [BODY NOISE] ────────────────────────────────────────────
+  │   [noise~]
+  │   → [lop~ tone*2]               ; lowpass at 2× tone freq
+  │   Amplitude: [vline~] 0→1→0 over dcy*0.6 ms ; slower than snap
+  │   [*~ sn * 0.4]
+  │
+  [+~] sum
+  │
+  [tanh waveshaper dst]
+  │
+  [*~ level * vel]
+  │
+  [outlet~]
+
+
+The Dual-Resonator Body
+
+
+The TRX-SD body uses two sine oscillators at a non-integer frequency ratio — not
+an octave (2:1) or fifth (3:2), but approximately 1.52:1. This slight inharmonicity
+gives the body a slightly "wooden" or complex pitched quality compared to a single
+sine. A real snare head resonates at multiple inharmonic modes; the 1.52 ratio
+approximates the relationship between the (0,1) and (1,1) membrane modes:
+
+
+
+[r $0-tone]        ; base frequency Hz
+|
+[t f f]
+|        |
+[f]    [* 1.52]    ; Osc B is 1.52× Osc A
+|        |
+[osc~] [osc~]
+|        |
+[*~]   [*~]        ; each × its own amplitude vline~
+|        |
+[+~]               ; sum
+|
+[*~ 0.5]           ; normalise
+
+
+
+Both oscillators receive the same pitch sweep (same vline~ ramp sent to both),
+keeping them in ratio throughout the sweep.
+
+
+The Two Noise Paths
+
+
+The TRX-SD has two noise paths with independent decay times and filter positions:
+
+
+
+Snap noise (HDECAY): bandpass filtered at high frequencies (8× tone), with a
+highpass removing everything below ~3× tone. This is the tight, snappy "crack" of the
+stick hitting the head. It decays fast (5–500 ms controlled by HDECAY).
+
+
+
+Body noise (DECAY × 0.6): lowpass filtered at 2× tone, contributing a warm
+mid-frequency noise underpinning the body oscillators. It decays more slowly and at
+lower amplitude than the snap noise.
+
+
+
+The SNAPPY (sn) parameter scales the combined noise level. Setting sn=0 gives a
+pure tonal body; sn=1 with short hdcy gives a pure noise crack; balanced values produce
+the classic snare character:
+
+
+
+; Snap noise path:
+[noise~]
+|
+[bp~ $toneX8 2.0]
+|
+[hip~ $toneX3]
+|
+[*~]    ← [vline~]: 1 2, 0 $hdcy 2   ; snap envelope
+|
+[*~ $sn]
+
+; Body noise path:
+[noise~]
+|
+[lop~ $toneX2]
+|
+[*~]    ← [vline~]: 1 2, 0 $dcy*0.6 2
+|
+[*~ $sn * 0.4]      ; body noise at 40% of snap level
+
+
+TRX-HH and TRX-XT
+
+
+The TRX-HH (closed hi-hat) and TRX-XT (open hi-hat, "XT" for eXTended) use identical
+oscillator bank and filter architectures — only their default decay times differ.
+They can be placed on separate tracks and the TRX-HH can choke the TRX-XT.
+
+
+TRX-HH Parameters
+
+
+KnobNameFunctionRange
+1FREQ (frq)Base oscillator frequency offset0–600 Hz offset
+2DECAY (dcy)Amplitude decay5–10000 ms
+3HPFREQ (hpf)Highpass filter cutoff200–15000 Hz
+4TONE (tn)Oscillator brightness / harmonic balance0–1
+5NOISE (nse)Noise blend with oscillator bank0–1
+6DIST (dst)Waveshaper drive0–1
+7SWEEP (swp)Frequency sweep depth0–500 Hz
+8CHOKE (chk)Choke group assignment0–8
+
+
+TRX-HH Synthesis Architecture
+
+
+The TRX-HH uses six square-wave oscillators at inharmonic frequencies — the same
+metallic oscillator bank model as the Series 9 hi-hat but with a slightly different
+set of base frequencies tuned to Elektron's house sound:
+
+
+
+; MD-style hi-hat oscillator frequencies (base offsets, Hz):
+; These approximate the MD's characteristic metallic spectrum:
+291, 398, 453, 587, 619, 800
+
+; With FREQ offset added (0–600 Hz shifts entire bank up):
+291+frq, 398+frq, 453+frq, 587+frq, 619+frq, 800+frq
+
+
+
+Each oscillator is a hard-clipped sine (approximating a square wave):
+
+
+
+[osc~ 291+frq]
+|
+[*~ 200]             ; overdrive → square
+|
+[clip~ -1 1]
+
+; × 6 oscillators, all summed and normalised
+
+
+
+The TONE parameter crossfades between a bright (all oscillators equal) and dark (lower
+oscillators boosted, upper attenuated) mix:
+
+
+
+; TONE crossfade: low tone = lower freqs dominant, high tone = upper freqs
+; Simple approximation: apply a per-oscillator gain curve:
+gain_i = 1 - (i/6) * (1 - tn)   ; 0 ≤ i 
+
+
+The oscillator sum then goes through a highpass filter (HPFREQ) and a noise blend:
+
+
+
+oscillator sum
+|
+[hip~ $hpf]          ; removes all content below hpf Hz
+|
+[+~] ← [noise~] × [hip~ hpf] × nse    ; noise at same HP point
+|
+[tanh waveshaper dst]
+|
+[*~] ← [vline~] dcy amplitude envelope
+|
+[*~ level * vel]
+|
+[outlet~]
+
+
+Choke Implementation
+
+
+The choke mechanism on the MD allows one machine to cut off (choke) another. When
+a TRX-HH trigger fires, it sends a "choke" message to any TRX-XT on the same choke
+group, causing the open hat's amplitude envelope to immediately ramp to zero:
+
+
+
+; TRX-HH, on trigger:
+; 1. Fire own envelopes normally
+; 2. Send choke to group:
+[bang]
+|
+[t b b]
+|        |
+fire own   [s $0-choke-out]    ; broadcast to choke bus
+
+; TRX-XT, receiver:
+[r $0-choke-in]    ; set to same choke group as HH
+|
+[bang]
+|
+[0 5(              ; ramp amplitude to 0 over 5 ms (fast choke)
+→ amplitude [vline~]
+
+
+
+In the Lua/host sequencer, the choke group is managed by the pattern: when step N has
+a HH trigger, also send a choke to any XT that is "open" (still in its decay).
+
+
+TRX-XT vs TRX-HH
+
+
+The only difference in the Pd patches is the default decay time range: TRX-HH defaults
+to 5–200 ms (closed), TRX-XT defaults to 200–10000 ms (open). The receiver namespace
+uses separate prefixes ($0-hh- vs $0-xt-), allowing them to
+be instantiated simultaneously on different tracks.
+
+
+Summary
+
+
+The TRX-SD combines two inharmonically-tuned body oscillators (1:1.52 ratio) with two
+noise paths — a fast snappy highpass-filtered snap, and a slower lowpass body noise.
+The TRX-HH/XT uses a six-oscillator inharmonic metallic bank with a highpass and noise
+blend. The TRX-HH chokes the TRX-XT by ramping its amplitude envelope to zero on
+trigger. All parameters are p-lock ready via $0- receivers.
+
+
+See Also
+
+
+Machinedrum TRX-BD - the same swept-sine and waveshaper technique
+Machinedrum TRX-CY and TRX-CB - cymbal and cowbell synthesis
+Snare Drum Synthesis (Series 9) - a more parametric snare with delay rattle
+

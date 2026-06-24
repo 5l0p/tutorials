@@ -1,0 +1,322 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Elektron Synthesis - Part 6: Machinedrum EFM — FM Drum Synthesis</title>
+    <meta name="description" content="Recreating the Machinedrum's EFM (Extended FM) machines in Pure Data: 2-operator FM synthesis applied to bass drum, snare, hi-hat, and cymbal voices. Operator algorithms, index-to-timbre mapping, and how FM produces percussive envelopes naturally through index decay.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, puredata, audio, synthesis, elektron">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="elektron-06-md-efm.txt">plain/text</a> | <i>2026-01-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../synthesis.htm">synthesis</a>, <a href="../../elektron.htm">elektron</a></i>
+        <h2>Elektron Synthesis - Part 6: Machinedrum EFM — FM Drum Synthesis</h2>
+        <p>
+The EFM machines apply FM (frequency modulation) synthesis to each standard drum voice.
+Where TRX machines model analog circuits, EFM machines exploit FM's unique ability to
+produce complex, evolving timbres from a small number of parameters. The key insight:
+on an FM drum, the modulation index envelope IS the timbre evolution over time — a
+decaying index naturally sweeps from complex/metallic to pure tonal, mirroring the
+acoustic behaviour of a struck percussion instrument.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>2-operator FM fundamentals: carrier, modulator, ratio, and index</li>
+<li>How index decay produces natural percussive timbre evolution</li>
+<li>EFM-BD, EFM-SD, EFM-HH, EFM-CY: algorithm and parameter differences</li>
+<li>Implementing FM in Pd with <code>[osc~]</code> and signal-rate modulation</li>
+<li>The EFM parameter set: C:M ratio, index, index decay, bias</li>
+</ul>
+
+<h3>2-Operator FM Review</h3>
+
+<p>
+In frequency modulation synthesis, a modulator oscillator (M) at frequency
+<code>fm = fc × ratio</code> modulates the instantaneous frequency of a carrier
+oscillator (C) at frequency <code>fc</code>. The amount of modulation is the
+<em>index</em> (I). The output spectrum consists of sideband partials at frequencies
+<code>fc ± n*fm</code> for integer n, with amplitudes given by Bessel functions:
+</p>
+
+<pre>
+; output frequency components:
+; fc, fc±fm, fc±2fm, fc±3fm, ...
+; amplitudes: J0(I), J1(I), J2(I), J3(I), ...
+; where Jn(I) are Bessel functions of the first kind
+
+; Key relationships:
+; I = 0:      only carrier, pure sine
+; I = 1:      rich but still somewhat tonal
+; I = 5-10:   very complex, many sidebands
+; I decreasing from high to low = spectrum evolves from complex → pure
+</pre>
+
+<p>
+This decay of index over time is the FM drum's defining synthesis characteristic.
+</p>
+
+<h3>FM in Pure Data</h3>
+
+<pre>
+; 2-op FM in Pd:
+[r $0-fc]    → $carrier_freq_Hz
+[r $0-ratio] → $cm_ratio          ; C:M ratio (e.g. 1:2, 1:1.41, 1:3.5)
+[r $0-idx]   → $index_peak        ; peak modulation index
+
+; Modulator frequency:
+$carrier_freq × $cm_ratio = $fm
+
+; Index envelope (decays from peak to near-zero over idcy ms):
+[vline~]    ; 0 0, idx 2, 0 idcy 2    ; index envelope
+→ $index_t  ; signal-rate index over time
+
+; FM formula:
+; output_phase = carrier_phase + index_t × sin(2π × fm × t)
+; In Pd, [osc~] takes frequency, not phase:
+; Drive carrier frequency with: fc + (index_t × fm × modulator_output)
+
+[osc~ $fm]                 ; modulator oscillator
+|
+[*~ $index_t]              ; scale by current index
+|
+[*~ $fm]                   ; scale by modulator frequency (classic FM: dev = I × fm)
+|
+[+~ $fc]                   ; add to carrier base frequency
+|
+[osc~]                     ; carrier — frequency modulated
+|
+[*~] ← amplitude envelope  ; overall amplitude
+</pre>
+
+<h3>EFM-BD: FM Bass Drum</h3>
+
+<h3>EFM-BD Parameters</h3>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Knob</th><th>Name</th><th>Function</th><th>Range</th></tr>
+<tr><td>1</td><td>FREQ (frq)</td><td>Carrier base frequency</td><td>20–400 Hz</td></tr>
+<tr><td>2</td><td>DECAY (dcy)</td><td>Amplitude decay</td><td>10–8000 ms</td></tr>
+<tr><td>3</td><td>RATIO (rto)</td><td>C:M frequency ratio</td><td>0.5–8</td></tr>
+<tr><td>4</td><td>INDEX (idx)</td><td>Peak modulation index</td><td>0–12</td></tr>
+<tr><td>5</td><td>INDEX DECAY (idcy)</td><td>Index decay time</td><td>5–2000 ms</td></tr>
+<tr><td>6</td><td>SWEEP (swp)</td><td>Carrier frequency pitch sweep</td><td>0–1000 Hz</td></tr>
+<tr><td>7</td><td>PITCH DECAY (pdcy)</td><td>Pitch sweep duration</td><td>5–500 ms</td></tr>
+<tr><td>8</td><td>DIST (dst)</td><td>Waveshaper</td><td>0–1</td></tr>
+</table>
+
+<p>
+The EFM-BD is 2-op FM with both a pitch sweep on the carrier AND an index decay. For
+a classic FM kick, use ratio=1:1 or 1:2 with high initial index (8–12) decaying over
+30–100 ms — this produces a complex initial attack that rapidly simplifies to a pure
+sine, mimicking the transient → sustained body of a physical kick:
+</p>
+
+<pre>
+; EFM-BD: combine pitch sweep AND index decay on same trigger:
+
+; Pitch sweep (carrier freq):
+peak_freq = frq + swp
+[vline~]   ; peak_freq 0, frq pdcy    → carrier sweep signal
+
+; Index decay:
+[vline~]   ; idx 0, 0 idcy 0          → index envelope signal
+
+; Combined:
+[osc~ ratio × frq]    ; modulator at fixed freq (based on base freq, not swept)
+|
+[*~ index_t]          ; scale modulator by decaying index
+|
+[*~ frq]              ; deviation scaling (approximation)
+|
+[+~] ← carrier_sweep_signal          ; add to swept carrier freq
+|
+[osc~]                                ; carrier output
+|
+[*~] ← amplitude vline~
+</pre>
+
+<h3>EFM-SD: FM Snare</h3>
+
+<p>
+The EFM-SD uses a higher C:M ratio to produce inharmonic sidebands — necessary for
+the noise-like character of a snare. A ratio around 1:1.41 (√2) produces an inharmonic
+spectrum that blends body tone with noise-like texture:
+</p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Parameter</th><th>Range</th><th>Typical Value</th><th>Effect</th></tr>
+<tr><td>ratio</td><td>0.5–8</td><td>1.41–2.0</td><td>Inharmonic at non-integer ratios</td></tr>
+<tr><td>idx</td><td>0–12</td><td>4–8</td><td>Higher = more noise-like</td></tr>
+<tr><td>idcy</td><td>5–2000 ms</td><td>30–150 ms</td><td>How fast it evolves to tonal</td></tr>
+<tr><td>dcy</td><td>20–2000 ms</td><td>100–400 ms</td><td>Body sustain length</td></tr>
+</table>
+
+<p>
+The "snap" of an FM snare comes from the high initial index (dense spectrum = bright
+attack) rapidly decaying to low index (tonal body). Setting idcy shorter than dcy
+creates a very snappy snare with a long sustaining sine body — idcy=20ms, dcy=250ms.
+</p>
+
+<h3>EFM-HH: FM Hi-Hat</h3>
+
+<p>
+The EFM-HH uses very high C:M ratio (4–8) with high index to produce a dense metallic
+spectrum. Unlike TRX-HH which uses six separate oscillators, EFM-HH produces all its
+partials from two operators — a single FM pair with a high ratio generates tens of
+sidebands that together produce a metallic texture:
+</p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Preset</th><th>frq</th><th>ratio</th><th>idx</th><th>idcy</th><th>dcy</th></tr>
+<tr><td>Closed HH</td><td>400</td><td>7.0</td><td>10</td><td>10</td><td>80</td></tr>
+<tr><td>Open HH</td><td>350</td><td>6.5</td><td>8</td><td>30</td><td>2000</td></tr>
+<tr><td>Metallic HH</td><td>500</td><td>4.2</td><td>12</td><td>50</td><td>500</td></tr>
+</table>
+
+<h3>EFM-CY: FM Cymbal</h3>
+
+<p>
+The EFM-CY adds a second modulator path (a 3-operator configuration: one carrier, two
+modulators) to produce an even denser and more irregular spectrum. In Pd, approximate
+with two separate modulator oscillators whose outputs are summed before modulating the
+carrier:
+</p>
+
+<pre>
+; 3-op FM for cymbal (cascade variant):
+; Modulator B modulates Modulator A, which modulates Carrier
+
+[osc~ fm_b]           ; Modulator B
+|
+[*~ idx_b_t]          ; index B envelope
+|
+[*~ fm_b]
+|
+[+~ fm_a]             ; add to Modulator A frequency
+|
+[osc~]                ; Modulator A — frequency modulated by B
+|
+[*~ idx_a_t]          ; index A envelope
+|
+[*~ fm_a_base]
+|
+[+~ fc_t]             ; carrier frequency (swept)
+|
+[osc~]                ; Carrier
+|
+[*~] ← amplitude
+</pre>
+
+<p>
+The EFM-CY has separate INDEX and INDEX_B parameters for the two modulator paths,
+plus RATIO_A and RATIO_B. The cascade configuration (M_B → M_A → C) is typically
+more useful for cymbal synthesis than a parallel (M_A, M_B both → C) configuration.
+</p>
+
+<h3>Using Non-Integer C:M Ratios</h3>
+
+<p>
+The choice of C:M ratio determines whether the spectrum is harmonic (integer ratios)
+or inharmonic (non-integer ratios). For percussion:
+</p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Ratio</th><th>Spectrum</th><th>Character</th><th>Use for</th></tr>
+<tr><td>1:1</td><td>Harmonic</td><td>Pure, tonal</td><td>BD body, tuned sounds</td></tr>
+<tr><td>1:2</td><td>Harmonic</td><td>Octave relationship</td><td>BD, bell-like sounds</td></tr>
+<tr><td>1:1.41</td><td>Inharmonic</td><td>Noisy, snare-like</td><td>SD, snare-adjacent</td></tr>
+<tr><td>1:3.5</td><td>Inharmonic</td><td>Metallic</td><td>HH, metallic perc</td></tr>
+<tr><td>1:7</td><td>Very inharmonic</td><td>Washy, noise-like</td><td>CY, crash</td></tr>
+</table>
+
+<h3>Summary</h3>
+
+<p>
+The EFM machines use 2-operator FM with two simultaneous envelopes: a pitch sweep on
+the carrier (for attack transient), and an index decay (for timbre evolution from
+complex/metallic to pure tonal). The C:M ratio is the primary timbral control: integer
+ratios produce pitched, harmonic drum sounds; non-integer ratios produce inharmonic
+metallic and noise-like spectra. EFM-CY extends to 3 operators (cascade M→M→C) for
+a denser cymbal spectrum. All implementations use <code>[osc~]</code> with signal-rate
+frequency modulation and <code>[vline~]</code> index envelopes.
+</p>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="elektron-07-md-e12.htm">Machinedrum E12 Machines</a> - sample emulation approach to the same voice roles</li>
+<li><a href="elektron-12-mnm-vo.htm">Monomachine VO Machines</a> - VO is also 2-op FM, but in a melodic (not drum) context</li>
+<li><a href="dsp-16-fm-synthesis.htm">FM Synthesis</a> - the full theory including Bessel function amplitudes and feedback FM</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

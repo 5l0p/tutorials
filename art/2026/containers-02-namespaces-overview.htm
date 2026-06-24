@@ -1,0 +1,365 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Containers - Part 2: Linux Namespaces Overview</title>
+    <meta name="description" content="The eight Linux namespace types, how the kernel represents them, and how to inspect them from the command line and from C.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="linux, containers">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="containers-02-namespaces-overview.txt">plain/text</a> | <i>2026-07-31</i> | <i><a href="../../linux.htm">linux</a>, <a href="../../containers.htm">containers</a></i>
+        <h2>Containers - Part 2: Linux Namespaces Overview</h2>
+        <p>
+A namespace is a kernel object that wraps a global resource so that each
+process inside the namespace has the illusion it owns that resource exclusively.
+Linux currently defines eight namespace types. This article covers what each one
+isolates, how the kernel represents namespaces as files under
+<code>/proc/&lt;pid&gt;/ns/</code>, and how to inspect the namespace topology of a
+running system.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What each of the eight Linux namespace types isolates and the <code>CLONE_NEW*</code> flag for each</li>
+<li>How the kernel represents namespaces as symlinks under <code>/proc/&lt;pid&gt;/ns/</code></li>
+<li>How to read namespace inode numbers from C using <code>stat()</code> and <code>readlink()</code></li>
+<li>How to keep a namespace alive after its processes exit using bind mounts</li>
+<li>How to inspect namespaces with <code>lsns</code> and enter them with <code>nsenter</code> and <code>setns()</code></li>
+<li>How PID and user namespaces form a hierarchy</li>
+</ul>
+
+<h3>The Eight Namespace Types</h3>
+
+<p>
+Each namespace type has a name, a <code>CLONE_NEW*</code> flag used when creating it,
+and a corresponding file in <code>/proc/&lt;pid&gt;/ns/</code>:
+</p>
+
+<ul>
+<li><b>pid</b> (<code>CLONE_NEWPID</code>) - PID numbering. Processes inside see themselves starting at PID 1. The host sees the real PID.</li>
+<li><b>mnt</b> (<code>CLONE_NEWNS</code>) - the mount table. Each namespace can mount and unmount filesystems independently.</li>
+<li><b>net</b> (<code>CLONE_NEWNET</code>) - network interfaces, routing tables, iptables rules, sockets, and port numbers.</li>
+<li><b>uts</b> (<code>CLONE_NEWUTS</code>) - the hostname and NIS domain name returned by <code>uname()</code>.</li>
+<li><b>ipc</b> (<code>CLONE_NEWIPC</code>) - System V IPC objects (message queues, semaphores, shared memory) and POSIX message queues.</li>
+<li><b>user</b> (<code>CLONE_NEWUSER</code>) - UID and GID mappings. A process can appear to be UID 0 inside while being UID 1000 on the host.</li>
+<li><b>cgroup</b> (<code>CLONE_NEWCGROUP</code>) - the cgroup hierarchy root. Added in Linux 4.6.</li>
+<li><b>time</b> (<code>CLONE_NEWTIME</code>) - <code>CLOCK_MONOTONIC</code> and <code>CLOCK_BOOTTIME</code> offsets per namespace. Added in Linux 5.6.</li>
+</ul>
+
+<p>
+The original mount namespace flag is <code>CLONE_NEWNS</code> (no "MNT" in the name)
+because it was the very first namespace type added to Linux, in 2002, before
+the naming convention was established.
+</p>
+
+<h3>Namespaces as Files</h3>
+
+<p>
+The kernel exposes each process's namespaces as symbolic links under
+<code>/proc/&lt;pid&gt;/ns/</code>. The link target is a string of the form
+<code>type:[inode]</code> where the inode number is the unique identifier of that
+namespace instance:
+</p>
+
+<pre>
+$ ls -la /proc/self/ns/
+total 0
+dr-x--x--x 2 root root 0 Jan 13 09:00 .
+dr-xr-xr-x 9 root root 0 Jan 13 09:00 ..
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 cgroup -&gt; cgroup:[4026531835]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 ipc    -&gt; ipc:[4026531839]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 mnt    -&gt; mnt:[4026531840]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 net    -&gt; net:[4026531992]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 pid    -&gt; pid:[4026531836]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 pid_for_children -&gt; pid:[4026531836]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 time   -&gt; time:[4026531834]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 user   -&gt; user:[4026531837]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 uts    -&gt; uts:[4026531838]
+</pre>
+
+<p>
+Two processes sharing the same inode number for a namespace type are in the
+same namespace. You can check this in a shell:
+</p>
+
+<pre>
+# Start a process in its own UTS namespace
+sudo unshare --uts bash &amp;
+NEW_PID=$!
+
+# Compare UTS namespace inodes
+readlink /proc/self/ns/uts
+readlink /proc/$NEW_PID/ns/uts
+# They will differ
+</pre>
+
+<h3>Reading Namespace Inodes from C</h3>
+
+<p>
+You can read namespace information from C by calling <code>readlink()</code> or
+<code>stat()</code> on the namespace file. The inode number returned by <code>stat()</code>
+is the namespace identifier:
+</p>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;stdio.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;string.h&gt;
+
+void print_ns(pid_t pid, const char *type) {
+    char path[64];
+    char target[128];
+    struct stat st;
+
+    snprintf(path, sizeof(path), "/proc/%d/ns/%s", pid, type);
+
+    if (stat(path, &amp;st) == -1) {
+        perror("stat");
+        return;
+    }
+    ssize_t n = readlink(path, target, sizeof(target) - 1);
+    if (n != -1) target[n] = '\0';
+
+    printf("%-6s inode=%-12lu link=%s\n",
+           type, (unsigned long)st.st_ino, target);
+}
+
+int main(void) {
+    const char *types[] = {
+        "pid", "mnt", "net", "uts", "ipc", "user", "cgroup", "time", NULL
+    };
+    for (int i = 0; types[i]; i++) {
+        print_ns(getpid(), types[i]);
+    }
+    return 0;
+}
+</pre>
+
+<h3>Keeping a Namespace Alive</h3>
+
+<p>
+Normally a namespace is destroyed when the last process inside it exits. But
+the kernel keeps it alive as long as something holds a file descriptor or a
+bind-mount pointing at the namespace file. This is how <code>ip netns add</code>
+works: it bind-mounts the network namespace file to
+<code>/var/run/netns/&lt;name&gt;</code> so that the namespace persists even when no
+process is inside it.
+</p>
+
+<pre>
+# Create a named, persistent network namespace
+sudo ip netns add myns
+
+# Verify it is stored as a bind mount
+ls -la /var/run/netns/myns
+
+# Run a command inside it
+sudo ip netns exec myns ip link
+
+# Delete it
+sudo ip netns del myns
+</pre>
+
+<p>
+You can do the same thing manually with <code>open()</code> on a namespace file and
+keeping the file descriptor open, or with <code>mount --bind</code>.
+</p>
+
+<h3>The lsns Command</h3>
+
+<p>
+<code>lsns</code> from the <code>util-linux</code> package lists all namespaces visible to
+the current user, their type, the number of processes inside, and the PID of
+one process in each namespace:
+</p>
+
+<pre>
+$ lsns
+        NS TYPE   NPROCS   PID USER  COMMAND
+4026531835 cgroup    143     1 root  /sbin/init
+4026531836 pid       143     1 root  /sbin/init
+4026531837 user      143     1 root  /sbin/init
+4026531838 uts       143     1 root  /sbin/init
+4026531839 ipc       143     1 root  /sbin/init
+4026531840 mnt       139     1 root  /sbin/init
+4026531992 net       143     1 root  /sbin/init
+4026532304 mnt         4   847 root  /usr/lib/systemd/systemd-udevd
+</pre>
+
+<p>
+The last line shows that <code>systemd-udevd</code> is in a private mount namespace
+(different inode from PID 1's mount namespace). This is a common pattern: system
+daemons run in their own mount namespaces for isolation without using full
+containers.
+</p>
+
+<h3>Entering an Existing Namespace</h3>
+
+<p>
+The <code>setns()</code> syscall moves the calling process into an existing namespace
+identified by a file descriptor. This is what <code>nsenter</code> uses:
+</p>
+
+<pre>
+# Enter the network namespace of PID 1234
+sudo nsenter --net=/proc/1234/ns/net -- ip link
+
+# Enter all namespaces of a container's init process
+sudo nsenter -t 1234 --all -- bash
+</pre>
+
+<p>
+From C, <code>setns()</code> takes the file descriptor of the namespace file and
+a type constant (<code>CLONE_NEWNET</code> etc.) or 0 to detect the type
+automatically:
+</p>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;fcntl.h&gt;
+#include &lt;sched.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+int enter_netns(pid_t target_pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/ns/net", target_pid);
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd == -1) { perror("open"); return -1; }
+
+    if (setns(fd, CLONE_NEWNET) == -1) {
+        perror("setns");
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+</pre>
+
+<h3>Namespace Hierarchy</h3>
+
+<p>
+Namespaces form a hierarchy for the types that support it. PID namespaces are
+nested: a process in an inner PID namespace is visible from the outer namespace
+with a different (larger) PID number. The kernel keeps both numbers in
+<code>/proc/&lt;pid&gt;/status</code> under the <code>NSpid</code> field:
+</p>
+
+<pre>
+$ grep NSpid /proc/$(pgrep nginx)/status
+NSpid: 48372   1
+</pre>
+
+<p>
+The first number is the PID on the host; the second is the PID as seen inside
+the container's PID namespace (1 - it is the init process of that namespace).
+User namespaces are also hierarchical: the kernel tracks a parent-child
+relationship and enforces that capabilities granted inside a child namespace
+are at most equal to those in the parent.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Linux has eight namespace types — pid, mnt, net, uts, ipc, user, cgroup, and
+time — each wrapping a different global resource. The kernel exposes them as
+symlinks under <code>/proc/&lt;pid&gt;/ns/</code> where the inode number is the unique
+namespace identifier. Namespaces persist as long as a process or a bind-mount
+holds a reference. <code>lsns</code> shows the full topology; <code>setns()</code> and
+<code>nsenter</code> let you enter an existing namespace from outside.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://man7.org/linux/man-pages/man7/namespaces.7.html">namespaces(7) - Linux man page</a></li>
+<li><a href="https://man7.org/linux/man-pages/man2/setns.2.html">setns(2) - Linux man page</a></li>
+<li><a href="https://lwn.net/Articles/531114/">Namespaces in operation, part 1 (LWN)</a></li>
+<li><a href="https://lwn.net/Articles/532271/">Namespaces in operation, part 2: the namespaces API (LWN)</a></li>
+<li><a href="https://www.kernel.org/doc/html/latest/userspace-api/namespaces.html">Namespaces - kernel documentation</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="containers-01-what-is-a-container.htm">What Is a Container?</a></li>
+<li><a href="containers-03-clone-unshare.htm">The clone() and unshare() Syscalls</a></li>
+<li><a href="containers-04-pid-namespaces.htm">PID Namespaces</a></li>
+<li><a href="containers-14-user-namespaces.htm">User Namespaces &amp; Rootless Containers</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

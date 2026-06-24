@@ -1,0 +1,425 @@
+Containers - Part 16: cgroups v2 - The Unified Hierarchy
+2026-08-14
+
+
+cgroups v1 grew organically: each resource controller got its own mount point,
+its own hierarchy, and its own rules. A process could be in different positions
+in the memory hierarchy versus the cpu hierarchy. Controllers could contradict
+each other. Delegation - letting an unprivileged user manage a sub-tree - was
+fragile. cgroups v2 is a ground-up redesign that landed in Linux 4.5 (2016) and
+reached feature parity for container use cases around Linux 5.2 (2019). All
+controllers live in a single unified tree. A process belongs to exactly one
+cgroup. Delegation to unprivileged users is a first-class feature. This article
+explains the v2 model, the new interface files, how systemd integrates with it,
+how to detect which version is in use at runtime, and how to migrate the C and
+Go code from the previous article.
+
+
+What You Will Learn
+
+
+Why the unified hierarchy fixes v1's structural problems
+The v2 interface files: cpu.max, memory.max, pids.max, io.max
+How the "no internal process" rule changes cgroup design
+How delegation works and why it matters for rootless containers
+How pressure stall information (PSI) files work
+How to detect v1 vs v2 at runtime from Go
+
+
+The Unified Hierarchy
+
+
+In v2, there is one cgroup filesystem mounted at /sys/fs/cgroup/ (on
+systems running a pure v2 setup). All controllers appear in that single tree.
+A cgroup directory contains files for every enabled controller. There is no
+longer a separate /sys/fs/cgroup/memory/ or /sys/fs/cgroup/cpu/.
+
+
+
+# On a pure v2 system
+mount | grep cgroup
+# cgroup2 on /sys/fs/cgroup type cgroup2 (rw,nosuid,nodev,noexec,relatime)
+
+ls /sys/fs/cgroup/
+# cgroup.controllers  cgroup.max.depth  cgroup.procs  cgroup.stat
+# cgroup.events       cgroup.max.descendants           cgroup.subtree_control
+# cpu.pressure        io.pressure       memory.pressure
+# cpu.stat            memory.stat       ...
+
+
+
+To enable a controller for child cgroups, write its name to
+cgroup.subtree_control. Only controllers listed in the parent's
+cgroup.controllers can be enabled.
+
+
+
+# Enable memory and pids controllers for children of the root cgroup
+sudo bash -c 'echo "+memory +pids" > /sys/fs/cgroup/cgroup.subtree_control'
+
+# Create a container cgroup
+sudo mkdir /sys/fs/cgroup/mycontainer
+
+# The child directory automatically has the enabled controller files
+ls /sys/fs/cgroup/mycontainer/
+# cgroup.controllers  memory.current  memory.max  pids.current  pids.max  ...
+
+
+The No-Internal-Process Rule
+
+
+v2 enforces a constraint that v1 did not: a cgroup that has children cannot
+contain processes. Only leaf cgroups hold processes. This is called the
+"no internal process" rule.
+
+
+
+This means you cannot attach a process to an intermediate cgroup and also have
+child cgroups under it. In practice this means container runtimes create a leaf
+cgroup for the container workload (e.g. /sys/fs/cgroup/mycontainer/init)
+and put the process there, rather than in the parent.
+
+
+
+sudo mkdir /sys/fs/cgroup/mycontainer
+sudo mkdir /sys/fs/cgroup/mycontainer/init
+
+# Attaching a process to mycontainer/init is fine
+echo $$ | sudo tee /sys/fs/cgroup/mycontainer/init/cgroup.procs
+
+# Attaching a process to mycontainer itself would fail with EBUSY
+# because it has children (init/)
+
+
+Interface Files
+
+
+v2 uses different filenames from v1 - the API was cleaned up. The mapping for
+the most common settings:
+
+
+
+memory.max - hard memory limit in bytes. Write max to remove the limit. Equivalent to v1 memory.limit_in_bytes.
+memory.high - a soft threshold. When memory usage exceeds this, processes are throttled (memory reclaim is triggered aggressively) but not killed. Useful for avoiding OOM without a hard cap.
+memory.current - current memory usage (read-only). Equivalent to v1 memory.usage_in_bytes.
+memory.swap.max - maximum swap usage. Write 0 to disable swap for this cgroup.
+cpu.max - a single file containing two space-separated values: quota period. Both in microseconds. Write 50000 100000 for 50% of one CPU. Write max 100000 to remove the quota. Equivalent to v1 cpu.cfs_quota_us and cpu.cfs_period_us.
+cpu.weight - relative CPU weight. Range 1–10000. Default 100. Equivalent to v1 cpu.shares scaled differently.
+pids.max - maximum number of tasks. Write max to remove the limit. Same name as v1.
+io.max - I/O limits in the format MAJOR:MINOR rbps=N wbps=N riops=N wiops=N. Replaces v1 blkio controller.
+
+
+
+# Limit to 128 MB RAM, no swap
+sudo bash -c 'echo 134217728 > /sys/fs/cgroup/mycontainer/memory.max'
+sudo bash -c 'echo 0         > /sys/fs/cgroup/mycontainer/memory.swap.max'
+
+# Limit to 50% of one CPU core
+sudo bash -c 'echo "50000 100000" > /sys/fs/cgroup/mycontainer/cpu.max'
+
+# Limit to 50 processes
+sudo bash -c 'echo 50 > /sys/fs/cgroup/mycontainer/pids.max'
+
+# Attach a process
+sudo bash -c "echo $$ > /sys/fs/cgroup/mycontainer/cgroup.procs"
+
+# Read back
+cat /sys/fs/cgroup/mycontainer/memory.current
+cat /sys/fs/cgroup/mycontainer/cpu.stat
+
+
+Pressure Stall Information
+
+
+v2 introduced Pressure Stall Information (PSI) - a mechanism that reports what
+fraction of time tasks are stalled waiting for a resource. This is far more
+useful than a simple usage counter for understanding whether a cgroup is actually
+resource-constrained.
+
+
+
+cat /sys/fs/cgroup/mycontainer/memory.pressure
+# some avg10=0.00 avg60=0.00 avg300=0.00 total=0
+# full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+
+
+
+The some line reports time during which at least one task was stalled. The
+full line reports time during which all tasks were simultaneously stalled
+(the resource was totally unavailable). The avg10, avg60, avg300
+values are exponentially weighted moving averages over 10, 60, and 300 seconds.
+total is a cumulative microsecond count.
+
+
+
+You can also poll PSI files using epoll: write a threshold to the file and
+the kernel will make it readable when the threshold is crossed, enabling reactive
+resource management without busy-polling.
+
+
+Delegation
+
+
+In v2, a cgroup directory can be owned by an unprivileged user. That user can
+then create sub-cgroups, attach their own processes, and set limits - without
+needing root - as long as the limits they set are within the constraints imposed
+by the parent.
+
+
+
+# Root delegates /sys/fs/cgroup/user-1000 to user 1000
+sudo mkdir /sys/fs/cgroup/user-1000
+sudo chown -R 1000:1000 /sys/fs/cgroup/user-1000
+# Enable controllers for the subtree
+sudo bash -c 'echo "+memory +pids +cpu" > /sys/fs/cgroup/user-1000/cgroup.subtree_control'
+
+# Now uid 1000 can manage the subtree without root
+# This is how systemd --user and rootless Podman work
+
+
+systemd and cgroups v2
+
+
+systemd has used cgroups since early versions. With v2, systemd becomes the
+primary manager of the cgroup tree. All processes on a systemd system live in
+cgroups managed by systemd - typically under /sys/fs/cgroup/system.slice/,
+/sys/fs/cgroup/user.slice/, and /sys/fs/cgroup/init.scope/.
+
+
+
+Container runtimes on systemd systems must co-operate. runc and crun (the
+OCI-compliant C runtime) can create cgroups using systemd's D-Bus API
+(org.freedesktop.systemd1.Manager.StartTransientUnit) rather than writing
+to cgroupfs directly. This avoids conflicts with systemd's cgroup manager.
+Docker and Podman both support a --cgroup-manager=systemd option.
+
+
+
+# See what systemd reports for cgroup resource usage
+systemctl status docker.service
+# (shows CGroup: section with hierarchy)
+
+# Set memory limit on a systemd service via cgroup
+sudo systemctl set-property docker.service MemoryMax=4G
+
+
+Detecting v1 vs v2 at Runtime
+
+
+A system may run pure v1, pure v2, or a hybrid where both are active (cgroups v1
+mounts alongside a v2 mount). Detecting which is in use at runtime is essential
+for any container runtime.
+
+
+
+package main
+
+import (
+    "fmt"
+    "os"
+    "strings"
+
+    "golang.org/x/sys/unix"
+)
+
+const (
+    cgroupV2Magic = 0x63677270 // "cgrp" in little-endian
+)
+
+// IsCgroupV2 returns true if the unified cgroup v2 hierarchy is mounted at path.
+func IsCgroupV2(path string) (bool, error) {
+    var st unix.Statfs_t
+    if err := unix.Statfs(path, &st); err != nil {
+        return false, err
+    }
+    return st.Type == cgroupV2Magic, nil
+}
+
+// CgroupMountType returns "v2", "v1", or "hybrid".
+func CgroupMountType() string {
+    v2, _ := IsCgroupV2("/sys/fs/cgroup")
+    if v2 {
+        return "v2"
+    }
+
+    // Check for hybrid: v2 mounted alongside v1 controllers
+    data, err := os.ReadFile("/proc/mounts")
+    if err != nil {
+        return "unknown"
+    }
+    hasV1 := false
+    hasV2 := false
+    for _, line := range strings.Split(string(data), "\n") {
+        fields := strings.Fields(line)
+        if len(fields) < 3 {
+            continue
+        }
+        switch fields[2] {
+        case "cgroup":
+            hasV1 = true
+        case "cgroup2":
+            hasV2 = true
+        }
+    }
+    switch {
+    case hasV1 && hasV2:
+        return "hybrid"
+    case hasV1:
+        return "v1"
+    case hasV2:
+        return "v2"
+    }
+    return "none"
+}
+
+func main() {
+    fmt.Printf("cgroup version: %s\n", CgroupMountType())
+
+    // Also check the effective controllers available
+    data, _ := os.ReadFile("/sys/fs/cgroup/cgroup.controllers")
+    fmt.Printf("available controllers: %s", data)
+}
+
+
+
+The magic number check with statfs is the most reliable method. The
+filesystem type for cgroup v2 is CGROUP2_SUPER_MAGIC (0x63677270) and for
+v1 is CGROUP_SUPER_MAGIC (0x27e0eb). Container runtimes like runc check
+this in libcontainer/cgroups/utils.go.
+
+
+Migrating v1 Code to v2
+
+
+Taking the Go code from the previous article and updating it for v2:
+
+
+
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+    "path/filepath"
+    "strconv"
+)
+
+const cgBase = "/sys/fs/cgroup/gocontainer-v2"
+
+func writeFile(path, value string) error {
+    return os.WriteFile(path, []byte(value), 0644)
+}
+
+func setupCgroupV2(pid int) error {
+    // Create the leaf cgroup directory
+    if err := os.MkdirAll(cgBase, 0755); err != nil {
+        return fmt.Errorf("mkdir: %w", err)
+    }
+
+    // Enable controllers on the parent (root) cgroup
+    if err := writeFile("/sys/fs/cgroup/cgroup.subtree_control",
+        "+memory +pids +cpu"); err != nil {
+        return fmt.Errorf("subtree_control: %w", err)
+    }
+
+    // Memory: 64 MB hard limit, no swap
+    if err := writeFile(filepath.Join(cgBase, "memory.max"),
+        strconv.Itoa(64*1024*1024)); err != nil {
+        return err
+    }
+    if err := writeFile(filepath.Join(cgBase, "memory.swap.max"), "0"); err != nil {
+        return err
+    }
+
+    // CPU: 50% of one core (50000 us quota per 100000 us period)
+    if err := writeFile(filepath.Join(cgBase, "cpu.max"),
+        "50000 100000"); err != nil {
+        return err
+    }
+
+    // PIDs: max 20
+    if err := writeFile(filepath.Join(cgBase, "pids.max"), "20"); err != nil {
+        return err
+    }
+
+    // Attach the process
+    if err := writeFile(filepath.Join(cgBase, "cgroup.procs"),
+        strconv.Itoa(pid)); err != nil {
+        return fmt.Errorf("attach pid: %w", err)
+    }
+
+    return nil
+}
+
+func teardown() {
+    // Remove only when empty
+    os.Remove(cgBase)
+}
+
+func main() {
+    if os.Getuid() != 0 {
+        log.Fatal("must run as root")
+    }
+    defer teardown()
+
+    pid := os.Getpid()
+    fmt.Printf("constraining PID %d with cgroups v2\n", pid)
+
+    if err := setupCgroupV2(pid); err != nil {
+        log.Fatal(err)
+    }
+
+    cur, _ := os.ReadFile(filepath.Join(cgBase, "memory.current"))
+    fmt.Printf("memory.current = %s", cur)
+
+    psi, _ := os.ReadFile(filepath.Join(cgBase, "memory.pressure"))
+    fmt.Printf("memory.pressure:\n%s", psi)
+
+    fmt.Println("cgroup v2 limits applied.")
+}
+
+
+Summary
+
+
+cgroups v2 fixes the structural problems of v1 by unifying all controllers
+under a single hierarchy. The interface files are cleaner: cpu.max combines
+what v1 split across two files; memory.max and memory.high separate hard
+limits from soft pressure. PSI files give precise stall-time metrics that simple
+usage counters cannot. The no-internal-process rule forces cleaner cgroup trees.
+Delegation makes rootless container runtimes possible without privileged helpers
+for every cgroup operation.
+
+
+
+Detecting v1 vs v2 at runtime requires a statfs call - check the filesystem
+magic number rather than looking at path names. Modern distributions (Fedora 31+,
+Ubuntu 21.10+, Debian 11+) default to v2, though some may run in hybrid mode
+for legacy compatibility.
+
+
+
+The next article covers Linux capabilities: the kernel mechanism that replaces
+the all-or-nothing root/not-root distinction with forty fine-grained privilege
+bits that containers drop at startup.
+
+
+Further Reading
+
+
+Control Group v2 - kernel documentation
+cgroups(7) - Linux man page
+An introduction to cgroups, part 2: the unified hierarchy (LWN)
+Pressure Stall Information - kernel documentation
+systemd cgroup delegation guide
+
+
+See Also
+
+
+What Is a Container?
+cgroups v1
+Linux Capabilities
+Building a Mini Container Runtime in Go
+

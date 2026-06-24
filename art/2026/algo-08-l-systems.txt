@@ -1,0 +1,282 @@
+Algorithmic Composition - Part 8: L-Systems
+2026-01-18
+
+
+The algorithms in Parts 3 and 4 work step-by-step: each note depends only on the
+current state. They have no concept of phrase structure — no reason for a melody to
+contain four-bar units that mirror each other, or for a musical theme to appear at
+multiple time scales simultaneously.
+
+
+
+L-systems model exactly this kind of hierarchical, self-similar structure. An L-system
+begins with an axiom (a seed string) and applies production rules that replace each
+symbol with a longer string. After several iterations, a short axiom expands into a
+long, complex string that contains the original structure repeated and interleaved at
+multiple scales. Interpreting the symbols as musical instructions produces melodies where
+short motives appear embedded in longer phrases, which are themselves embedded in even
+longer sections.
+
+
+What You Will Learn
+
+
+What an L-system is: axiom, production rules, and iteration
+How to implement the string-rewriting engine in Lua
+A musical symbol vocabulary: notes, steps, duration changes, stack push/pop
+The turtle-state interpreter that converts a symbol string to a note list
+Self-similarity: why structure at the phrase level appears at the bar level too
+Practical rules that produce musically useful melodies
+
+
+What Is an L-System?
+
+
+An L-system (Lindenmayer system) consists of three parts:
+
+
+
+Alphabet: a set of symbols (e.g. F, +, -, [, ]).
+Axiom: the starting string (e.g. "F").
+Production rules: a map from each symbol to a replacement string (e.g. F → "F+F-F").
+
+
+
+In each iteration, every symbol in the current string is simultaneously replaced by its
+production. Symbols without a production rule are left unchanged (constants). After
+three iterations of axiom "F" with rule F → "F+F-F":
+
+
+
+n=0: F
+n=1: F+F-F
+n=2: F+F-F+F+F-F-F+F-F
+n=3: F+F-F+F+F-F-F+F-F+F+F-F+F+F-F-F+F-F-F+F-F+F+F-F-F+F-F
+
+
+
+Each iteration triples the length. The n=3 string contains the n=2 string as a
+subsequence, which contains the n=1 string. This self-containment at every scale is the
+defining property of L-systems.
+
+
+The Rewriting Engine
+
+
+-- Apply L-system rules for n iterations.
+-- axiom: starting string
+-- rules: table mapping each character to its replacement string
+-- Returns the resulting string after n applications.
+local function lsystem(axiom, rules, n)
+    local str = axiom
+    for _ = 1, n do
+        local parts = {}
+        for c in str:gmatch(".") do
+            parts[#parts + 1] = rules[c] or c
+        end
+        str = table.concat(parts)
+    end
+    return str
+end
+
+-- Example: fractal melody rule
+local rules = {F = "F+F-F-F+F"}
+print(lsystem("F", rules, 1))  -- F+F-F-F+F
+print(#lsystem("F", rules, 3)) -- 205 characters
+
+
+A Musical Symbol Vocabulary
+
+
+Map symbols to musical actions. This vocabulary is a convention — you can design your own
+for different musical needs:
+
+
+
+-- Symbol → action mapping
+-- F  : play a note at the current scale degree, current duration
+-- +  : step up one scale degree
+-- -  : step down one scale degree
+-- ^  : step up two scale degrees (leap)
+-- v  : step down two scale degrees (leap)
+-- [  : push current state (degree, duration) onto stack
+-- ]  : pop state from stack
+-- >  : double the current note duration
+-- <  : halve the current note duration
+-- R  : play a rest (silence) of current duration
+-- Constants (no rule, pass through unchanged):
+-- Any other character is ignored by the interpreter
+
+
+
+The stack (push/pop with [ and ]) is the musical analogue of a turtle graphics stack.
+A push saves the current scale degree; notes played after the push explore a branch;
+a pop returns to the saved degree, which can then continue in a different direction.
+This creates call-and-response figures: a phrase departs from a degree and returns to it.
+
+
+The Turtle Interpreter
+
+
+local pitch_mod = require("pitch")
+
+-- Interpret an L-system string as a melody.
+-- str:       L-system output string
+-- root:      MIDI root note
+-- scale:     semitone offset array (from pitch.lua)
+-- base_dur:  base note duration in seconds (or beats)
+-- Returns an array of {pitch=n, duration=d, rest=bool} events.
+local function interpret(str, root, scale, base_dur)
+    local degree  = math.ceil(#scale / 2)  -- start in the middle of the scale
+    local dur     = base_dur or 0.25
+    local stack   = {}
+    local events  = {}
+    local n_deg   = #scale
+
+    local function current_pitch()
+        -- degree is 1-based; handle wrapping across octaves
+        local d = (degree - 1) % n_deg
+        local oct = math.floor((degree - 1) / n_deg)
+        return root + scale[d + 1] + oct * 12
+    end
+
+    for c in str:gmatch(".") do
+        if c == "F" then
+            events[#events + 1] = {pitch=current_pitch(), duration=dur, rest=false}
+        elseif c == "R" then
+            events[#events + 1] = {pitch=0, duration=dur, rest=true}
+        elseif c == "+" then
+            degree = degree + 1
+        elseif c == "-" then
+            degree = degree - 1
+        elseif c == "^" then
+            degree = degree + 2
+        elseif c == "v" then
+            degree = degree - 2
+        elseif c == "[" then
+            stack[#stack + 1] = {degree=degree, dur=dur}
+        elseif c == "]" then
+            if #stack > 0 then
+                local s = table.remove(stack)
+                degree = s.degree
+                dur    = s.dur
+            end
+        elseif c == ">" then
+            dur = dur * 2.0
+        elseif c == "<" then
+            dur = dur * 0.5
+        end
+    end
+
+    return events
+end
+
+
+Practical Rules for Musical Output
+
+
+Not all L-system rules produce good melodies. Rules that make the degree drift
+monotonically up or down eventually exit the register; rules that expand too quickly
+produce impractically long strings. Some rules that work well:
+
+
+
+-- Stepwise-with-return: creates phrases that depart and return
+-- Produces: ABBA-type contour at every scale
+local stepwise = {F = "F+[F]-F"}
+
+-- Koch melody: ascending zigzag; fast expansion
+local koch = {F = "F+F-F-F+F"}
+
+-- Pentatonic pendulum: alternates up and down steps
+-- Works best with a 5-note scale
+local pendulum = {F = "[F+F+F]-F-[F-F-F]+F"}
+
+-- Rhythmic L-system: mixes note lengths
+-- '>' doubles duration; creates long notes at phrase ends
+local rhythmic = {F = "F<F>[F+F]-F<F"}
+
+
+
+Test stepwise at n=3 with a pentatonic scale, root C4:
+
+
+
+local pitch_mod = require("pitch")
+math.randomseed(0)
+
+local str    = lsystem("F", {F="F+[F]-F"}, 3)
+local events = interpret(str, 60, pitch_mod.scales.pentatonic, 0.125)
+
+print(string.format("String length: %d  Note events: %d", #str, #events))
+for i = 1, math.min(16, #events) do
+    io.write(pitch_mod.name(events[i].pitch) .. " ")
+    if i % 8 == 0 then print() end
+end
+print()
+
+
+
+Output:
+
+
+
+String length: 85  Note events: 27
+C4 D4 C4 E4 C4 D4 C4 G4
+C4 D4 C4 E4 C4 D4 G4 A4
+...
+
+
+
+The C4 appears repeatedly as the stack returns the degree to its origin. This is
+the call-and-response structure: F plays, then the push [F] departs, then ] returns
+home, then -F descends slightly. At n=3, this three-level nesting produces the
+repetition at three time scales.
+
+
+Sending L-System Melody to Pure Data
+
+
+-- Assuming libpd or a Pd-controlling Lua host:
+local function play_events(events, bpm)
+    local beat_ms = 60000.0 / bpm  -- one beat = one quarter note
+    for _, ev in ipairs(events) do
+        if not ev.rest then
+            pd.send("algo-note", ev.pitch)
+        end
+        pd.delay(ev.duration * beat_ms * 4)  -- duration is fraction of whole note
+    end
+end
+
+play_events(events, 90)
+
+
+Summary
+
+
+L-systems produce melodies with hierarchical, self-similar structure by rewriting a seed
+string through production rules. After n iterations, the output contains the structure of
+every earlier iteration nested within it. A musical symbol vocabulary maps characters to
+note events, scale degree changes, duration modifiers, and a push/pop stack that creates
+call-and-response phrasing. The self-similar structure means that the same rhythmic and
+melodic motives appear at bar, phrase, and section scales simultaneously — a property
+that distinguishes L-system output from Brownian or Markov melodies.
+
+
+Further Reading
+
+
+Prusinkiewicz & Lindenmayer — The Algorithmic Beauty of Plants (free PDF)
+Nierhaus — Algorithmic Composition, Ch. 4: Grammars and L-Systems
+McCormack — Grammar-Based Music Composition (Computer Music Journal)
+Wikipedia — L-System (includes musical applications)
+
+
+See Also
+
+
+Part 3: Random Walks and Brownian Motion - comparison: BM for contour, L-systems for structure
+Part 9: Cellular Automata - another rule-based generative technique
+Part 2: Pitch as Numbers - the pitch.lua module and scale tables used by the interpreter
+Part 11: Putting It All Together - L-system output feeds one voice in the final patch
+

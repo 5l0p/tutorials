@@ -1,0 +1,397 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Containers - Part 9: Virtual Filesystems: proc, sysfs & devtmpfs</title>
+    <meta name="description" content="What proc, sysfs, and devtmpfs are, why containers need their own mounts of them, and how to set them up correctly inside a new namespace.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="linux, containers">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="containers-09-virtual-filesystems.txt">plain/text</a> | <i>2026-08-07</i> | <i><a href="../../linux.htm">linux</a>, <a href="../../containers.htm">containers</a></i>
+        <h2>Containers - Part 9: Virtual Filesystems: proc, sysfs & devtmpfs</h2>
+        <p>
+A freshly created container namespace has no <code>/proc</code>, no <code>/sys</code>, no
+<code>/dev</code>. Any program that reads process information, inspects kernel
+parameters, or opens device files will fail. This article explains what the
+three main virtual filesystems are, why each container needs its own fresh
+mount, and the exact mount calls required to set them up correctly.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What virtual filesystems are and how the kernel synthesises their content on demand</li>
+<li>Why <code>/proc</code> must be remounted in a new PID namespace, and the correct mount flags to use</li>
+<li>Why <code>/sys</code> is mounted read-only in containers and what it exposes</li>
+<li>How to set up <code>/dev</code> with a tmpfs, essential device nodes, devpts with <code>newinstance</code>, and <code>/dev/shm</code></li>
+<li>A complete Go <code>setupMounts()</code> function that handles all of the above</li>
+<li>Which <code>/proc</code> and <code>/sys</code> paths runc masks with bind mounts to prevent information leaks</li>
+</ul>
+
+<h3>What Is a Virtual Filesystem?</h3>
+
+<p>
+A virtual filesystem (VFS-backed, sometimes called a pseudo-filesystem) has no
+backing storage on disk. Its files and directories are synthesised by the kernel
+on demand. When you read <code>/proc/self/status</code>, the kernel generates the
+content dynamically from internal process data structures. Nothing is ever
+written to a block device. The filesystem type string passed to <code>mount()</code>
+tells the kernel which driver to use.
+</p>
+
+<h3>procfs: /proc</h3>
+
+<p>
+<code>procfs</code> (type <code>proc</code>) exports kernel and process information. Key
+directories and files:
+</p>
+
+<ul>
+<li><code>/proc/&lt;pid&gt;/</code> - per-process information: status, maps, fd, ns, cmdline, environ</li>
+<li><code>/proc/self/</code> - symlink to the calling process's directory</li>
+<li><code>/proc/meminfo</code> - memory statistics (reads from the host, unless overridden)</li>
+<li><code>/proc/cpuinfo</code> - CPU information</li>
+<li><code>/proc/sys/</code> - kernel tuning parameters (writable with <code>CAP_SYS_ADMIN</code>)</li>
+<li><code>/proc/mounts</code> - the process's mount table (symlink to <code>self/mounts</code>)</li>
+</ul>
+
+<p>
+Inside a container with a new PID namespace, <code>/proc</code> must be remounted.
+If the container inherits the host's <code>/proc</code> mount, it shows all host PIDs
+- and tools like <code>ps</code>, <code>top</code>, and <code>kill</code> will operate on host
+processes. A fresh <code>proc</code> mount inside the new PID namespace shows only the
+container's processes.
+</p>
+
+<pre>
+/* Mount /proc inside a container */
+#include &lt;sys/mount.h&gt;
+#include &lt;sys/stat.h&gt;
+
+void mount_proc(void) {
+    mkdir("/proc", 0555);
+    if (mount("proc", "/proc", "proc",
+              MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1) {
+        perror("mount /proc");
+    }
+}
+</pre>
+
+<p>
+The <code>MS_NOSUID | MS_NODEV | MS_NOEXEC</code> flags prevent setuid binaries,
+device files, and executable files from being used on this mount - good
+practice even though <code>/proc</code> has none of these.
+</p>
+
+<h3>sysfs: /sys</h3>
+
+<p>
+<code>sysfs</code> (type <code>sysfs</code>) exports kernel object information. It represents
+the device tree, bus topology, kernel modules, and subsystem parameters.
+Important paths:
+</p>
+
+<ul>
+<li><code>/sys/class/net/</code> - network interfaces</li>
+<li><code>/sys/fs/cgroup/</code> - cgroup hierarchy (when cgroupfs is mounted here)</li>
+<li><code>/sys/kernel/</code> - kernel debugging and security parameters</li>
+<li><code>/sys/devices/</code> - device hierarchy</li>
+</ul>
+
+<p>
+Containers typically mount <code>/sys</code> read-only (<code>MS_RDONLY</code>) to prevent
+modification of host kernel parameters:
+</p>
+
+<pre>
+void mount_sysfs(void) {
+    mkdir("/sys", 0555);
+    if (mount("sysfs", "/sys", "sysfs",
+              MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1) {
+        perror("mount /sys");
+    }
+}
+</pre>
+
+<p>
+Note that <code>/sys/fs/cgroup/</code> is a sub-mount within sysfs when cgroupfs is
+mounted there. Containers with a cgroup namespace get their own view of the
+cgroup tree; without one, they see the full host cgroup hierarchy (which leaks
+information about other containers).
+</p>
+
+<h3>devtmpfs: /dev</h3>
+
+<p>
+<code>devtmpfs</code> (type <code>devtmpfs</code> or <code>tmpfs</code>) provides device nodes. The
+kernel populates it automatically with entries for all registered devices when
+mounted as <code>devtmpfs</code>. Containers usually mount a plain <code>tmpfs</code> on
+<code>/dev</code> and then create only the device nodes they need:
+</p>
+
+<pre>
+void mount_dev(void) {
+    mkdir("/dev", 0755);
+
+    /* Plain tmpfs - kernel won't auto-populate device nodes */
+    if (mount("tmpfs", "/dev", "tmpfs",
+              MS_NOSUID | MS_STRICTATIME,
+              "mode=755,size=65536k") == -1) {
+        perror("mount /dev");
+        return;
+    }
+
+    /* Create standard devices */
+    mknod("/dev/null",    S_IFCHR | 0666, makedev(1, 3));
+    mknod("/dev/zero",    S_IFCHR | 0666, makedev(1, 5));
+    mknod("/dev/full",    S_IFCHR | 0666, makedev(1, 7));
+    mknod("/dev/random",  S_IFCHR | 0444, makedev(1, 8));
+    mknod("/dev/urandom", S_IFCHR | 0444, makedev(1, 9));
+    mknod("/dev/tty",     S_IFCHR | 0666, makedev(5, 0));
+    mknod("/dev/pts",     S_IFDIR | 0755, 0);
+
+    /* Mount devpts for terminal support */
+    mkdir("/dev/pts", 0755);
+    mount("devpts", "/dev/pts", "devpts",
+          MS_NOSUID | MS_NOEXEC,
+          "newinstance,ptmxmode=0666");
+
+    /* /dev/ptmx should be a symlink to /dev/pts/ptmx */
+    symlink("/dev/pts/ptmx", "/dev/ptmx");
+}
+</pre>
+
+<p>
+The minimum set of devices for a working container is <code>null</code>, <code>zero</code>,
+<code>random</code>, <code>urandom</code>, and <code>tty</code>. Without <code>/dev/null</code>, processes that
+redirect to it will fail. Without <code>/dev/urandom</code>, Go's TLS stack and many
+other programs will fail to initialise.
+</p>
+
+<h3>devpts: /dev/pts</h3>
+
+<p>
+<code>devpts</code> provides pseudo-terminal (PTY) slave devices. When you SSH into a
+container or run <code>docker exec -it</code>, the terminal window is a PTY. The
+<code>newinstance</code> option is critical: without it all containers share a single
+PTY namespace and one container could open another's terminal:
+</p>
+
+<pre>
+mount("devpts", "/dev/pts", "devpts",
+      MS_NOSUID | MS_NOEXEC,
+      "newinstance,ptmxmode=0666,mode=620,gid=5");
+</pre>
+
+<h3>tmpfs: /dev/shm and /run</h3>
+
+<p>
+POSIX shared memory lives in <code>/dev/shm</code> (a tmpfs). Many IPC libraries,
+databases, and browsers use it. Mount it inside the container:
+</p>
+
+<pre>
+mkdir("/dev/shm", 01777);
+mount("shm", "/dev/shm", "tmpfs",
+      MS_NOSUID | MS_NODEV, "mode=1777,size=65536k");
+
+mkdir("/run", 0755);
+mount("tmpfs", "/run", "tmpfs",
+      MS_NOSUID | MS_NODEV | MS_STRICTATIME,
+      "mode=755,size=65536k");
+</pre>
+
+<h3>Complete Setup in Go</h3>
+
+<pre>
+package main
+
+import (
+    "fmt"
+    "os"
+
+    "golang.org/x/sys/unix"
+)
+
+func setupMounts() error {
+    mounts := []struct {
+        src, dst, fstype string
+        flags            uintptr
+        opts             string
+    }{
+        {"proc",   "/proc", "proc",
+         unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC, ""},
+        {"sysfs",  "/sys",  "sysfs",
+         unix.MS_RDONLY | unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC, ""},
+        {"tmpfs",  "/dev",  "tmpfs",
+         unix.MS_NOSUID | unix.MS_STRICTATIME, "mode=755,size=65536k"},
+        {"devpts", "/dev/pts", "devpts",
+         unix.MS_NOSUID | unix.MS_NOEXEC,
+         "newinstance,ptmxmode=0666"},
+        {"shm", "/dev/shm", "tmpfs",
+         unix.MS_NOSUID | unix.MS_NODEV,
+         "mode=1777,size=65536k"},
+    }
+
+    for _, m := range mounts {
+        if err := os.MkdirAll(m.dst, 0755); err != nil {
+            return fmt.Errorf("mkdir %s: %w", m.dst, err)
+        }
+        if err := unix.Mount(m.src, m.dst, m.fstype, m.flags, m.opts); err != nil {
+            return fmt.Errorf("mount %s: %w", m.dst, err)
+        }
+    }
+
+    // Create essential device nodes
+    devs := []struct {
+        path  string
+        mode  uint32
+        major uint32
+        minor uint32
+    }{
+        {"/dev/null",    unix.S_IFCHR | 0666, 1, 3},
+        {"/dev/zero",    unix.S_IFCHR | 0666, 1, 5},
+        {"/dev/random",  unix.S_IFCHR | 0444, 1, 8},
+        {"/dev/urandom", unix.S_IFCHR | 0444, 1, 9},
+        {"/dev/tty",     unix.S_IFCHR | 0666, 5, 0},
+    }
+
+    for _, d := range devs {
+        err := unix.Mknod(d.path, d.mode,
+            int(unix.Mkdev(d.major, d.minor)))
+        if err != nil &amp;&amp; !os.IsExist(err) {
+            return fmt.Errorf("mknod %s: %w", d.path, err)
+        }
+    }
+
+    return nil
+}
+</pre>
+
+<h3>Masking Dangerous Paths</h3>
+
+<p>
+Even with a correct <code>/proc</code> mount, some paths expose sensitive information
+or allow escapes. runc binds a <code>tmpfs</code> (masking) over:
+</p>
+
+<pre>
+/proc/kcore
+/proc/keys
+/proc/latency_stats
+/proc/timer_list
+/proc/timer_stats
+/proc/sched_debug
+/sys/firmware
+</pre>
+
+<p>
+These are bind-mounted with <code>/dev/null</code> or a small tmpfs to prevent
+access:
+</p>
+
+<pre>
+mount("/dev/null", "/proc/kcore", NULL, MS_BIND, NULL);
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+A container namespace starts with no virtual filesystems. Mount a fresh
+<code>proc</code> on <code>/proc</code> to get a PID-namespace-correct process table. Mount
+<code>sysfs</code> read-only on <code>/sys</code>. Create <code>/dev</code> as a plain tmpfs, add device
+nodes explicitly, mount <code>devpts</code> with <code>newinstance</code> for isolated PTYs, and
+add <code>/dev/shm</code>. Mask sensitive <code>/proc</code> paths like <code>/proc/kcore</code> by
+bind-mounting <code>/dev/null</code> over them. These are the exact steps runc performs
+before executing the container workload.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://man7.org/linux/man-pages/man5/proc.5.html">proc(5) - Linux man page</a></li>
+<li><a href="https://www.kernel.org/doc/html/latest/filesystems/sysfs.html">sysfs - kernel documentation</a></li>
+<li><a href="https://www.kernel.org/doc/html/latest/filesystems/devpts.html">devpts - kernel documentation</a></li>
+<li><a href="https://github.com/opencontainers/runc/blob/main/libcontainer/rootfs_linux.go">runc rootfs_linux.go - mount setup source</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="containers-06-mount-chroot.htm">Mount Namespaces &amp; chroot</a></li>
+<li><a href="containers-07-pivot-root.htm">pivot_root &amp; the Container Rootfs</a></li>
+<li><a href="containers-04-pid-namespaces.htm">PID Namespaces</a></li>
+<li><a href="containers-19-mini-runtime.htm">Building a Mini Container Runtime in Go</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

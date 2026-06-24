@@ -1,0 +1,430 @@
+DSP - Part 19: MIDI I/O on Linux with ALSA
+2026-09-12
+
+
+Parsing MIDI bytes is one problem; getting those bytes from a USB keyboard or a
+virtual MIDI cable into your C program is another. On Linux, ALSA provides two
+interfaces: raw MIDI, which exposes the hardware byte stream directly, and the ALSA
+sequencer, which adds addressing, routing, and a timestamped event queue. The raw MIDI
+interface is simpler to use; the sequencer is what every serious Linux MIDI tool uses.
+This article covers both, with complete C programs for each.
+
+
+What You Will Learn
+
+
+How to open an ALSA raw MIDI device and read bytes from it.
+How to use poll() to avoid busy-waiting on MIDI input.
+The ALSA sequencer client/port model and how ports are addressed.
+How to open a sequencer port, receive events, and connect ports programmatically in C.
+How to feed ALSA sequencer events into the MIDI parser from Part 18.
+
+
+ALSA Raw MIDI
+
+
+ALSA exposes MIDI hardware as character devices at /dev/snd/midiCnDm (card
+n, device m). Opening and reading from them is a standard file I/O operation. The device
+delivers raw MIDI bytes in the order they arrive from the hardware.
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <poll.h>
+
+/* List available raw MIDI devices by scanning /proc/asound/devices */
+void list_rawmidi_devices(void) {
+    FILE *f = fopen("/proc/asound/devices", "r");
+    if (!f) { perror("open /proc/asound/devices"); return; }
+    char line[128];
+    while (fgets(line, sizeof(line), f))
+        if (strstr(line, "type rawmidi") || strstr(line, "midi"))
+            printf("%s", line);
+    fclose(f);
+}
+
+/* Read MIDI from /dev/snd/midiCnDm using poll().
+   This function blocks until MIDI data arrives and returns the number
+   of bytes read into buf (at most buf_size).
+   Returns -1 on error. */
+int rawmidi_read_poll(int fd, uint8_t *buf, int buf_size, int timeout_ms) {
+    struct pollfd pfd = { fd, POLLIN, 0 };
+    int ret = poll(&pfd, 1, timeout_ms);
+    if (ret < 0)  { perror("poll"); return -1; }
+    if (ret == 0) return 0;   /* timeout */
+    if (!(pfd.revents & POLLIN)) return 0;
+
+    ssize_t n = read(fd, buf, (size_t)buf_size);
+    if (n < 0) { perror("read"); return -1; }
+    return (int)n;
+}
+
+
+
+/* Complete raw MIDI reader: reads until Ctrl-C.
+   Compile: cc -o rawmidi_read rawmidi_read.c -lm
+   Run:     ./rawmidi_read /dev/snd/midiC1D0
+*/
+#include <stdio.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <poll.h>
+
+int main(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "Usage: %s /dev/snd/midiCnDm\n", argv[0]); return 1; }
+
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 1; }
+
+    printf("Listening on %s (Ctrl-C to stop)\n", argv[1]);
+
+    uint8_t buf[64];
+    struct pollfd pfd = { fd, POLLIN, 0 };
+
+    for (;;) {
+        int ret = poll(&pfd, 1, 1000);
+        if (ret < 0) { perror("poll"); break; }
+        if (ret == 0) continue;   /* timeout: no data this second */
+
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n <= 0) break;
+        for (ssize_t i = 0; i < n; i++)
+            printf("%02X ", buf[i]);
+        printf("\n");
+        fflush(stdout);
+    }
+
+    close(fd);
+    return 0;
+}
+
+
+
+Gotcha: ALSA raw MIDI devices are exclusive-access on most kernels. If another program
+(a sequencer, a DAW, PulseAudio's MIDI bridge) already has the device open, your
+open() call will fail with EBUSY. Use the ALSA sequencer instead, which
+supports multiple clients simultaneously.
+
+
+The ALSA Sequencer
+
+
+The ALSA sequencer is a kernel subsystem that routes timestamped MIDI events between
+clients. A client is an application; each client creates one or more ports; ports are
+connected by subscription. Events travel through subscriptions and arrive in the
+receiving port's event queue.
+
+
+
+Advantages over raw MIDI:
+
+
+
+Multiple applications can connect to the same hardware simultaneously.
+Virtual ports can be created without hardware (useful for inter-application routing).
+Events carry timestamps so ordering is preserved even at high densities.
+MIDI clock, SysEx, and all other message types are handled uniformly.
+
+
+Opening a Sequencer Client
+
+
+#include <alsa/asoundlib.h>
+
+/* Open ALSA sequencer, create an input port, and return the port address.
+   Caller must close seq_handle when done. */
+int seq_open_input_port(snd_seq_t **seq_handle, int *port_id) {
+    /* Open sequencer in non-blocking mode */
+    int err = snd_seq_open(seq_handle, "default", SND_SEQ_OPEN_INPUT, 0);
+    if (err < 0) {
+        fprintf(stderr, "snd_seq_open: %s\n", snd_strerror(err));
+        return -1;
+    }
+
+    snd_seq_set_client_name(*seq_handle, "midi_reader");
+
+    /* Create a simple input port with no capability restrictions */
+    *port_id = snd_seq_create_simple_port(
+        *seq_handle,
+        "input",
+        SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE,
+        SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION
+    );
+    if (*port_id < 0) {
+        fprintf(stderr, "snd_seq_create_simple_port: %s\n",
+                snd_strerror(*port_id));
+        snd_seq_close(*seq_handle);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+Listing and Connecting Ports Programmatically
+
+
+/* Print all readable MIDI hardware ports */
+void list_sequencer_ports(snd_seq_t *seq) {
+    snd_seq_client_info_t *cinfo;
+    snd_seq_port_info_t   *pinfo;
+
+    snd_seq_client_info_alloca(&cinfo);
+    snd_seq_port_info_alloca(&pinfo);
+
+    snd_seq_client_info_set_client(cinfo, -1);
+    while (snd_seq_query_next_client(seq, cinfo) >= 0) {
+        int client = snd_seq_client_info_get_client(cinfo);
+        snd_seq_port_info_set_client(pinfo, client);
+        snd_seq_port_info_set_port(pinfo, -1);
+        while (snd_seq_query_next_port(seq, pinfo) >= 0) {
+            unsigned int caps = snd_seq_port_info_get_capability(pinfo);
+            if ((caps & SND_SEQ_PORT_CAP_READ) &&
+                (caps & SND_SEQ_PORT_CAP_SUBS_READ)) {
+                printf("  %d:%d  %s / %s\n",
+                    client,
+                    snd_seq_port_info_get_port(pinfo),
+                    snd_seq_client_info_get_name(cinfo),
+                    snd_seq_port_info_get_name(pinfo));
+            }
+        }
+    }
+}
+
+/* Connect src_client:src_port to our input port */
+int seq_connect_from(snd_seq_t *seq, int our_port,
+                     int src_client, int src_port) {
+    snd_seq_port_subscribe_t *sub;
+    snd_seq_port_subscribe_alloca(&sub);
+
+    snd_seq_addr_t sender = { (unsigned char)src_client,
+                               (unsigned char)src_port };
+    snd_seq_addr_t dest   = { (unsigned char)snd_seq_client_id(seq),
+                               (unsigned char)our_port };
+
+    snd_seq_port_subscribe_set_sender(sub, &sender);
+    snd_seq_port_subscribe_set_dest(sub, &dest);
+
+    int err = snd_seq_subscribe_port(seq, sub);
+    if (err < 0)
+        fprintf(stderr, "snd_seq_subscribe_port: %s\n", snd_strerror(err));
+    return err;
+}
+
+
+Polling and Reading Events
+
+
+/* Read MIDI events from the sequencer using poll().
+   Calls midi_parser_feed() from Part 18 for each event's raw bytes. */
+
+#include <alsa/asoundlib.h>
+/* ... include MidiParser from Part 18 ... */
+
+void seq_run_loop(snd_seq_t *seq, MidiParser *parser) {
+    /* Get the poll file descriptors for the sequencer */
+    int npfds = snd_seq_poll_descriptors_count(seq, POLLIN);
+    struct pollfd *pfds = malloc((size_t)npfds * sizeof(struct pollfd));
+    snd_seq_poll_descriptors(seq, pfds, (unsigned int)npfds, POLLIN);
+
+    printf("Waiting for MIDI events (Ctrl-C to stop)...\n");
+
+    for (;;) {
+        if (poll(pfds, (nfds_t)npfds, -1) < 0) break;
+
+        /* May need to loop: multiple events can arrive between polls */
+        snd_seq_event_t *ev;
+        while (snd_seq_event_input(seq, &ev) > 0) {
+
+            /* Convert sequencer event back to raw bytes for the parser */
+            uint8_t raw[3];
+            int raw_len = 0;
+
+            switch (ev->type) {
+            case SND_SEQ_EVENT_NOTEON:
+                raw[0] = 0x90 | (ev->data.note.channel & 0x0F);
+                raw[1] = ev->data.note.note;
+                raw[2] = ev->data.note.velocity;
+                raw_len = 3;
+                break;
+            case SND_SEQ_EVENT_NOTEOFF:
+                raw[0] = 0x80 | (ev->data.note.channel & 0x0F);
+                raw[1] = ev->data.note.note;
+                raw[2] = ev->data.note.velocity;
+                raw_len = 3;
+                break;
+            case SND_SEQ_EVENT_CONTROLLER:
+                raw[0] = 0xB0 | (ev->data.control.channel & 0x0F);
+                raw[1] = (uint8_t)ev->data.control.param;
+                raw[2] = (uint8_t)ev->data.control.value;
+                raw_len = 3;
+                break;
+            case SND_SEQ_EVENT_PITCHBEND: {
+                /* ALSA delivers pitch bend as a signed integer -8192..+8191 */
+                int val = ev->data.control.value + 8192;
+                raw[0] = 0xE0 | (ev->data.control.channel & 0x0F);
+                raw[1] = (uint8_t)(val & 0x7F);
+                raw[2] = (uint8_t)((val >> 7) & 0x7F);
+                raw_len = 3;
+                break;
+            }
+            case SND_SEQ_EVENT_PGMCHANGE:
+                raw[0] = 0xC0 | (ev->data.control.channel & 0x0F);
+                raw[1] = (uint8_t)ev->data.control.value;
+                raw_len = 2;
+                break;
+            default:
+                break;
+            }
+
+            for (int i = 0; i < raw_len; i++)
+                midi_parser_feed(parser, raw[i]);
+        }
+    }
+
+    free(pfds);
+}
+
+
+Complete Program: Print MIDI Input
+
+
+/* seq_midi_read.c — connect to a hardware port, print all MIDI events.
+   Usage: ./seq_midi_read [client:port]
+          If no argument, lists available ports.
+   Compile: cc -o seq_midi_read seq_midi_read.c -lasound
+
+   Example: ./seq_midi_read 20:0
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <alsa/asoundlib.h>
+
+static void print_event(const snd_seq_event_t *ev) {
+    switch (ev->type) {
+    case SND_SEQ_EVENT_NOTEON:
+        printf("NoteOn  ch=%d note=%d vel=%d\n",
+            ev->data.note.channel, ev->data.note.note, ev->data.note.velocity);
+        break;
+    case SND_SEQ_EVENT_NOTEOFF:
+        printf("NoteOff ch=%d note=%d\n",
+            ev->data.note.channel, ev->data.note.note);
+        break;
+    case SND_SEQ_EVENT_CONTROLLER:
+        printf("CC      ch=%d ctrl=%d val=%d\n",
+            ev->data.control.channel,
+            ev->data.control.param,
+            ev->data.control.value);
+        break;
+    case SND_SEQ_EVENT_PITCHBEND:
+        printf("PBend   ch=%d val=%d\n",
+            ev->data.control.channel, ev->data.control.value);
+        break;
+    default:
+        printf("Event   type=%d\n", ev->type);
+        break;
+    }
+}
+
+int main(int argc, char **argv) {
+    snd_seq_t *seq;
+    int port_id;
+
+    if (snd_seq_open(&seq, "default", SND_SEQ_OPEN_INPUT, 0) < 0) {
+        fprintf(stderr, "Cannot open ALSA sequencer\n");
+        return 1;
+    }
+    snd_seq_set_client_name(seq, "midi_print");
+    port_id = snd_seq_create_simple_port(seq, "input",
+        SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE,
+        SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION);
+
+    if (argc < 2) {
+        printf("Available input ports:\n");
+        /* ... call list_sequencer_ports(seq) ... */
+        printf("Usage: %s client:port\n", argv[0]);
+        snd_seq_close(seq);
+        return 0;
+    }
+
+    /* Parse "client:port" argument */
+    int src_client = 0, src_port = 0;
+    if (sscanf(argv[1], "%d:%d", &src_client, &src_port) != 2) {
+        fprintf(stderr, "Expected client:port argument\n");
+        snd_seq_close(seq);
+        return 1;
+    }
+
+    /* Subscribe */
+    snd_seq_port_subscribe_t *sub;
+    snd_seq_port_subscribe_alloca(&sub);
+    snd_seq_addr_t sender = { (unsigned char)src_client, (unsigned char)src_port };
+    snd_seq_addr_t dest   = { (unsigned char)snd_seq_client_id(seq),
+                               (unsigned char)port_id };
+    snd_seq_port_subscribe_set_sender(sub, &sender);
+    snd_seq_port_subscribe_set_dest(sub, &dest);
+    if (snd_seq_subscribe_port(seq, sub) < 0) {
+        fprintf(stderr, "Cannot subscribe to %d:%d\n", src_client, src_port);
+        snd_seq_close(seq);
+        return 1;
+    }
+
+    printf("Connected to %d:%d. Waiting for events...\n", src_client, src_port);
+
+    int npfds = snd_seq_poll_descriptors_count(seq, POLLIN);
+    struct pollfd *pfds = malloc((size_t)npfds * sizeof(struct pollfd));
+    snd_seq_poll_descriptors(seq, pfds, (unsigned int)npfds, POLLIN);
+
+    for (;;) {
+        poll(pfds, (nfds_t)npfds, -1);
+        snd_seq_event_t *ev;
+        while (snd_seq_event_input(seq, &ev) > 0)
+            print_event(ev);
+    }
+
+    free(pfds);
+    snd_seq_close(seq);
+    return 0;
+}
+
+
+Summary
+
+
+ALSA raw MIDI gives direct access to the hardware byte stream through a character device
+and standard file I/O with poll(). The ALSA sequencer adds a client/port addressing
+model that supports multiple simultaneous readers and a richer event API. For a
+synthesiser application the sequencer is the right choice: connect to it with
+snd_seq_subscribe_port, poll with snd_seq_poll_descriptors,
+and drain events with snd_seq_event_input in a loop.
+
+
+
+Part 20 covers the audio output side: opening an SDL2 audio device, registering a
+callback, and integrating the oscillators and filters built in earlier parts.
+
+
+Further Reading
+
+
+ALSA Sequencer API Reference
+ALSA Raw MIDI API Reference
+ALSA MIDI Overview - opensrc.org
+Linux MIDI HOWTO - Craig Stuart Sapp (CCRMA)
+ALSA MIDI Driver Interface - kernel.org
+
+
+See Also
+
+
+MIDI 1.0 Protocol and Parsing
+SDL2 as Audio Backend
+Putting It All Together: Monophonic Synth
+

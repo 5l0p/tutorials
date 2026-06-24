@@ -1,0 +1,394 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Algorithmic Composition - Part 9: Cellular Automata</title>
+    <meta name="description" content="1D elementary cellular automata (Rule 30, Rule 110) as pitch and rhythm generators, reading cell states as notes and rests, and Conway's Game of Life for evolving harmonic density — all implemented in Lua with output sent to Pure Data.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="lua, puredata, audio, music-theory, generative">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="algo-09-cellular-automata.txt">plain/text</a> | <i>2026-01-19</i> | <i><a href="../../lua.htm">lua</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../music-theory.htm">music-theory</a>, <a href="../../generative.htm">generative</a></i>
+        <h2>Algorithmic Composition - Part 9: Cellular Automata</h2>
+        <p>
+A cellular automaton is a grid of cells, each in one of a small number of states (usually
+0 or 1), updated simultaneously at each time step according to a local rule. The rule
+specifies the new state of a cell based on its current state and the states of its
+neighbours. The remarkable result: from an extremely simple local rule and a simple
+initial condition, global behaviour can emerge that is complex, unpredictable, and
+structurally rich.
+</p>
+
+<p>
+For music, the appeal is twofold. First, a 1D automaton with 16 cells maps directly to
+a 16-step sequencer row: active cells trigger notes; inactive cells are rests. Each
+time step generates one bar of rhythm. Advancing through generations produces an
+evolving rhythmic pattern from a fixed rule, with no further input. Second, a 2D
+automaton (Conway's Game of Life) produces evolving patterns whose density — the
+fraction of active cells — can control harmonic density: how many simultaneous notes
+to play.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How 1D elementary cellular automata work and what the rule number encodes</li>
+<li>Rules 30 (chaotic) and 110 (complex, Turing-complete) as musical generators</li>
+<li>Mapping a 1D CA row to pitch and rhythm events</li>
+<li>Conway's Game of Life rules and how to implement them in Lua</li>
+<li>Using 2D CA cell density to control the number of simultaneous notes</li>
+<li>Integrating CA output with the sequencer from the drum machine (Series 9)</li>
+</ul>
+
+<h3>1D Elementary Cellular Automata</h3>
+
+<p>
+A 1D elementary CA has a row of cells, each 0 or 1. The rule is specified by a single
+integer 0–255 (Wolfram's rule numbering). The rule encodes, for each of the 8 possible
+3-cell neighbourhoods (000 to 111 in binary), what the centre cell becomes in the next
+generation.
+</p>
+
+<p>
+Rule 30 (binary: 00011110): produces apparently random, chaotic patterns. Rule 110
+(binary: 01101110): produces complex, structured patterns; proven Turing-complete.
+Rule 90 (binary: 01011010): produces a Sierpinski triangle fractal pattern.
+</p>
+
+<pre>
+-- Apply one step of a 1D elementary CA.
+-- cells: array of 0s and 1s, length n (treated as circular)
+-- rule:  integer 0-255 (Wolfram rule number)
+-- Returns a new array of the same length.
+local function ca_step(cells, rule)
+    local n    = #cells
+    local next = {}
+    for i = 1, n do
+        local left   = cells[((i - 2) % n) + 1]
+        local mid    = cells[i]
+        local right  = cells[(i % n) + 1]
+        local pattern = left * 4 + mid * 2 + right  -- 3-bit neighbourhood index (0-7)
+        -- Extract bit 'pattern' from rule
+        next[i] = math.floor(rule / (2 ^ pattern)) % 2
+    end
+    return next
+end
+</pre>
+
+<p>
+The neighbourhood <code>pattern</code> is a 3-bit number where the left cell is the
+most significant bit. For neighbourhood 1,0,1 (left=1, mid=0, right=1), pattern = 5.
+Rule 30 has bit 5 equal to 0, so the centre cell becomes 0.
+</p>
+
+<h3>Mapping CA Rows to Rhythm and Pitch</h3>
+
+<p>
+Interpret a 16-cell row directly as a 16-step rhythm: cell value 1 = note on, 0 = rest.
+Advance the automaton by one generation per bar:
+</p>
+
+<pre>
+local function ca_to_rhythm(cells)
+    -- returns an array of 1s (hit) and 0s (rest)
+    local pattern = {}
+    for i, v in ipairs(cells) do
+        pattern[i] = v
+    end
+    return pattern
+end
+</pre>
+
+<p>
+To also generate pitches, map the position of each active cell to a scale degree:
+</p>
+
+<pre>
+local pitch_mod = require("pitch")
+
+-- Map active cells to pitch events
+-- cells: 16-element array of 0/1
+-- root:  MIDI root note
+-- scale: semitone offset array
+local function ca_to_pitch(cells, root, scale)
+    local events = {}
+    local n      = #scale
+    for i, active in ipairs(cells) do
+        if active == 1 then
+            local degree = ((i - 1) % n) + 1
+            events[#events + 1] = {
+                step  = i,
+                pitch = root + scale[degree],
+            }
+        end
+    end
+    return events
+end
+</pre>
+
+<h3>Running the Automaton</h3>
+
+<pre>
+-- Generate 8 bars from Rule 30 with a 16-cell row
+local function run_ca(rule, seed, n_generations)
+    local cells = seed
+    local generations = {cells}
+    for i = 2, n_generations do
+        cells = ca_step(cells, rule)
+        generations[i] = cells
+    end
+    return generations
+end
+
+-- Seed: single active cell in the middle (classic CA start)
+local seed = {}
+for i = 1, 16 do seed[i] = (i == 8) and 1 or 0 end
+
+local gens = run_ca(30, seed, 8)
+
+-- Print each generation as a rhythm pattern
+for g, gen in ipairs(gens) do
+    io.write(string.format("Bar %d: ", g))
+    for _, v in ipairs(gen) do
+        io.write(v == 1 and "X" or ".")
+    end
+    print()
+end
+</pre>
+
+<p>
+Output (Rule 30, single-cell seed, 16 cells, 8 bars):
+</p>
+
+<pre>
+Bar 1: .......X........
+Bar 2: ......XXX.......
+Bar 3: .....XX..X......
+Bar 4: ....XX.XXXX.....
+Bar 5: ...XX.X....X....
+Bar 6: ..XX.XXXX.XXX...
+Bar 7: .XX.X....XX..X..
+Bar 8: XX.XXXX.XX.XXXX.
+</pre>
+
+<p>
+The single-cell seed grows into increasingly complex rhythmic patterns. By bar 8 the
+pattern fills most of the row with no obvious repetition — the chaotic behaviour of
+Rule 30 at work.
+</p>
+
+<h3>Conway's Game of Life</h3>
+
+<p>
+Conway's Life is a 2D cellular automaton. Each cell is alive (1) or dead (0). The
+update rules are:
+</p>
+
+<ul>
+<li>A live cell with 2 or 3 live neighbours survives.</li>
+<li>A dead cell with exactly 3 live neighbours becomes alive.</li>
+<li>All other cells die or stay dead.</li>
+</ul>
+
+<pre>
+-- One step of Conway's Game of Life.
+-- grid: 2D array (grid[row][col] = 0 or 1)
+-- rows, cols: grid dimensions (treated as toroidal/wrapping)
+local function life_step(grid, rows, cols)
+    local next = {}
+    for r = 1, rows do
+        next[r] = {}
+        for c = 1, cols do
+            local alive = 0
+            for dr = -1, 1 do
+                for dc = -1, 1 do
+                    if dr ~= 0 or dc ~= 0 then
+                        local nr = ((r + dr - 1) % rows) + 1
+                        local nc = ((c + dc - 1) % cols) + 1
+                        alive = alive + grid[nr][nc]
+                    end
+                end
+            end
+            local cur = grid[r][c]
+            if cur == 1 then
+                next[r][c] = (alive == 2 or alive == 3) and 1 or 0
+            else
+                next[r][c] = (alive == 3) and 1 or 0
+            end
+        end
+    end
+    return next
+end
+
+-- Count live cells in a region
+local function density(grid, rows, cols)
+    local count = 0
+    for r = 1, rows do
+        for c = 1, cols do
+            count = count + grid[r][c]
+        end
+    end
+    return count / (rows * cols)
+end
+</pre>
+
+<h3>Using Density for Harmonic Control</h3>
+
+<p>
+Map the fraction of live cells in the Life grid to the number of simultaneous notes
+to play. At low density (few live cells), play single notes. At high density, play
+full chords:
+</p>
+
+<pre>
+-- Map grid density to number of chord voices (1-3)
+local function density_to_voices(d)
+    if d &lt; 0.2 then return 1   -- single note
+    elseif d &lt; 0.5 then return 2   -- dyad
+    else return 3               -- full triad
+    end
+end
+
+-- Given a progression chord and a density, return n voices
+local function voiced_chord(chord_notes, n_voices)
+    local result = {}
+    for i = 1, math.min(n_voices, #chord_notes) do
+        result[i] = chord_notes[i]
+    end
+    return result
+end
+</pre>
+
+<p>
+As the Life grid evolves, density rises and falls through stable patterns, gliders,
+and oscillators. The harmonic density of the music tracks this evolution automatically,
+creating sections of single-note melody that thicken into three-voice chords and thin
+again.
+</p>
+
+<h3>Integrating with the Drum Machine Sequencer</h3>
+
+<p>
+The drum machine from Series 9 uses a 16-step sequencer driven by Lua pattern arrays.
+Replace the static pattern with a CA row:
+</p>
+
+<pre>
+-- Replace drums-07 pattern with CA rhythm, updated each bar
+local ca_cells  = seed
+local ca_rule   = 110   -- complex rule; structurally interesting for rhythm
+
+local function next_bar_pattern()
+    ca_cells = ca_step(ca_cells, ca_rule)
+    -- Convert CA row to 16-step velocity array (0 = rest, 100 = hit)
+    local pattern = {}
+    for i, v in ipairs(ca_cells) do
+        pattern[i] = v == 1 and 100 or 0
+    end
+    pd.send("kick-pattern", table.unpack(pattern))
+end
+
+-- Call next_bar_pattern() at the start of each bar from Pd's metro
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+1D elementary cellular automata evolve a row of binary cells one generation per bar,
+producing rhythmic patterns of increasing complexity from a single-cell seed. Rule 30
+gives chaotic, seemingly random patterns; Rule 110 gives structured complexity with
+long-period cycles. Active cells map to note-on events; cell positions map to scale
+degrees. Conway's Game of Life operates in 2D; its cell density controls harmonic
+density — sparse grids produce monophonic lines, dense grids trigger full chords. CA
+rhythm output slots directly into the drum machine sequencer from Series 9, replacing
+static pattern arrays with evolving, rule-driven sequences.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://www.wolframscience.com/nks/">Stephen Wolfram — A New Kind of Science (online)</a></li>
+<li><a href="https://conwaylife.com/wiki/Main_Page">LifeWiki — Conway's Game of Life patterns and theory</a></li>
+<li><a href="https://link.springer.com/book/10.1007/978-3-211-75540-2">Nierhaus — Algorithmic Composition, Ch. 6: Cellular Automata</a></li>
+<li><a href="https://www.researchgate.net/publication/2814388_Cellular_Automata_as_Musical_Systems">Bilotta &amp; Pantano — Cellular Automata as Musical Systems</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="drums-07-machine.htm">Assembling the Drum Machine</a> - the sequencer that CA rhythm output feeds into</li>
+<li><a href="algo-10-euclidean-rhythms.htm">Part 10: Euclidean Rhythms</a> - another approach to rule-based rhythm generation</li>
+<li><a href="algo-08-l-systems.htm">Part 8: L-Systems</a> - comparison: L-systems for melodic structure, CA for rhythmic evolution</li>
+<li><a href="algo-06-chord-progressions.htm">Part 6: Generating Chord Progressions</a> - the chord arrays that Life density selects from</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

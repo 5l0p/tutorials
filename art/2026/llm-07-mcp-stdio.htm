@@ -1,0 +1,460 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 7: MCP over stdio</title>
+    <meta name="description" content="Build a Go MCP server using stdio transport, register tools, and connect it to an agent with mcp-go.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-07-mcp-stdio.txt">plain/text</a> | <i>2026-06-16</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 7: MCP over stdio</h2>
+        <p>
+stdio is the simplest MCP transport: the client spawns the server as a child process and
+reads/writes JSON-RPC messages over stdin and stdout. No network, no ports, no auth - the
+server is only reachable by its parent. This makes it ideal for local tools that need to
+run in the same security context as the agent. This article builds a working stdio MCP
+server in Go and connects it to the agent loop from article 04.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How to structure a Go MCP server project and set up the mcp-go library</li>
+<li>How to register tools with name, description, and JSON schema input</li>
+<li>How to implement tool handlers and return results or errors</li>
+<li>How to test the server manually with a JSON-RPC shell session</li>
+<li>How to write the MCP client that spawns the server process and discovers its tools</li>
+<li>How to wire the discovered tools into the agent loop</li>
+</ul>
+
+<h3>Project Structure</h3>
+
+<p>
+We will build two programs:
+</p>
+
+<ul>
+<li><code>cmd/server/main.go</code> - the MCP server</li>
+<li><code>cmd/agent/main.go</code> - the agent that connects to it</li>
+</ul>
+
+<p>
+Both live in the same module. Start a new module:
+</p>
+
+<pre>
+mkdir mcp-demo &amp;&amp; cd mcp-demo
+go mod init mcp-demo
+go get github.com/mark3labs/mcp-go@latest
+</pre>
+
+<h3>The MCP Server</h3>
+
+<p>
+The <code>mcp-go</code> library provides a <code>server.MCPServer</code> type. You add tools
+to it, then run it with a transport. For stdio, the transport is
+<code>server.NewStdioServer(mcpServer)</code>.
+</p>
+
+<pre>
+// cmd/server/main.go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "os"
+
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+    s := server.NewMCPServer(
+        "filesystem-tools",
+        "1.0.0",
+        server.WithToolCapabilities(false),
+    )
+
+    // Register: read_file
+    s.AddTool(
+        mcp.NewTool("read_file",
+            mcp.WithDescription("Read the contents of a file at the given path."),
+            mcp.WithString("path",
+                mcp.Required(),
+                mcp.Description("Path to the file to read"),
+            ),
+        ),
+        handleReadFile,
+    )
+
+    // Register: write_file
+    s.AddTool(
+        mcp.NewTool("write_file",
+            mcp.WithDescription("Write content to a file, creating it if it does not exist."),
+            mcp.WithString("path",
+                mcp.Required(),
+                mcp.Description("Path to write to"),
+            ),
+            mcp.WithString("content",
+                mcp.Required(),
+                mcp.Description("Content to write"),
+            ),
+        ),
+        handleWriteFile,
+    )
+
+    // Register: list_dir
+    s.AddTool(
+        mcp.NewTool("list_dir",
+            mcp.WithDescription("List files and directories at the given path."),
+            mcp.WithString("path",
+                mcp.Required(),
+                mcp.Description("Directory to list"),
+            ),
+        ),
+        handleListDir,
+    )
+
+    stdio := server.NewStdioServer(s)
+    if err := stdio.Listen(context.Background(), os.Stdin, os.Stdout); err != nil {
+        fmt.Fprintln(os.Stderr, "server error:", err)
+        os.Exit(1)
+    }
+}
+</pre>
+
+<h3>Tool Handlers</h3>
+
+<pre>
+func handleReadFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    path, ok := req.Params.Arguments["path"].(string)
+    if !ok || path == "" {
+        return mcp.NewToolResultError("path is required"), nil
+    }
+    data, err := os.ReadFile(path)
+    if err != nil {
+        return mcp.NewToolResultError(err.Error()), nil
+    }
+    return mcp.NewToolResultText(string(data)), nil
+}
+
+func handleWriteFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    path, _ := req.Params.Arguments["path"].(string)
+    content, _ := req.Params.Arguments["content"].(string)
+    if path == "" {
+        return mcp.NewToolResultError("path is required"), nil
+    }
+    if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+        return mcp.NewToolResultError(err.Error()), nil
+    }
+    result, _ := json.Marshal(map[string]interface{}{
+        "written": len(content), "path": path,
+    })
+    return mcp.NewToolResultText(string(result)), nil
+}
+
+func handleListDir(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    path, _ := req.Params.Arguments["path"].(string)
+    if path == "" {
+        path = "."
+    }
+    entries, err := os.ReadDir(path)
+    if err != nil {
+        return mcp.NewToolResultError(err.Error()), nil
+    }
+    type entry struct {
+        Name  string `json:"name"`
+        IsDir bool   `json:"is_dir"`
+    }
+    var list []entry
+    for _, e := range entries {
+        list = append(list, entry{Name: e.Name(), IsDir: e.IsDir()})
+    }
+    data, _ := json.Marshal(list)
+    return mcp.NewToolResultText(string(data)), nil
+}
+</pre>
+
+<p>
+Tool handlers return <code>(*mcp.CallToolResult, error)</code>. Use <code>mcp.NewToolResultError</code>
+for expected failures (file not found, permission denied) - these are reported to the model
+as tool results, not protocol errors. Use a non-nil Go error for unexpected failures like
+encoding problems; the library turns these into JSON-RPC errors.
+</p>
+
+<h3>Testing the Server Manually</h3>
+
+<p>
+Build and test the server without an agent:
+</p>
+
+<pre>
+go build ./cmd/server
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | ./server
+</pre>
+
+<p>
+You should see the server's capabilities response on stdout. Send a <code>tools/list</code>
+request to see the registered tools, and <code>tools/call</code> to invoke one.
+</p>
+
+<h3>The MCP Client</h3>
+
+<p>
+The agent side uses <code>mcp-go</code>'s client package. The client spawns the server
+subprocess, performs the initialize handshake, and exposes methods to list tools and call them.
+</p>
+
+<pre>
+// cmd/agent/main.go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/mcp"
+)
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    if apiKey == "" {
+        fmt.Fprintln(os.Stderr, "OPENAI_API_KEY not set")
+        os.Exit(1)
+    }
+
+    ctx := context.Background()
+
+    // Spawn the server as a subprocess
+    mcpClient, err := client.NewStdioMCPClient("./server", nil)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "mcp client:", err)
+        os.Exit(1)
+    }
+    defer mcpClient.Close()
+
+    // Initialize
+    initResult, err := mcpClient.Initialize(ctx, mcp.InitializeRequest{
+        Params: mcp.InitializeRequestParams{
+            ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+            ClientInfo: mcp.Implementation{
+                Name:    "agent",
+                Version: "1.0",
+            },
+        },
+    })
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "initialize:", err)
+        os.Exit(1)
+    }
+    fmt.Printf("Connected to MCP server: %s %s\n",
+        initResult.ServerInfo.Name, initResult.ServerInfo.Version)
+
+    // List available tools
+    toolsResult, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "list tools:", err)
+        os.Exit(1)
+    }
+    fmt.Printf("Available tools: %d\n", len(toolsResult.Tools))
+    for _, t := range toolsResult.Tools {
+        fmt.Printf("  - %s: %s\n", t.Name, t.Description)
+    }
+
+    // Convert MCP tool definitions to OpenAI Tool format
+    openaiTools := mcpToolsToOpenAI(toolsResult.Tools)
+
+    // Build and run the agent with MCP dispatch
+    agent := NewMCPAgent(apiKey, "gpt-4o-mini", mcpClient, openaiTools)
+    result, err := agent.Run(ctx,
+        "List the current directory and tell me what files you see.")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "agent:", err)
+        os.Exit(1)
+    }
+    fmt.Println(result)
+}
+</pre>
+
+<h3>Converting MCP Tool Definitions to OpenAI Format</h3>
+
+<pre>
+func mcpToolsToOpenAI(mcpTools []mcp.Tool) []Tool {
+    var tools []Tool
+    for _, t := range mcpTools {
+        tools = append(tools, Tool{
+            Type: "function",
+            Function: ToolFunction{
+                Name:        t.Name,
+                Description: t.Description,
+                Parameters: ToolParameters{
+                    Type:       "object",
+                    Properties: convertSchema(t.InputSchema.Properties),
+                    Required:   t.InputSchema.Required,
+                },
+            },
+        })
+    }
+    return tools
+}
+</pre>
+
+<h3>Dispatching via MCP</h3>
+
+<p>
+When the agent receives a tool call, it forwards it to the MCP server:
+</p>
+
+<pre>
+func (a *MCPAgent) mcpDispatch(ctx context.Context, name, argsJSON string) (string, error) {
+    var args map[string]interface{}
+    if err := json.Unmarshal([]byte(argsJSON), &amp;args); err != nil {
+        return "", err
+    }
+
+    result, err := a.client.CallTool(ctx, mcp.CallToolRequest{
+        Params: mcp.CallToolRequestParams{
+            Name:      name,
+            Arguments: args,
+        },
+    })
+    if err != nil {
+        return "", err
+    }
+
+    if result.IsError {
+        if len(result.Content) &gt; 0 {
+            if text, ok := result.Content[0].(mcp.TextContent); ok {
+                return "", fmt.Errorf("tool error: %s", text.Text)
+            }
+        }
+        return "", fmt.Errorf("tool returned error")
+    }
+
+    if len(result.Content) &gt; 0 {
+        if text, ok := result.Content[0].(mcp.TextContent); ok {
+            return text.Text, nil
+        }
+    }
+    return "", nil
+}
+</pre>
+
+<h3>Build and Run</h3>
+
+<pre>
+go build ./cmd/server
+go build ./cmd/agent
+export OPENAI_API_KEY=sk-...
+./agent
+</pre>
+
+<p>
+The agent spawns the server, discovers its tools, sends a task, and uses the tools to
+complete it. The server process exits when the agent does.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+A stdio MCP server is a plain Go binary that reads JSON-RPC from stdin and
+writes JSON-RPC to stdout. The client spawns it with <code>os/exec</code>,
+wraps the pipes in an mcp-go client, calls <code>tools/list</code> to
+enumerate tools, and converts the results to the agent's tool format. The
+server process is isolated — it cannot be reached by anything other than the
+agent that spawned it — making stdio appropriate for trusted local tools
+that access the filesystem or run shell commands.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://github.com/mark3labs/mcp-go">mcp-go - Go MCP client and server library</a></li>
+<li><a href="https://spec.modelcontextprotocol.io/specification/basic/transports/#stdio">MCP Spec: stdio Transport</a></li>
+<li><a href="https://pkg.go.dev/os/exec">Go os/exec - spawning subprocess</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-06-mcp-intro.htm">Intro to MCP Servers</a> - protocol overview and transport comparison</li>
+<li><a href="llm-08-mcp-http.htm">MCP over HTTP</a> - running MCP as a persistent network service</li>
+<li><a href="llm-18-agent-communication.htm">Agent-to-Agent Communication</a> - agents exposing themselves as MCP servers</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

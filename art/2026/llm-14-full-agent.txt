@@ -1,0 +1,308 @@
+LLM - Part 14: Putting It Together: A Full Agent
+2026-06-23
+
+
+This article assembles everything from articles 01–13 into a single Go binary: a
+command-line agent with a skills registry, optional MCP server connections, file-backed
+long-term memory, a RAG knowledge base, and a stateful chat loop. It is intentionally
+simple - production hardening is out of scope - but it is fully functional and demonstrates
+how the pieces fit together.
+
+
+What You Will Learn
+
+
+How to structure a multi-package Go agent binary with a clean directory layout
+How to wire together the skills registry, MCP client connections, and the agent loop
+How to integrate file-backed long-term memory and RAG into the same binary
+How to build a stateful chat REPL with slash commands for meta-operations
+How to configure the agent via environment variables and a YAML config file
+Extension points: what to add next for streaming output, session persistence, and rate limiting
+
+
+Directory Layout
+
+
+agent/
+  cmd/
+    agent/
+      main.go          ← entry point
+  internal/
+    api/
+      client.go        ← OpenAI HTTP client
+    memory/
+      history.go       ← short-term message history
+      store.go         ← file-backed long-term K/V store
+    rag/
+      embed.go         ← embedding generation
+      store.go         ← vector store (JSON-backed)
+      skill.go         ← search_knowledge_base skill
+    skills/
+      registry.go      ← Skill interface + Registry
+      fs.go            ← read_file, write_file, list_dir
+      shell.go         ← run_shell
+      memory.go        ← remember, recall
+    mcp/
+      client.go        ← MCP client wrapper
+  go.mod
+  config.yaml          ← runtime configuration
+
+
+Configuration
+
+
+Use environment variables for secrets and a YAML file for everything else.
+A minimal config.yaml:
+
+
+
+model: gpt-4o-mini
+base_url: ""          # empty = use OpenAI; set to http://127.0.0.1:8080 for llama.cpp
+system_prompt: |
+  You are a helpful coding assistant. You have access to the local filesystem,
+  a knowledge base, and persistent memory. Use tools proactively.
+memory_path: ~/.agent/memory.json
+vector_store_path: ~/.agent/vectors.json
+knowledge_base_dir: ./docs
+mcp_servers: []       # list of stdio MCP server commands, e.g. ["./my-mcp-server"]
+max_iterations: 30
+
+
+
+// Config loading (using gopkg.in/yaml.v3)
+type Config struct {
+    Model              string   `yaml:"model"`
+    BaseURL            string   `yaml:"base_url"`
+    SystemPrompt       string   `yaml:"system_prompt"`
+    MemoryPath         string   `yaml:"memory_path"`
+    VectorStorePath    string   `yaml:"vector_store_path"`
+    KnowledgeBaseDir   string   `yaml:"knowledge_base_dir"`
+    MCPServers         []string `yaml:"mcp_servers"`
+    MaxIterations      int      `yaml:"max_iterations"`
+}
+
+func loadConfig(path string) (*Config, error) {
+    data, err := os.ReadFile(path)
+    if err != nil {
+        return nil, err
+    }
+    var cfg Config
+    return &cfg, yaml.Unmarshal(data, &cfg)
+}
+
+
+Wiring It Together: main.go
+
+
+func main() {
+    cfg, err := loadConfig("config.yaml")
+    if err != nil {
+        log.Fatal("config:", err)
+    }
+
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    apiClient := api.NewClient(apiKey, cfg.BaseURL, cfg.Model)
+
+    // Long-term memory
+    memStore, err := memory.NewStore(expandPath(cfg.MemoryPath))
+    if err != nil {
+        log.Fatal("memory store:", err)
+    }
+
+    // RAG vector store
+    vectorStore, err := rag.LoadStore(expandPath(cfg.VectorStorePath))
+    if err != nil {
+        log.Fatal("vector store:", err)
+    }
+
+    // Index knowledge base if docs dir exists and store is empty
+    if cfg.KnowledgeBaseDir != "" && vectorStore.Len() == 0 {
+        if err := rag.IndexDir(apiClient, vectorStore, cfg.KnowledgeBaseDir); err != nil {
+            log.Println("indexing warning:", err)
+        }
+    }
+
+    // Build skills registry
+    reg := skills.NewRegistry()
+    reg.Register(&skills.ReadFileSkill{})
+    reg.Register(&skills.WriteFileSkill{})
+    reg.Register(&skills.ListDirSkill{})
+    reg.Register(&skills.RunShellSkill{
+        AllowedCommands: []string{"go ", "ls ", "cat ", "grep ", "find "},
+    })
+    reg.Register(&skills.RememberSkill{Store: memStore})
+    reg.Register(&skills.RecallSkill{Store: memStore})
+    reg.Register(&rag.SearchSkill{Client: apiClient, Store: vectorStore, TopK: 3})
+
+    // Connect MCP servers
+    for _, cmd := range cfg.MCPServers {
+        mcpClient, err := mcp.Connect(cmd)
+        if err != nil {
+            log.Printf("MCP server %q failed: %v\n", cmd, err)
+            continue
+        }
+        defer mcpClient.Close()
+        mcpTools, _ := mcpClient.ListTools()
+        for _, t := range mcpTools {
+            reg.RegisterMCP(t, mcpClient)
+        }
+    }
+
+    // System prompt with injected memories
+    systemPrompt := buildSystemPrompt(cfg.SystemPrompt, memStore)
+
+    // History manager
+    hist := memory.NewHistory(systemPrompt)
+
+    // Agent
+    agent := &Agent{
+        Client:        apiClient,
+        Registry:      reg,
+        History:       hist,
+        MaxIterations: cfg.MaxIterations,
+    }
+
+    fmt.Println("Agent ready. Type your message (Ctrl-D or 'exit' to quit).")
+    runREPL(agent)
+}
+
+
+The REPL
+
+
+func runREPL(agent *Agent) {
+    scanner := bufio.NewScanner(os.Stdin)
+    fmt.Print("> ")
+    for scanner.Scan() {
+        input := strings.TrimSpace(scanner.Text())
+        if input == "" {
+            fmt.Print("> ")
+            continue
+        }
+        if input == "exit" || input == "quit" {
+            break
+        }
+
+        start := time.Now()
+        result, err := agent.Run(context.Background(), input)
+        elapsed := time.Since(start)
+
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "error: %v\n", err)
+        } else {
+            fmt.Printf("\n%s\n\n[%.1fs | %d msgs]\n",
+                result, elapsed.Seconds(), len(agent.History.Messages))
+        }
+        fmt.Print("> ")
+    }
+}
+
+
+The Agent Loop
+
+
+type Agent struct {
+    Client        *api.Client
+    Registry      *skills.Registry
+    History       *memory.HistoryManager
+    MaxIterations int
+}
+
+func (a *Agent) Run(ctx context.Context, userMsg string) (string, error) {
+    a.History.Add(memory.Message{Role: "user", Content: userMsg})
+
+    for i := 0; i < a.MaxIterations; i++ {
+        resp, err := a.Client.Complete(ctx, a.History.All(), a.Registry.Tools())
+        if err != nil {
+            return "", err
+        }
+
+        choice := resp.Choices[0]
+        a.History.Add(toMessage(choice.Message))
+        a.History.TrimIfNeeded(resp.Usage.TotalTokens)
+
+        if choice.FinishReason == "stop" || len(choice.Message.ToolCalls) == 0 {
+            return choice.Message.Content, nil
+        }
+
+        for _, tc := range choice.Message.ToolCalls {
+            result, err := a.Registry.Execute(tc.Function.Name, tc.Function.Arguments)
+            if err != nil {
+                result = fmt.Sprintf(`{"error": "%s"}`, err.Error())
+            }
+            a.History.Add(memory.Message{
+                Role:       "tool",
+                Content:    result,
+                ToolCallID: tc.ID,
+            })
+        }
+    }
+    return "", fmt.Errorf("exceeded %d iterations", a.MaxIterations)
+}
+
+
+Building and Running
+
+
+go mod init agent
+go get gopkg.in/yaml.v3
+go get github.com/mark3labs/mcp-go
+go build ./cmd/agent
+export OPENAI_API_KEY=sk-...
+./agent
+
+
+
+To use a local model instead:
+
+
+
+# In config.yaml:
+# base_url: "http://127.0.0.1:8080"
+# model: qwen2.5-7b
+
+# Or via environment:
+LLM_BASE_URL=http://127.0.0.1:8080 LLM_MODEL=qwen ./agent
+
+
+What to Add Next
+
+
+This binary is a starting point, not a finished product. Logical next additions:
+
+
+
+Streaming output - print tokens as they arrive rather than waiting for the full response.
+Session persistence - save and restore the conversation history between runs.
+Multiple MCP servers - different servers for different domains (filesystem, web, database).
+Structured logging - log every tool call, its arguments, and its result for debugging.
+Rate limiting and retry - exponential backoff with jitter for API errors.
+
+
+Summary
+
+
+A complete agent binary has five concerns: an agent loop, a skills registry, MCP client
+connections, memory (short-term message history and long-term key-value store), and a
+knowledge base for RAG. Wire them together in cmd/agent/main.go, load
+configuration from environment variables and a YAML file, and expose a REPL with slash
+commands for meta-operations. The pieces covered in articles 01–13 are independently
+useful — this article shows how they compose into a single, coherent binary.
+
+
+Further Reading
+
+
+gopkg.in/yaml.v3 - YAML parsing for Go
+Anthropic: Building Effective Agents
+openai-go - official OpenAI Go SDK (alternative to raw HTTP)
+
+
+See Also
+
+
+Building a Simple Agent Loop - the core loop this assembles
+Skills & Structured Tool Libraries - the registry system
+Adding Memory to Agents - memory components used here
+Multi-Agent Orchestration - extending this into multiple collaborating agents
+

@@ -1,0 +1,418 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Containers - Part 3: The clone() and unshare() Syscalls</title>
+    <meta name="description" content="How to create new namespaces with clone() in C and with SysProcAttr.Cloneflags in Go, plus how unshare() detaches from existing namespaces.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="linux, containers">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="containers-03-clone-unshare.txt">plain/text</a> | <i>2026-08-01</i> | <i><a href="../../linux.htm">linux</a>, <a href="../../containers.htm">containers</a></i>
+        <h2>Containers - Part 3: The clone() and unshare() Syscalls</h2>
+        <p>
+Two syscalls are the foundation of every container runtime: <code>clone()</code>
+creates a new process and optionally places it in new namespaces at birth, and
+<code>unshare()</code> moves the calling process itself into new namespaces without
+forking. Understanding them at the syscall level removes the mystery from
+tools like <code>unshare(1)</code>, <code>docker run</code>, and runc.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The signature of <code>clone()</code>, why it differs from <code>fork()</code>, and how to pass <code>CLONE_NEW*</code> flags</li>
+<li>A full C example that creates a child process in four new namespaces simultaneously</li>
+<li>How <code>unshare()</code> moves the calling process into new namespaces without forking</li>
+<li>How to do both operations from Go using <code>SysProcAttr.Cloneflags</code> and <code>syscall.Unshare()</code></li>
+<li>The key difference between the two approaches and when to use each</li>
+<li>What capability is required and how per-user namespace limits work</li>
+</ul>
+
+<h3>clone() - Creating a Process in New Namespaces</h3>
+
+<p>
+<code>clone()</code> is the Linux-specific generalisation of <code>fork()</code>. Its
+signature (in glibc wrapper form) is:
+</p>
+
+<pre>
+#include &lt;sched.h&gt;
+
+int clone(int (*fn)(void *), void *stack, int flags, void *arg, ...);
+</pre>
+
+<p>
+The key difference from <code>fork()</code> is the <code>flags</code> argument. You can OR in
+any of the <code>CLONE_NEW*</code> constants to create new namespaces for the child:
+</p>
+
+<ul>
+<li><code>CLONE_NEWPID</code> - new PID namespace</li>
+<li><code>CLONE_NEWNS</code> - new mount namespace</li>
+<li><code>CLONE_NEWNET</code> - new network namespace</li>
+<li><code>CLONE_NEWUTS</code> - new UTS namespace</li>
+<li><code>CLONE_NEWIPC</code> - new IPC namespace</li>
+<li><code>CLONE_NEWUSER</code> - new user namespace</li>
+<li><code>CLONE_NEWCGROUP</code> - new cgroup namespace</li>
+</ul>
+
+<p>
+Unlike <code>fork()</code>, <code>clone()</code> takes a function pointer that the child
+executes, and you must supply a stack (the child runs on a separate stack you
+allocate).
+</p>
+
+<h3>Full C Example: clone() with Multiple Namespaces</h3>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;sched.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;unistd.h&gt;
+
+#define STACK_SIZE (1024 * 1024)
+
+static int child_main(void *arg) {
+    (void)arg;
+
+    /* Inside new UTS namespace - set our own hostname */
+    if (sethostname("container", 9) == -1) {
+        perror("sethostname");
+        return 1;
+    }
+
+    char host[64];
+    gethostname(host, sizeof(host));
+    printf("[child] hostname : %s\n", host);
+    printf("[child] PID      : %d\n", getpid());
+    printf("[child] UID      : %d\n", getuid());
+
+    /* Exec a shell so we can poke around */
+    char *argv[] = { "/bin/sh", NULL };
+    execv("/bin/sh", argv);
+    perror("execv");
+    return 1;
+}
+
+int main(void) {
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) { perror("malloc"); return 1; }
+
+    int flags = CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWIPC |
+                CLONE_NEWNS  | SIGCHLD;
+
+    pid_t pid = clone(child_main,
+                      stack + STACK_SIZE,
+                      flags,
+                      NULL);
+    if (pid == -1) { perror("clone"); free(stack); return 1; }
+
+    printf("[parent] child host PID: %d\n", pid);
+
+    int status;
+    waitpid(pid, &amp;status, 0);
+    free(stack);
+    return WEXITSTATUS(status);
+}
+</pre>
+
+<p>
+Compile with <code>gcc -o container container.c</code> and run with
+<code>sudo ./container</code>. Inside the shell you will see PID 2 (the shell; the
+child_main function that called exec became PID 1), and the hostname
+"container" does not affect the host.
+</p>
+
+<h3>unshare() - Detaching from Namespaces in Place</h3>
+
+<p>
+<code>unshare()</code> moves the <i>calling</i> process into new namespaces without
+forking. It takes the same <code>CLONE_NEW*</code> flags:
+</p>
+
+<pre>
+#include &lt;sched.h&gt;
+
+int unshare(int flags);
+</pre>
+
+<p>
+A minimal C program that gives the current shell a new UTS namespace:
+</p>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;sched.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(void) {
+    if (unshare(CLONE_NEWUTS) == -1) {
+        perror("unshare");
+        return 1;
+    }
+    sethostname("unshared-host", 13);
+
+    char host[64];
+    gethostname(host, sizeof(host));
+    printf("new hostname: %s\n", host);
+
+    /* Stay alive so you can inspect /proc/self/ns/uts */
+    pause();
+    return 0;
+}
+</pre>
+
+<p>
+The shell-level wrapper <code>unshare(1)</code> calls this syscall internally:
+<code>sudo unshare --uts --pid --fork bash</code>.
+</p>
+
+<p>
+Note the <code>--fork</code> flag: for PID namespaces, <code>unshare()</code> detaches the
+current process but any child processes will be in the new namespace with PID
+2+. The process that called <code>unshare()</code> itself cannot become PID 1 - it
+must fork a child that becomes PID 1.
+</p>
+
+<h3>Go: SysProcAttr.Cloneflags</h3>
+
+<p>
+Go's <code>os/exec</code> and <code>syscall</code> packages expose namespace creation via
+<code>syscall.SysProcAttr</code>. Setting <code>Cloneflags</code> passes those flags directly
+to the underlying <code>clone()</code> syscall:
+</p>
+
+<pre>
+package main
+
+import (
+    "fmt"
+    "os"
+    "os/exec"
+    "syscall"
+)
+
+func main() {
+    cmd := exec.Command("/bin/sh")
+    cmd.Stdin  = os.Stdin
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+
+    cmd.SysProcAttr = &amp;syscall.SysProcAttr{
+        Cloneflags: syscall.CLONE_NEWUTS |
+                    syscall.CLONE_NEWPID |
+                    syscall.CLONE_NEWIPC |
+                    syscall.CLONE_NEWNS,
+    }
+
+    if err := cmd.Run(); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+}
+</pre>
+
+<p>
+Run with <code>sudo go run main.go</code>. The shell it launches runs inside the four
+new namespaces. This is almost exactly what container runtimes do before
+configuring the rootfs and cgroups.
+</p>
+
+<h3>Go: unshare via syscall.Unshare</h3>
+
+<p>
+The Go equivalent of <code>unshare()</code> is <code>syscall.Unshare()</code>:
+</p>
+
+<pre>
+package main
+
+import (
+    "fmt"
+    "os"
+    "syscall"
+)
+
+func main() {
+    err := syscall.Unshare(syscall.CLONE_NEWUTS)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "unshare:", err)
+        os.Exit(1)
+    }
+
+    err = syscall.Sethostname([]byte("go-container"))
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "sethostname:", err)
+        os.Exit(1)
+    }
+
+    hostname, _ := os.Hostname()
+    fmt.Println("hostname:", hostname)
+}
+</pre>
+
+<h3>Side-by-Side Comparison</h3>
+
+<p>
+The table below compares the two approaches:
+</p>
+
+<ul>
+<li><b>clone() / Cloneflags</b> - child is born in the new namespace. The parent retains its original namespaces. Correct for container runtimes.</li>
+<li><b>unshare() / syscall.Unshare</b> - the calling process moves to the new namespace. Any further forks inherit it. Correct for tools that want to reconfigure themselves (e.g., the shell <code>unshare(1)</code> command).</li>
+</ul>
+
+<p>
+For PID namespaces specifically, <code>clone()</code> with <code>CLONE_NEWPID</code> is the
+only way to get PID 1 in the new namespace. <code>unshare(CLONE_NEWPID)</code> only
+affects <i>future children</i> of the calling process; the calling process itself
+is not renumbered.
+</p>
+
+<h3>Capability Requirements</h3>
+
+<p>
+Creating most namespace types requires <code>CAP_SYS_ADMIN</code>. The exception is
+<code>CLONE_NEWUSER</code>: user namespaces can be created by unprivileged processes
+on kernels where <code>/proc/sys/user/max_user_namespaces</code> is non-zero (and
+<code>/proc/sys/kernel/unprivileged_userns_clone</code> is 1 on some distributions).
+Rootless container runtimes like Podman use this extensively.
+</p>
+
+<pre>
+# Check if unprivileged user namespaces are allowed
+cat /proc/sys/kernel/unprivileged_userns_clone
+# 1 = allowed, 0 = root-only
+</pre>
+
+<h3>The /proc/sys/user Limits</h3>
+
+<p>
+The kernel enforces per-user limits on namespace creation to prevent
+resource-exhaustion attacks. The limits live in <code>/proc/sys/user/</code>:
+</p>
+
+<pre>
+ls /proc/sys/user/
+max_cgroup_namespaces
+max_ipc_namespaces
+max_mnt_namespaces
+max_net_namespaces
+max_pid_namespaces
+max_time_namespaces
+max_user_namespaces
+max_uts_namespaces
+</pre>
+
+<p>
+Each file contains an integer limit per user. The default is typically 7680 on
+modern kernels. Setting any of them to 0 disables creation of that namespace
+type by non-root users entirely.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+<code>clone()</code> creates a child process born directly inside new namespaces — the
+right tool for container runtimes. <code>unshare()</code> moves the calling process
+into new namespaces — the right tool for shell utilities. In Go,
+<code>SysProcAttr.Cloneflags</code> maps directly to <code>clone()</code> flags. For PID
+namespaces, <code>clone()</code> is the only way to achieve PID 1 in the new namespace;
+<code>unshare(CLONE_NEWPID)</code> only affects future children. Most namespace creation
+requires <code>CAP_SYS_ADMIN</code> except user namespaces, which unprivileged processes
+can create when permitted by kernel configuration.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://man7.org/linux/man-pages/man2/clone.2.html">clone(2) - Linux man page</a></li>
+<li><a href="https://man7.org/linux/man-pages/man2/unshare.2.html">unshare(2) - Linux man page</a></li>
+<li><a href="https://pkg.go.dev/syscall#SysProcAttr">syscall.SysProcAttr - Go documentation</a></li>
+<li><a href="https://lwn.net/Articles/531114/">Namespaces in operation, part 1 (LWN)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="containers-02-namespaces-overview.htm">Linux Namespaces Overview</a></li>
+<li><a href="containers-04-pid-namespaces.htm">PID Namespaces</a></li>
+<li><a href="containers-14-user-namespaces.htm">User Namespaces &amp; Rootless Containers</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

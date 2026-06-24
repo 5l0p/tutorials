@@ -1,0 +1,222 @@
+Go - Part 1: Why Go? The Language at a Glance
+2026-06-09
+
+
+Go was designed at Google in 2007 by Robert Griesemer, Rob Pike, and Ken Thompson - the
+same lineage that produced Unix and Plan 9. It was not designed to be cutting-edge; it was
+designed to be boring on purpose. If you are coming from C or C#, the language will
+feel simultaneously familiar and stripped-down. That stripping-down is a deliberate
+engineering choice, not an oversight. This article explains what Go is, what it trades
+away, and why those trade-offs make sense in practice.
+
+
+What You Will Learn
+
+
+Why Go was created at Google and what problem it was designed to solve
+How Go's compilation model compares to C and C# — no header files, single binary output
+What Go deliberately leaves out: no inheritance, no generics (until 1.18), no exceptions, no operator overloading
+How goroutines and channels differ from C pthreads and C# async/await
+What the Go standard library covers and where its boundaries are
+How Go's garbage collector works and what its pause-time guarantees mean in practice
+When Go is the right choice and when it is not
+
+
+The Problem Go Was Built to Solve
+
+
+In 2007 Google had enormous C++ codebases that took many minutes - sometimes hours - to
+compile. The engineers writing them spent more time waiting than coding. They also had
+Python and Java, which were fast to write but slow to execute or operationally complex to
+deploy. The design brief for Go was essentially: give us C-like performance and a static
+type system, Python-like productivity, and compilation times measured in seconds rather than
+minutes.
+
+
+
+The result is a language that fits in your head. The specification is short enough to read
+in an afternoon. There are roughly 25 keywords. The standard library is wide but shallow -
+the same idioms appear everywhere. This consistency is not accidental; it is enforced by
+tooling (more on that in the tooling article).
+
+
+Compilation Model: Go vs C vs C#
+
+
+In C and C++, the compiler processes one translation unit at a time. Headers are
+textually included, macros are expanded, and the linker stitches object files together.
+On a large project this model falls apart: a change to a single header can trigger
+recompilation of thousands of files. Build systems like Make or CMake paper over the
+problem, but the fundamental model is unchanged since the 1970s.
+
+
+
+C# compiles to Common Intermediate Language (CIL) bytecode, which the CLR's JIT compiler
+then translates to native code at runtime. This gives you portability and features like
+runtime reflection, but it means you deploy a runtime alongside your program, startup time
+includes JIT warmup, and the produced artifact is not a self-contained executable.
+
+
+
+Go compiles directly to native machine code, like C. But unlike C it enforces that imports
+form a directed acyclic graph: if package A imports B, then B cannot import A. Because of
+this, the compiler only needs to read the exported interface of each dependency - not its
+entire source. A full rebuild of a large Go project is measured in seconds. The output is a
+single statically-linked binary that you copy to a server and run. No runtime to install,
+no shared libraries (by default), no DLL hell.
+
+
+
+# Build a Linux binary from any machine
+GOOS=linux GOARCH=amd64 go build -o myapp ./cmd/myapp
+
+# The result is a self-contained executable
+file myapp
+# myapp: ELF 64-bit LSB executable, x86-64, statically linked
+
+
+What Go Deliberately Leaves Out
+
+
+The most commented-on omissions are exceptions, inheritance, and (until 2022) generics.
+Each is worth understanding on its own terms.
+
+
+
+No exceptions. In C# you throw exceptions and catch them.
+In C you check return codes or use errno. Go chose a third path: errors are
+ordinary values. A function that can fail returns (result, error). You check
+the error at the call site. This is verbose, but it makes control flow explicit - you
+cannot accidentally ignore a failure path, and there is no invisible stack unwinding that
+makes reasoning about execution order difficult. The trade-off is acknowledged; Go 1.13
+added errors.Is and errors.As to make error wrapping less
+painful.
+
+
+
+No inheritance. C# has classes, virtual methods, and classical inheritance hierarchies.
+Go has structs and interfaces. You compose types by embedding structs (similar to
+aggregation in C), and you achieve polymorphism through interfaces rather than base classes.
+Experience has shown that deep inheritance hierarchies are fragile; Go forces you to reach
+for composition first.
+
+
+
+Simple generics (added in Go 1.18). For its first decade Go had no parametric
+polymorphism at all. The community used interface{} (the empty interface) and
+type assertions where generics would be used in C#. Go 1.18 (2022) added generics with a
+design intentionally simpler than C++ templates or C# generics - no template
+specialisation, no variance annotations, a small constraint system. The goal was to solve
+the 80% case (containers, algorithms) without adding significant compiler complexity.
+
+
+
+No operator overloading, no implicit conversions. In C++ you can make
++ mean almost anything. In Go, + always means addition or string
+concatenation. This removes a class of subtle bugs and makes code easier to read.
+
+
+
+No ternary operator. There is no x ? a : b. You write the if
+statement. This is a minor inconvenience in exchange for removing an entire category of
+unreadable one-liners.
+
+
+Concurrency as a First-Class Citizen
+
+
+Where Go genuinely adds something C and C# do not have at the language level is
+concurrency. Goroutines are lightweight threads managed by the Go runtime - you can spawn
+a million of them on a laptop. Channels are typed message-passing pipes. The
+select statement lets you wait on multiple channels simultaneously. This
+model, derived from Hoare's Communicating Sequential Processes, makes concurrent code
+compositional in a way that C pthreads and C# async/await are not.
+
+
+
+// Spawn a goroutine - this is the entire syntax
+go func() {
+    fmt.Println("hello from a goroutine")
+}()
+
+// Send and receive on a channel
+ch := make(chan int)
+go func() { ch <- 42 }()
+v := <-ch
+fmt.Println(v) // 42
+
+
+The Standard Library
+
+
+Go ships with a standard library that covers most production needs: HTTP server and client,
+JSON encoding, TLS, SQL database/driver interface, template rendering, testing, profiling,
+compression, cryptography. Unlike C - where the standard library is minimal and you reach
+for third-party libraries for almost everything - and unlike C# - where the BCL is vast
+but fragmented across NuGet packages and .NET versions - Go's standard library is coherent,
+well-documented, and stable.
+
+
+
+The module system (go.mod, introduced in Go 1.11) handles external dependencies
+cleanly. But for many projects, the standard library is enough.
+
+
+Garbage Collection
+
+
+Go is garbage collected. C is not; you call malloc and free
+manually. C# is garbage collected via the CLR. Go's GC is a concurrent, tri-colour
+mark-and-sweep collector tuned for low latency - pause times are typically under a
+millisecond in modern versions. For most server software this is a non-issue. For
+hard real-time systems (think kernel drivers or audio processing) you would not choose Go
+anyway.
+
+
+When to Choose Go
+
+
+Go excels at networked services, command-line tools, and infrastructure software. The
+Docker daemon, Kubernetes, Terraform, and a large portion of modern cloud tooling are
+written in Go. It is a good fit when you want near-C performance with near-Python
+development speed, when you want to deploy a single binary with no installation ceremony,
+and when you need solid concurrency without reaching for a concurrency framework.
+
+
+
+It is a poor fit for: GUIs (no mature GUI framework), numerical computing (no
+multi-dimensional array literals, no BLAS bindings in the standard library), and hard
+real-time systems. If you are writing game logic, heavy numerical simulations, or desktop
+applications, other languages serve you better.
+
+
+Summary
+
+
+Go was built for fast compilation, readable code, and safe concurrency — not
+for maximal expressiveness. It trades inheritance, generics (pre-1.18), and
+exceptions for a simpler type system and explicit error handling. Goroutines
+are cheap (a few kilobytes of stack) and multiplexed over OS threads by the
+runtime. The standard library is large and self-contained; external dependencies
+are managed by modules. If you need predictable performance, easy deployment,
+and straightforward concurrent code, Go is a strong choice.
+
+
+Further Reading
+
+
+Go FAQ - golang.org
+Go at Google: Language Design in the Service of Software Engineering - Rob Pike
+Official Go Documentation
+The Go Programming Language Specification
+A Tour of Versioned Go - Russ Cox
+
+
+See Also
+
+
+Syntax & Types
+Structs & Methods
+Goroutines & Channels
+Modules & Dependencies
+

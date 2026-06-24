@@ -1,0 +1,447 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>DSP - Part 15: Wavetable Synthesis</title>
+    <meta name="description" content="Wavetable synthesis from scratch: single-cycle tables, linear and cubic interpolation, band-limited multi-octave tables, and morphing between waveforms in C.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="dsp-15-wavetable.txt">plain/text</a> | <i>2026-09-08</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a></i>
+        <h2>DSP - Part 15: Wavetable Synthesis</h2>
+        <p>
+Every time you call <code>sinf()</code> in an audio loop you are burning a transcendental
+function evaluation — typically 20–40 clock cycles — to produce one sample. At 48 kHz
+with eight oscillators, that is hundreds of thousands of sine evaluations per second
+before your DSP has done anything interesting. A wavetable oscillator replaces that
+computation with a table lookup and an interpolation: the waveform is computed once,
+stored in an array, and replayed at any frequency by advancing a fractional index.
+Properly constructed, it is faster, sounds identical to a computed sine, and naturally
+extends to arbitrary waveforms that no closed-form formula can generate.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why <code>sinf()</code> is expensive and what a single-cycle wavetable replaces it with.</li>
+<li>How to fill a wavetable from a mathematical waveform and compute an oscillator using linear interpolation.</li>
+<li>How cubic Hermite interpolation improves quality for modulated frequencies.</li>
+<li>Why naive single-table oscillators alias at high frequencies and how band-limited tables fix it.</li>
+<li>How to build a multi-octave band-limited wavetable set in C.</li>
+<li>How to morph smoothly between two wavetables.</li>
+</ul>
+
+<h3>The Single-Cycle Wavetable</h3>
+
+<p>
+A single-cycle wavetable stores exactly one period of a waveform in an array of N floats.
+A phase accumulator advances through this array at a rate proportional to the desired
+output frequency. When the phase wraps past N it folds back to zero, producing a
+continuous periodic signal.
+</p>
+
+<pre>
+#include &lt;math.h&gt;
+#include &lt;string.h&gt;
+
+#define WT_SIZE 2048   /* table size; power of two for efficient wrapping */
+
+typedef struct {
+    float table[WT_SIZE];
+} Wavetable;
+
+/* Fill a wavetable with a sine wave */
+void wt_fill_sine(Wavetable *wt) {
+    for (int i = 0; i &lt; WT_SIZE; i++)
+        wt-&gt;table[i] = sinf(2.0f * (float)M_PI * i / WT_SIZE);
+}
+
+/* Fill with a naive sawtooth (will alias - see band-limited section below) */
+void wt_fill_saw_naive(Wavetable *wt) {
+    for (int i = 0; i &lt; WT_SIZE; i++)
+        wt-&gt;table[i] = 2.0f * (float)i / WT_SIZE - 1.0f;
+}
+
+/* Fill with a naive square wave */
+void wt_fill_square_naive(Wavetable *wt) {
+    for (int i = 0; i &lt; WT_SIZE; i++)
+        wt-&gt;table[i] = (i &lt; WT_SIZE / 2) ? 1.0f : -1.0f;
+}
+</pre>
+
+<h3>The Oscillator</h3>
+
+<p>
+The oscillator maintains a floating-point phase in the range [0, WT_SIZE). Each sample,
+it reads the table at the current phase using interpolation, then advances by
+<code>increment</code> = WT_SIZE * frequency / sample_rate.
+</p>
+
+<pre>
+#define SAMPLE_RATE 48000
+
+typedef struct {
+    const Wavetable *wt;
+    double phase;        /* current read position [0, WT_SIZE) */
+    double increment;    /* phase advance per sample */
+} WTOscillator;
+
+void wt_osc_init(WTOscillator *osc, const Wavetable *wt, float freq) {
+    osc-&gt;wt        = wt;
+    osc-&gt;phase     = 0.0;
+    osc-&gt;increment = (double)WT_SIZE * freq / SAMPLE_RATE;
+}
+
+void wt_osc_set_freq(WTOscillator *osc, float freq) {
+    osc-&gt;increment = (double)WT_SIZE * freq / SAMPLE_RATE;
+}
+
+/* Linear interpolation read */
+static float wt_read_linear(const float *table, double phase) {
+    int i0   = (int)phase;
+    int i1   = (i0 + 1) &amp; (WT_SIZE - 1);   /* wrap with power-of-two mask */
+    float t  = (float)(phase - (double)i0);
+    return table[i0] + t * (table[i1] - table[i0]);
+}
+
+float wt_osc_next(WTOscillator *osc) {
+    float out   = wt_read_linear(osc-&gt;wt-&gt;table, osc-&gt;phase);
+    osc-&gt;phase += osc-&gt;increment;
+    if (osc-&gt;phase &gt;= WT_SIZE)
+        osc-&gt;phase -= WT_SIZE;
+    return out;
+}
+</pre>
+
+<p>
+The power-of-two mask trick in <code>(i0 + 1) &amp; (WT_SIZE - 1)</code> replaces a
+conditional branch with a bitwise AND for wrapping. This only works when WT_SIZE is
+a power of two — another reason to keep it that way.
+</p>
+
+<h3>Cubic Hermite Interpolation</h3>
+
+<p>
+Linear interpolation introduces a gentle low-pass roll-off that becomes audible when
+the oscillator is frequency-modulated quickly (vibrato, FM synthesis) because the
+error changes with each step. Cubic Hermite uses four points and fits a smooth cubic,
+giving much lower interpolation distortion for only a few extra multiply-adds.
+</p>
+
+<pre>
+static float hermite4(float p0, float p1, float p2, float p3, float t) {
+    float c0 =  p1;
+    float c1 = (p2 - p0) * 0.5f;
+    float c2 =  p0 - 2.5f*p1 + 2.0f*p2 - 0.5f*p3;
+    float c3 = -0.5f*p0 + 1.5f*p1 - 1.5f*p2 + 0.5f*p3;
+    return ((c3*t + c2)*t + c1)*t + c0;
+}
+
+static float wt_read_cubic(const float *table, double phase) {
+    int i1 = (int)phase;
+    int i0 = (i1 - 1) &amp; (WT_SIZE - 1);
+    int i2 = (i1 + 1) &amp; (WT_SIZE - 1);
+    int i3 = (i1 + 2) &amp; (WT_SIZE - 1);
+    float t = (float)(phase - (double)i1);
+    return hermite4(table[i0], table[i1], table[i2], table[i3], t);
+}
+</pre>
+
+<h3>The Aliasing Problem</h3>
+
+<p>
+A naive sawtooth wave contains harmonics at every multiple of the fundamental: f, 2f,
+3f, 4f, ... When the fundamental is 1 kHz and the sample rate is 48 kHz, the harmonics
+above 24 kHz (the Nyquist limit) cannot be represented and fold back into the audible
+spectrum as aliasing — a harsh, inharmonic buzzing.
+</p>
+
+<p>
+For a single table at 48 kHz the highest representable harmonic is the one whose
+frequency is below 24 kHz. A 1 kHz saw has room for harmonics 1 through 23. A 10 kHz
+saw can only have harmonics 1 and 2. If you use the same table filled with infinite
+harmonics for all frequencies, the high-frequency notes sound dirty.
+</p>
+
+<p>
+The fix is <b>band-limited wavetables</b>: pre-compute a separate version of the
+waveform for each octave, limiting the harmonics to those that fit below Nyquist at the
+frequencies that octave covers. At runtime, select the table appropriate for the current
+playback frequency.
+</p>
+
+<h3>Building Band-Limited Wavetables</h3>
+
+<p>
+The cleanest method is additive synthesis: for each table, sum only the harmonics that
+lie below Nyquist at the highest frequency in that octave's range.
+</p>
+
+<pre>
+/* Number of octave tables covering the MIDI range (roughly 8 octaves) */
+#define NUM_WT_TABLES 8
+
+typedef struct {
+    Wavetable tables[NUM_WT_TABLES];
+    float top_freq[NUM_WT_TABLES];   /* highest fundamental this table is valid for (Hz) */
+} BandlimitedWT;
+
+/* Build a band-limited sawtooth wavetable set.
+   tables[0] is for the lowest octave (most harmonics),
+   tables[NUM_WT_TABLES-1] is for the highest (fewest harmonics). */
+void bwt_build_saw(BandlimitedWT *bwt) {
+    float nyquist = (float)SAMPLE_RATE / 2.0f;
+
+    /* Each table covers one octave; top frequencies: 55, 110, 220, ..., 7040 Hz */
+    float top = 55.0f;
+    for (int t = 0; t &lt; NUM_WT_TABLES; t++) {
+        bwt-&gt;top_freq[t] = top * 2.0f;   /* inclusive upper limit for this band */
+
+        /* Determine max harmonic number that fits below Nyquist at top frequency */
+        int max_harm = (int)(nyquist / top);
+        if (max_harm &lt; 1) max_harm = 1;
+
+        /* Additive synthesis: sum sine waves for each harmonic of a sawtooth */
+        memset(bwt-&gt;tables[t].table, 0, sizeof(bwt-&gt;tables[t].table));
+        for (int h = 1; h &lt;= max_harm; h++) {
+            float amp = 1.0f / h;    /* sawtooth harmonic amplitude */
+            for (int i = 0; i &lt; WT_SIZE; i++) {
+                float angle = 2.0f * (float)M_PI * h * i / WT_SIZE;
+                bwt-&gt;tables[t].table[i] += amp * sinf(angle);
+            }
+        }
+
+        /* Normalise to peak 1.0 */
+        float peak = 0.0f;
+        for (int i = 0; i &lt; WT_SIZE; i++) {
+            float v = bwt-&gt;tables[t].table[i];
+            if (v &lt; 0) v = -v;
+            if (v &gt; peak) peak = v;
+        }
+        if (peak &gt; 0.0f) {
+            float inv = 1.0f / peak;
+            for (int i = 0; i &lt; WT_SIZE; i++)
+                bwt-&gt;tables[t].table[i] *= inv;
+        }
+
+        top *= 2.0f;   /* next octave */
+    }
+}
+
+/* Select the correct table for a given fundamental frequency */
+const Wavetable *bwt_select(const BandlimitedWT *bwt, float freq) {
+    for (int t = 0; t &lt; NUM_WT_TABLES - 1; t++) {
+        if (freq &lt;= bwt-&gt;top_freq[t])
+            return &amp;bwt-&gt;tables[t];
+    }
+    return &amp;bwt-&gt;tables[NUM_WT_TABLES - 1];
+}
+</pre>
+
+<p>
+Gotcha: switching tables when the frequency crosses an octave boundary can cause a
+discontinuity if the waveform phase happens to be in a different position in the new
+table. In practice this is inaudible during normal note progression because table
+switches coincide with frequency changes the listener is already hearing. If you need
+absolutely seamless table transitions (for smooth pitch sweeps), crossfade between the
+old and new table over a brief window.
+</p>
+
+<h3>Wavetable Morphing</h3>
+
+<p>
+Morphing blends two wavetables together at a given mix ratio. The simplest approach is
+linear interpolation between the two tables, sample by sample. The result sounds like a
+smooth timbre transition — for example, fading from a sine to a saw, or between two
+user-defined waveforms.
+</p>
+
+<pre>
+typedef struct {
+    const Wavetable *wt_a;
+    const Wavetable *wt_b;
+    double phase;
+    double increment;
+    float  morph;   /* 0.0 = pure wt_a, 1.0 = pure wt_b */
+} MorphOscillator;
+
+void morph_osc_init(MorphOscillator *osc,
+                    const Wavetable *a, const Wavetable *b,
+                    float freq, float morph) {
+    osc-&gt;wt_a      = a;
+    osc-&gt;wt_b      = b;
+    osc-&gt;phase     = 0.0;
+    osc-&gt;increment = (double)WT_SIZE * freq / SAMPLE_RATE;
+    osc-&gt;morph     = morph;
+}
+
+float morph_osc_next(MorphOscillator *osc) {
+    float a = wt_read_linear(osc-&gt;wt_a-&gt;table, osc-&gt;phase);
+    float b = wt_read_linear(osc-&gt;wt_b-&gt;table, osc-&gt;phase);
+    float out = a + osc-&gt;morph * (b - a);
+
+    osc-&gt;phase += osc-&gt;increment;
+    if (osc-&gt;phase &gt;= WT_SIZE)
+        osc-&gt;phase -= WT_SIZE;
+    return out;
+}
+</pre>
+
+<p>
+You can drive <code>morph</code> from an LFO or envelope to create animated timbres.
+Modern synthesisers (Serum, Vital, WaveTable) extend this to tens or hundreds of
+wavetables arranged in a morph sequence, but the underlying mechanism is identical.
+</p>
+
+<h3>Complete Multi-Wavetable Oscillator</h3>
+
+<pre>
+/* Full oscillator: band-limited table selection + cubic interpolation + morph */
+
+typedef struct {
+    const BandlimitedWT *bwt_a;
+    const BandlimitedWT *bwt_b;
+    double phase;
+    double increment;
+    float  morph;
+    float  freq;
+} FullWTOscillator;
+
+void full_osc_init(FullWTOscillator *osc,
+                   const BandlimitedWT *a, const BandlimitedWT *b,
+                   float freq, float morph) {
+    osc-&gt;bwt_a     = a;
+    osc-&gt;bwt_b     = b;
+    osc-&gt;phase     = 0.0;
+    osc-&gt;increment = (double)WT_SIZE * freq / SAMPLE_RATE;
+    osc-&gt;morph     = morph;
+    osc-&gt;freq      = freq;
+}
+
+void full_osc_set_freq(FullWTOscillator *osc, float freq) {
+    osc-&gt;freq      = freq;
+    osc-&gt;increment = (double)WT_SIZE * freq / SAMPLE_RATE;
+}
+
+float full_osc_next(FullWTOscillator *osc) {
+    const Wavetable *ta = bwt_select(osc-&gt;bwt_a, osc-&gt;freq);
+    const Wavetable *tb = bwt_select(osc-&gt;bwt_b, osc-&gt;freq);
+
+    float a   = wt_read_cubic(ta-&gt;table, osc-&gt;phase);
+    float b   = wt_read_cubic(tb-&gt;table, osc-&gt;phase);
+    float out = a + osc-&gt;morph * (b - a);
+
+    osc-&gt;phase += osc-&gt;increment;
+    if (osc-&gt;phase &gt;= WT_SIZE)
+        osc-&gt;phase -= WT_SIZE;
+    return out;
+}
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+A wavetable oscillator pre-computes one cycle of a waveform into an array and replays
+it by advancing a fractional phase. Cubic Hermite interpolation gives clean results for
+modulated frequencies. Naive waveforms alias at high frequencies; band-limited tables
+fix this by computing a separate Fourier-limited version per octave. Morphing between
+two tables is linear interpolation of the table outputs, enabling continuously variable
+timbres.
+</p>
+
+<p>
+Part 16 goes deeper: FM synthesis, where one oscillator modulates the frequency of
+another. The same wavetable oscillator built here is the carrier and modulator in a
+two-operator FM pair.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://ccrma.stanford.edu/~jos/pasp/Wavetable_Oscillators.html">Wavetable Oscillators - Julius O. Smith III (CCRMA)</a></li>
+<li><a href="https://www.musicdsp.org/en/latest/Synthesis/160-bandlimited-sawtooth-and-squarewave.html">Band-Limited Sawtooth and Squarewave - musicdsp.org</a></li>
+<li><a href="https://ccrma.stanford.edu/~jos/pasp/Cubic_Interpolation.html">Cubic Interpolation - Julius O. Smith III (CCRMA)</a></li>
+<li><a href="https://www.earlevel.com/main/category/digital-audio/oscillators/wavetable-oscillators/">Wavetable Oscillators Series - earlevel.com</a></li>
+<li><a href="https://www.dsprelated.com/freebooks/pasp/Ideal_Bandlimited_Sawtooth.html">Ideal Band-Limited Sawtooth - dsprelated.com</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="dsp-03-oscillators.htm">Oscillators</a></li>
+<li><a href="dsp-04-polyblep.htm">PolyBLEP Anti-Aliasing</a></li>
+<li><a href="dsp-14-sample-playback.htm">Sample Playback</a></li>
+<li><a href="dsp-16-fm-synthesis.htm">FM Synthesis</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

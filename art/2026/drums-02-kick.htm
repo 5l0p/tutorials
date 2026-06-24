@@ -1,0 +1,513 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Drums - Part 2: Kick Drum Synthesis in Pure Data</title>
+    <meta name="description" content="Building a deep, punchy, programmable kick drum in Pure Data: two sine oscillators with pitch envelopes, triangle/pulse oscillators with phase modulation, filtered noise burst, transient click, soft-clip distortion, and a final extend-decay output envelope.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, puredata, audio, synthesis, drums">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="drums-02-kick.txt">plain/text</a> | <i>2026-12-11</i> | <i><a href="../../c.htm">c</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../synthesis.htm">synthesis</a>, <a href="../../drums.htm">drums</a></i>
+        <h2>Drums - Part 2: Kick Drum Synthesis in Pure Data</h2>
+        <p>
+The classic electronic kick drum is a sine oscillator whose frequency sweeps rapidly
+from a high value down to its resting pitch. The 808 does this in about 100 ms. The
+909 does it in 30 ms with a harder transient click. This article builds a parametric
+kick with two sines, two triangle oscillators, phase modulation between them, a noise
+burst, and distortion — the full architecture of the Prok Drums kick model.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>A <code>[vline~]</code>-driven frequency sweep from peak to base pitch</li>
+<li>Two sine oscillators with independent pitch and amplitude envelopes</li>
+<li>Triangle/pulse oscillators approximated in Pd</li>
+<li>Phase modulation between oscillators for metallic transient clicks</li>
+<li>A short noise burst for sub-click body texture</li>
+<li>Soft-clip distortion with <code>[clip~]</code></li>
+<li>The extend-decay output envelope</li>
+<li>X/Y parameter mapping: pitch vs decay</li>
+</ul>
+
+<h3>The Minimal Kick — One Sine with a Pitch Sweep</h3>
+
+<p>
+Build incrementally. Start with the single most important element: a sine oscillator
+whose frequency drops from high to low at the moment of trigger.
+</p>
+
+<pre>
+; kick_minimal.pd
+
+[r $0-trigger]
+|
+[bang]
+|
+[vline~]
+; On trigger, send this message sequence to [vline~]:
+; 900 0,        jump immediately to 900 Hz
+; 55 150        sweep to 55 Hz over 150 ms
+
+→ [*~ 6.283185]      ; convert Hz to radians/sample? No — use phasor instead:
+
+; Better: drive a [phasor~] with a message-rate frequency from [vline~]
+</pre>
+
+<p>
+<code>[vline~]</code> outputs a signal-rate ramp, but <code>[phasor~]</code> takes
+a message-rate frequency. The workaround is <code>[snapshot~]</code> or using
+<code>[phasor~]</code> with a signal inlet — but Pure Data's <code>[osc~]</code>
+<em>does</em> take a signal inlet for frequency:
+</p>
+
+<pre>
+[r $0-trigger]
+|
+[bang]
+|
+[vline~]     ; outputs Hz as a signal
+|
+[osc~]       ; osc~ accepts signal-rate freq on its left inlet
+
+; Amplitude envelope — separate vline~:
+[r $0-trigger]
+|
+[bang]
+|
+[vline~]     ; amplitude, 0→1→decay
+
+[*~]         ; multiply osc~ output by amplitude
+|
+[*~ 0.8]     ; master level
+|
+[dac~]
+</pre>
+
+<p>
+To trigger the frequency sweep and amplitude envelope from the same bang, use
+<code>[t b b]</code> to fan out:
+</p>
+
+<pre>
+[r $0-trigger]
+|
+[bang]
+|
+[t b b]
+|       |
+|   [vline~]          ; amplitude: 0 0, 1 2, 0 500 2
+|
+[vline~]              ; frequency: 900 0, 55 150
+
+[osc~]    ; signal inlet ← from freq vline~
+|
+[*~]      ; multiply ← from amp vline~
+</pre>
+
+<h3>Parameterising the Pitch Sweep</h3>
+
+<p>
+Store the base frequency, sweep amount, and decay times as received parameters.
+Build the <code>[vline~]</code> message at trigger time:
+</p>
+
+<pre>
+; Parameters
+[r $0-pitch]       → [f] → $pitch     ; base frequency (Hz)
+[r $0-envAmount]   → [f] → $env       ; sweep amount (Hz added to base)
+[r $0-pitchDecay]  → [f] → $pd        ; sweep duration (ms)
+[r $0-ampDecay]    → [f] → $ad        ; amplitude decay (ms)
+
+; On trigger:
+[r $0-trigger]
+|
+[bang]
+|
+[t b b b b]
+|   |      |       |
+|   |    [expr $pitch + $env]   ; peak freq = base + envAmount
+|   |       |
+|   |    [vline~]  ; pitch: peakFreq 0, $pitch $pd  (sweep down)
+|   |
+|   [vline~]   ; amp: 1 2, 0 $ad 2   (fast attack, decay)
+|
+[osc~]   ← pitch vline~
+|
+[*~]     ← amp vline~
+</pre>
+
+<p>
+In practice, the peak frequency message to <code>[vline~]</code> looks like:
+</p>
+
+<pre>
+; Message to freq vline~ on trigger:
+; [peakFreq] 0, [baseFreq] [pitchDecayMs] 0
+
+; Use [pack] and [list prepend] to assemble this dynamically:
+[f $pitch]
+|
+[+ $env]          ; peak = base + env
+|
+[pack f 0 f f 0]  ; pack f1=peak, f2=0, f3=base, f4=decay, f5=0
+|
+[list prepend]    ; → message: peak 0, base decay 0
+|
+[vline~]
+</pre>
+
+<h3>Adding Sine B</h3>
+
+<p>
+Sine B is a higher-frequency oscillator with a faster, shorter pitch sweep. It adds
+"click" character on top of the sub-bass body of Sine A. Typical values:
+SineBFreq ≈ 150 Hz, SineBFrqEnvAmount ≈ 5000 Hz, SineBFrqDecayTime ≈ 30 ms.
+</p>
+
+<pre>
+; Second pitch vline~ and second osc~:
+[r $0-pitchB]       → [f]
+[r $0-envAmountB]   → [f]
+[r $0-pitchDecayB]  → [f]
+[r $0-ampDecayB]    → [f]
+[r $0-sineBMix]     → [f]
+
+; On trigger, fire both sets of vline~ envelopes.
+; Mix the two oscillators:
+[osc~] × [vline~ ampA] → *~ → [*~ sineAMix] ─┐
+[osc~] × [vline~ ampB] → *~ → [*~ sineBMix] ─┘ [+~] → sines bus
+</pre>
+
+<h3>Triangle/Pulse Oscillators</h3>
+
+<p>
+Triangle waves add upper-harmonic content above the sine body. In Pure Data, approximate
+a variable-width triangle/pulse using a <code>[phasor~]</code> and a compare/clip chain:
+</p>
+
+<pre>
+; Variable pulse width from phasor:
+[phasor~ $triFreq]
+|
+[*~ 2]         ; scale 0-1 → 0-2
+|
+[clip~ 0 1]    ; → 0-1 rectangle
+|
+[*~ 2]         ; → 0-2
+|
+[-~ 1]         ; → -1 to +1 square wave
+
+; For a triangle, fold the phasor:
+[phasor~ $triFreq]
+|
+[*~ 2]
+|
+[-~ 1]         ; -1 to +1 ramp
+|
+[abs~]         ; 0 to 1 triangle (folded)
+|
+[*~ 2]
+|
+[-~ 1]         ; -1 to +1 centred triangle
+</pre>
+
+<p>
+With pulse width control:
+</p>
+
+<pre>
+[phasor~ $triFreq]          ; 0 to 1 ramp
+|
+[&gt; $pulseWidth]            ; 0 or 1 depending on pulse width
+|
+[*~ 2]
+|
+[-~ 1]                      ; -1 or +1 square with variable width
+</pre>
+
+<p>
+Apply the same pitch sweep and amplitude envelope pattern used for the sines.
+</p>
+
+<h3>Phase Modulation Between Triangle Oscillators</h3>
+
+<p>
+Phase modulation (FM via the phase input rather than frequency input) produces
+sharp metallic transients when two oscillators modulate each other. In Pd:
+</p>
+
+<pre>
+; TriB modulates TriA's phase:
+[phasor~ $triAFreq]           ; TriA phase (0-1)
+|
+[+ $phaseModA]                ; add TriB output × PhaseModAmount
+|
+[*~ 2][clip~ 0 1][*~ 2][-~ 1] ; → square wave
+      ↑
+[osc~ $triBFreq] × [PhaseModAmount]   ; TriB output as modulator
+</pre>
+
+<p>
+The amount of phase modulation controls the "metallic" or "clicky" character of the
+transient. Low values (0.1–0.5) add subtle complexity; high values (2–5) produce
+aggressive distorted attack artifacts.
+</p>
+
+<h3>Noise Burst</h3>
+
+<p>
+A short burst of lowpass-filtered noise adds body texture and sub-frequency "thump".
+It should decay much faster than the sine body — typically 100–300 ms:
+</p>
+
+<pre>
+[noise~]
+|
+[lop~ $noiseCutoff]    ; lowpass (500–3000 Hz for kick)
+|
+[*~]                   ; multiply by noise amplitude envelope
+    ↑
+[vline~]               ; noise env: 1 2, 0 $noiseDecay 2
+|
+[*~ $noiseOutMix]      ; level control
+</pre>
+
+<h3>Transient Click</h3>
+
+<p>
+A very short burst of wideband noise (1–3 ms) creates the initial click that defines
+whether a kick sounds like it has a beater impact. Without this, electronic kicks
+sound like tones rather than physical impacts:
+</p>
+
+<pre>
+[noise~]
+|
+[vline~]          ; extremely fast decay: 1 0, 0 3 0  (3 ms click)
+    ↑ triggered on bang
+|
+[*~ $transientMix]
+</pre>
+
+<h3>Complete Signal Graph</h3>
+
+<pre>
+; On [$0-trigger bang]:
+;   → fire freq/amp vline~ for SineA
+;   → fire freq/amp vline~ for SineB
+;   → fire freq/amp vline~ for TriA
+;   → fire freq/amp vline~ for TriB
+;   → fire noise decay vline~
+;   → fire transient vline~
+;   → fire output envelope vline~
+
+; Signal path:
+[sineA osc~] *~ [ampA vline~] *~ [sineAMix] ─┐
+[sineB osc~] *~ [ampB vline~] *~ [sineBMix] ─┤
+[triA  sq~]  *~ [ampTA vline~] *~ [triAMix] ─┤
+[triB  sq~]  *~ [ampTB vline~] *~ [triBMix] ─┤ [+~] → mix bus
+[noise~] [lop~] *~ [noiseEnv] *~ [noiseMix] ─┤
+[click noise~] *~ [clickEnv 3ms] *~ [clickMix] ─┘
+
+mix bus
+  |
+[lop~ $oscCutoff]     ; oscillator bus filter
+  |
+[clip~ -$dist $dist]  ; soft distortion
+  |
+[*~ outEnv vline~]    ; output envelope
+  |
+[*~ $velocity]        ; velocity scaling
+  |
+[outlet~]
+</pre>
+
+<h3>PD Patch: Key Receivers</h3>
+
+<pre>
+$0-trigger       ; bang to fire
+$0-velocity      ; 0.0–1.0
+
+; Sine A
+$0-pitch         ; base frequency Hz (40–120)
+$0-pitchDecay    ; pitch sweep duration ms
+$0-envAmount     ; pitch sweep range Hz (pitch × 10–20 is typical)
+$0-ampDecay      ; amplitude decay ms
+$0-sineAMix      ; 0.0–1.0
+
+; Sine B
+$0-pitchB        ; Hz (usually 1.5–3× pitch)
+$0-pitchDecayB   ; ms (shorter than A)
+$0-envAmountB    ; Hz
+$0-ampDecayB     ; ms
+$0-sineBMix      ; 0.0–1.0
+
+; Triangles, noise, click (same pattern)
+$0-triAFreq, $0-triBFreq
+$0-noiseCutoff, $0-noiseMix
+$0-transientMix
+
+; Output
+$0-distort       ; 0–100 (clip~ threshold = 1 / (1 + distort))
+$0-outDecay      ; overall output decay ms
+$0-outLevel      ; master gain
+</pre>
+
+<h3>X/Y Mapping</h3>
+
+<p>
+The most musically useful 2D exploration for a kick is:
+</p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Axis</th><th>Drives</th><th>Range</th><th>Effect</th></tr>
+<tr><td><b>X</b></td><td>SineA base pitch</td><td>40–120 Hz</td><td>Left = deep sub; Right = punchy mid</td></tr>
+<tr><td><b>Y</b></td><td>Output decay time</td><td>100–32000 ms</td><td>Bottom = tight; Top = long boomy</td></tr>
+</table>
+
+<p>
+Link the pitch sweep amount to the base pitch proportionally — a higher fundamental
+needs a proportionally larger sweep to sound natural:
+</p>
+
+<pre>
+[r $0-pitch]
+|
+[* 15]           ; envAmount ≈ 15× base pitch
+|
+[s $0-envAmount]
+</pre>
+
+<h3>Factory Preset Values (Lua)</h3>
+
+<pre>
+-- module.lua — preset table for the kick voice
+local presets = {
+    kick0 = {  -- classic 909-style, long tail
+        pitch=59.6, ampDecay=32000, sineAMix=1.0, sineBMix=0.21,
+        noiseMix=0.03, transientMix=0.62, distort=1.0, outLevel=0.67,
+    },
+    kick8 = {  -- tight, short
+        pitch=75, ampDecay=8000, sineAMix=0.9, sineBMix=0.4,
+        noiseMix=0.1, transientMix=0.8, distort=10, outLevel=0.8,
+    },
+    kick9 = {  -- distorted, gritty
+        pitch=60, ampDecay=20000, sineAMix=0.8, sineBMix=0.3,
+        noiseMix=0.15, transientMix=0.9, distort=80, outLevel=0.6,
+    },
+}
+
+local function loadPreset(name)
+    local p = presets[name]
+    for k, v in pairs(p) do pd.send("kick-" .. k, v) end
+end
+</pre>
+
+<h3>Build Order</h3>
+
+<ol>
+<li>Single <code>[osc~]</code> with a hardcoded 150 ms pitch sweep to 55 Hz → <code>[dac~]</code>. Verify the thud.</li>
+<li>Add separate amplitude <code>[vline~]</code> with a 500 ms decay.</li>
+<li>Parameterise pitch and decay via <code>$0-</code> receivers.</li>
+<li>Add Sine B (shorter sweep, higher frequency).</li>
+<li>Add noise burst (<code>[noise~]</code> → <code>[lop~]</code> → fast <code>[vline~]</code>).</li>
+<li>Add 3 ms transient click.</li>
+<li>Add triangle oscillators with pulse width.</li>
+<li>Add phase modulation between triangle oscillators.</li>
+<li>Add <code>[clip~]</code> distortion stage.</li>
+<li>Add output envelope <code>[vline~]</code> with extend-decay pattern.</li>
+<li>Wire X/Y receivers and test presets.</li>
+</ol>
+
+<h3>Summary</h3>
+
+<p>
+The kick drum is a pitch-swept sine oscillator at its core. Two sines (body and
+click-tone), two triangle oscillators (upper harmonics), phase modulation (metallic
+transient), a noise burst (thump texture), a transient click (beater impact), and
+soft-clip distortion build up to a fully parametric kick that covers deep sub-bass
+through tight punchy through gritty industrial. All parameters are exposed through
+<code>$0-</code> receivers. X maps to pitch, Y maps to decay — the two axes that most
+characterise a kick drum's identity.
+</p>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="drums-01-architecture.htm">Architecture and Approach</a> - the extend-decay envelope and $0 namespacing used here</li>
+<li><a href="drums-03-snare.htm">Snare Drum Synthesis</a> - same sine body approach, adds SID noise and rattle delays</li>
+<li><a href="dsp-16-fm-synthesis.htm">FM Synthesis</a> - the FM theory behind phase modulation between oscillators</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

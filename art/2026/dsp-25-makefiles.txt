@@ -1,0 +1,374 @@
+DSP - Part 25: Makefiles for C and C++
+2026-11-03
+
+
+Every C and C++ project in this series has relied on a Makefile to compile the code.
+This article explains how those Makefiles work, how to write one from scratch, and how
+to extend it to handle real-world requirements: multiple targets, automatic dependency
+tracking, debug and release configurations, and parallel builds.
+
+
+What You Will Learn
+
+
+The structure of a Makefile: targets, prerequisites, and recipes
+Variables: CC, CFLAGS, LDFLAGS, automatic variables $@, $<, $^
+Pattern rules for compiling every .c or .cpp file to a .o
+Automatic header dependency generation with -MMD -MP
+Phony targets: all, clean, test
+Debug and release configurations via a MODE variable
+A multi-target Makefile that builds a static library and a test binary in one invocation
+
+
+The Minimum Viable Makefile
+
+
+Start with the simplest possible Makefile for a single-file C project:
+
+
+
+# Makefile
+synth: synth.c
+	gcc -o synth synth.c -lm
+
+
+
+Run make and it compiles. Run make again and it does nothing —
+Make checks whether the target is older than its prerequisites. This automatic
+up-to-date checking is Make's core value: it only rebuilds what has changed.
+
+
+
+But a single-file Makefile does not scale. Real projects compile many .c
+files to .o object files, link them together, and need to recompile only
+the objects whose source files (or headers) have changed.
+
+
+Variables
+
+
+Define variables at the top of the Makefile. Make has conventions for the names:
+
+
+
+CC      = gcc
+CXX     = g++
+CFLAGS  = -Wall -Wextra -std=c11 -pedantic
+CXXFLAGS = -Wall -Wextra -std=c++17 -pedantic
+LDFLAGS =               # linker flags: -L paths
+LDLIBS  = -lm -lsndfile # libraries to link
+
+TARGET  = synth
+SRCS    = main.c oscillator.c filter.c envelope.c
+OBJS    = $(SRCS:.c=.o)  # replace .c with .o
+
+
+
+The substitution $(SRCS:.c=.o) transforms the source list into an object
+list. main.c oscillator.c filter.c envelope.c becomes
+main.o oscillator.o filter.o envelope.o.
+
+
+Pattern Rules and Automatic Variables
+
+
+A pattern rule uses % as a wildcard. This rule compiles any .c
+file to a .o file:
+
+
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+
+
+The automatic variables mean:
+
+
+
+$@ — the target name (e.g. oscillator.o)
+$< — the first prerequisite (e.g. oscillator.c)
+$^ — all prerequisites, deduplicated (used in the link step)
+
+
+
+The link step:
+
+
+
+$(TARGET): $(OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+
+The all and clean Phony Targets
+
+
+A phony target is not a file — it is a named recipe. Declare them with
+.PHONY so Make does not look for a file with that name:
+
+
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+clean:
+	rm -f $(OBJS) $(TARGET) $(DEPS)
+
+
+
+all is the conventional default target. Put it first in the Makefile (or
+before any pattern rules) and it becomes what make with no arguments builds.
+
+
+Automatic Header Dependency Generation
+
+
+This is the part that trips up most hand-written Makefiles. If oscillator.c
+includes oscillator.h, and you change oscillator.h, Make does
+not know to recompile oscillator.c — unless you explicitly list the
+dependency. With many headers, maintaining that list by hand is error-prone.
+
+
+
+GCC and Clang can generate dependency files automatically. The flags -MMD
+and -MP cause the compiler to write a .d file alongside each
+.o file. The .d file contains a Make rule like:
+
+
+
+oscillator.o: oscillator.c oscillator.h filter.h
+
+
+
+Include those files at the bottom of the Makefile:
+
+
+
+CC      = gcc
+CFLAGS  = -Wall -Wextra -std=c11 -MMD -MP
+TARGET  = synth
+SRCS    = main.c oscillator.c filter.c envelope.c
+OBJS    = $(SRCS:.c=.o)
+DEPS    = $(SRCS:.c=.d)
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:
+	rm -f $(OBJS) $(TARGET) $(DEPS)
+
+-include $(DEPS)
+
+
+
+The leading - in -include suppresses the error on first
+build, when the .d files do not yet exist. After the first compile, the
+.d files are generated and included on every subsequent run.
+
+
+Debug and Release Configurations
+
+
+Use a MODE variable to switch between debug and release builds without
+maintaining two separate Makefiles:
+
+
+
+MODE ?= debug  # default to debug; override with: make MODE=release
+
+ifeq ($(MODE),debug)
+    CFLAGS += -g -O0 -DDEBUG -fsanitize=address,undefined
+    LDFLAGS += -fsanitize=address,undefined
+else ifeq ($(MODE),release)
+    CFLAGS += -O3 -DNDEBUG -march=native -ffast-math
+else
+    $(error Unknown MODE: $(MODE). Use debug or release.)
+endif
+
+BUILD_DIR = build/$(MODE)
+OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRCS))
+DEPS = $(OBJS:.o=.d)
+TARGET = $(BUILD_DIR)/synth
+
+
+
+The ?= operator assigns only if the variable is not already set, so
+make MODE=release from the command line overrides the default.
+
+
+
+Putting objects in a build/ subdirectory keeps the source tree clean and
+allows both configurations to coexist:
+
+
+
+$(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+
+
+The @ prefix suppresses echoing the mkdir command.
+$(dir $@) extracts the directory part of the target path.
+
+
+C++ Pattern Rules
+
+
+For C++ projects, add a companion pattern rule:
+
+
+
+CXX      = g++
+CXXFLAGS = -Wall -Wextra -std=c++17 -MMD -MP
+SRCS_CXX = synth.cpp filter.cpp
+OBJS_CXX = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SRCS_CXX))
+
+$(BUILD_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+
+
+Mix C and C++ in one Makefile by including both OBJS and
+OBJS_CXX in the link step. Use $(CXX) (not $(CC))
+for the linker when any C++ object files are present — the C++ linker pulls in the
+standard library automatically:
+
+
+
+$(TARGET): $(OBJS) $(OBJS_CXX)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+
+A Multi-Target Makefile: Library and Test Binary
+
+
+A common layout for DSP code is a static library of DSP algorithms plus a separate
+test binary that links against it. This keeps the library self-contained and the test
+code out of the library's translation units.
+
+
+
+# Project layout:
+#   src/   — library source files
+#   test/  — test source files
+#   build/ — object files and binaries
+
+CC       = gcc
+CFLAGS   = -Wall -Wextra -std=c11 -MMD -MP -Isrc
+MODE    ?= debug
+ifeq ($(MODE),debug)
+    CFLAGS += -g -O0 -fsanitize=address,undefined
+    LDFLAGS += -fsanitize=address,undefined
+else
+    CFLAGS += -O3 -DNDEBUG -ffast-math
+endif
+
+BUILD_DIR  = build/$(MODE)
+LIB_SRCS   = $(wildcard src/*.c)
+LIB_OBJS   = $(patsubst src/%.c,$(BUILD_DIR)/lib_%.o,$(LIB_SRCS))
+LIB_TARGET = $(BUILD_DIR)/libdsp.a
+
+TEST_SRCS  = $(wildcard test/*.c)
+TEST_OBJS  = $(patsubst test/%.c,$(BUILD_DIR)/test_%.o,$(TEST_SRCS))
+TEST_BIN   = $(BUILD_DIR)/run_tests
+
+DEPS = $(LIB_OBJS:.o=.d) $(TEST_OBJS:.o=.d)
+
+.PHONY: all lib test clean
+
+all: lib test
+
+lib: $(LIB_TARGET)
+
+$(LIB_TARGET): $(LIB_OBJS)
+	@mkdir -p $(dir $@)
+	ar rcs $@ $^
+
+test: $(TEST_BIN)
+	./$(TEST_BIN)
+
+$(TEST_BIN): $(TEST_OBJS) $(LIB_TARGET)
+	$(CC) $(LDFLAGS) -o $@ $^ -lm
+
+$(BUILD_DIR)/lib_%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/test_%.o: test/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:
+	rm -rf build/
+
+-include $(DEPS)
+
+
+
+ar rcs creates a static library archive from the object files.
+r inserts (replacing existing) members, c creates the archive,
+s writes an index. The test binary links against the archive with
+$(LIB_TARGET) on the link line.
+
+
+Parallel Builds
+
+
+Run make -j$(nproc) to use all available CPU cores. Make schedules
+independent targets — object files that do not depend on each other — in parallel.
+For a project with twenty source files, this typically halves build time.
+
+
+
+Add it to the Makefile itself so make alone uses parallelism:
+
+
+
+MAKEFLAGS += -j$(shell nproc)
+
+
+
+Avoid -j without a number — it will attempt to spawn as many processes
+as there are targets, which can exhaust file descriptors on large projects.
+
+
+Useful Make Flags
+
+
+make -n — dry run: print what would be executed without running it.
+make -B — unconditional rebuild: ignore timestamps, rebuild everything.
+make V=1 — if your Makefile uses $(V) to suppress commands, this re-enables verbose output.
+make --warn-undefined-variables — catches typos in variable names.
+
+
+Summary
+
+
+A well-structured Makefile has four things: variables for compiler and flags, a
+pattern rule that compiles *.c to *.o, automatic header
+dependency generation with -MMD -MP, and phony targets for all,
+clean, and test. A MODE variable with
+ifeq switches between debug (with AddressSanitizer) and optimised release.
+Separate library and test binary targets with ar rcs for the archive and
+a distinct link step for the test runner. Add -j$(nproc) to build in
+parallel. These patterns scale from a five-file synthesiser to a hundred-file DSP
+framework without requiring a build system generator.
+
+
+See Also
+
+
+Testing DSP Code - the test binary this Makefile builds
+Vendoring C and C++ Dependencies - integrating third-party code into this Makefile
+Putting It All Together - the synthesiser project these Makefile patterns apply to
+

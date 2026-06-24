@@ -1,0 +1,460 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 5: Skills & Structured Tool Libraries</title>
+    <meta name="description" content="Organise tools as named structs with a common interface, build a registry for routing, and compose a small standard library of reusable skills.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-05-skills.txt">plain/text</a> | <i>2026-06-14</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 5: Skills & Structured Tool Libraries</h2>
+        <p>
+The previous article hardcoded a <code>dispatch</code> switch statement. That works for
+three tools but falls apart at ten. This article introduces a <code>Skill</code> interface
+that every tool implements, a registry that maps names to skills, and a small standard
+library of skills you will use throughout this series. It also explains why tool
+descriptions matter as much as the implementation.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>A <code>Skill</code> interface: Name, Description, Schema, and Execute</li>
+<li>A registry that maps skill names to implementations and generates the tool list for the API</li>
+<li>Why tool descriptions are not documentation — they are instructions to the model</li>
+<li>A standard skills library: read file, write file, shell command, HTTP GET, datetime</li>
+<li>How to wire the registry into the agent loop from the previous article</li>
+</ul>
+
+
+<h3>The Skill Interface</h3>
+
+<p>
+Every skill must be able to describe itself as an OpenAI tool definition and execute
+itself given a JSON arguments string. Two methods:
+</p>
+
+<pre>
+type Skill interface {
+    Definition() Tool    // returns the JSON schema definition
+    Execute(argsJSON string) (string, error)
+}
+</pre>
+
+<p>
+Anything that satisfies this interface can be registered and used. Adding a new skill
+means adding one new type - no changes to the dispatch logic or the agent loop.
+</p>
+
+<h3>The Registry</h3>
+
+<pre>
+type Registry struct {
+    skills map[string]Skill
+    tools  []Tool
+}
+
+func NewRegistry() *Registry {
+    return &amp;Registry{skills: make(map[string]Skill)}
+}
+
+func (r *Registry) Register(s Skill) {
+    def := s.Definition()
+    name := def.Function.Name
+    r.skills[name] = s
+    r.tools = append(r.tools, def)
+}
+
+// Tools returns the slice to pass to the API request
+func (r *Registry) Tools() []Tool {
+    return r.tools
+}
+
+// Execute dispatches a tool call by name
+func (r *Registry) Execute(name, argsJSON string) (string, error) {
+    s, ok := r.skills[name]
+    if !ok {
+        return "", fmt.Errorf("unknown skill: %s", name)
+    }
+    return s.Execute(argsJSON)
+}
+</pre>
+
+<p>
+The agent's <code>act</code> method now calls <code>registry.Execute(tc.Function.Name, tc.Function.Arguments)</code>
+instead of a switch statement. The agent loop itself does not need to change when you add
+new skills.
+</p>
+
+<h3>Implementing Skills</h3>
+
+<p>
+Each skill is a struct (possibly with configuration fields) that implements the interface.
+Here is <code>ReadFilSkill</code>:
+</p>
+
+<pre>
+type ReadFileSkill struct {
+    // AllowedPaths restricts reads to specific directories.
+    // Empty means no restriction.
+    AllowedPaths []string
+}
+
+func (s *ReadFileSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name: "read_file",
+            Description: "Read the complete contents of a file. " +
+                "Use this to inspect source code, configuration files, or data files. " +
+                "Returns the raw file contents as a string.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "path": {
+                        Type:        "string",
+                        Description: "Path to the file to read, relative to the working directory",
+                    },
+                },
+                Required: []string{"path"},
+            },
+        },
+    }
+}
+
+func (s *ReadFileSkill) Execute(argsJSON string) (string, error) {
+    var args struct {
+        Path string `json:"path"`
+    }
+    if err := json.Unmarshal([]byte(argsJSON), &amp;args); err != nil {
+        return "", err
+    }
+    if !s.pathAllowed(args.Path) {
+        return "", fmt.Errorf("path not allowed: %s", args.Path)
+    }
+    data, err := os.ReadFile(args.Path)
+    if err != nil {
+        return "", err
+    }
+    return string(data), nil
+}
+
+func (s *ReadFileSkill) pathAllowed(path string) bool {
+    if len(s.AllowedPaths) == 0 {
+        return true
+    }
+    for _, allowed := range s.AllowedPaths {
+        if strings.HasPrefix(path, allowed) {
+            return true
+        }
+    }
+    return false
+}
+</pre>
+
+<h3>Why Descriptions Matter</h3>
+
+<p>
+The model reads tool descriptions to decide when to call a tool. Compare these two
+descriptions for the same tool:
+</p>
+
+<pre>
+// Bad: vague and unhelpful
+"Read a file."
+
+// Good: tells the model when to use it and what it returns
+"Read the complete contents of a file. Use this to inspect source code,
+configuration files, or data files. Returns the raw file contents as a string."
+</pre>
+
+<p>
+With the vague description, the model may not realise it should call the tool when
+asked to "look at main.go". With the specific description it will. Parameter descriptions
+are equally important: "path to the file" is less useful than "path to the file to read,
+relative to the working directory" - the latter tells the model to use relative paths.
+</p>
+
+<h3>A Standard Skills Library</h3>
+
+<p>
+Here are five skills used throughout this series. Each follows the same pattern as
+<code>ReadFileSkill</code> above.
+</p>
+
+<p><b>WriteFileSkill</b> - write content to a file, creating it if necessary.</p>
+
+<pre>
+type WriteFileSkill struct{}
+
+func (s *WriteFileSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name: "write_file",
+            Description: "Write content to a file, creating it if it does not exist and " +
+                "overwriting it if it does. Use this to create new files or update existing ones.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "path":    {Type: "string", Description: "Path to write to"},
+                    "content": {Type: "string", Description: "Content to write to the file"},
+                },
+                Required: []string{"path", "content"},
+            },
+        },
+    }
+}
+
+func (s *WriteFileSkill) Execute(argsJSON string) (string, error) {
+    var args struct {
+        Path    string `json:"path"`
+        Content string `json:"content"`
+    }
+    json.Unmarshal([]byte(argsJSON), &amp;args)
+    if err := os.WriteFile(args.Path, []byte(args.Content), 0644); err != nil {
+        return "", err
+    }
+    return fmt.Sprintf(`{"written": %d, "path": "%s"}`, len(args.Content), args.Path), nil
+}
+</pre>
+
+<p><b>ListDirSkill</b> - list directory contents with type information.</p>
+
+<pre>
+type ListDirSkill struct{}
+
+func (s *ListDirSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name:        "list_dir",
+            Description: "List files and subdirectories in a directory. Returns names and whether each entry is a directory.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "path": {Type: "string", Description: "Directory to list"},
+                },
+                Required: []string{"path"},
+            },
+        },
+    }
+}
+
+func (s *ListDirSkill) Execute(argsJSON string) (string, error) {
+    var args struct{ Path string `json:"path"` }
+    json.Unmarshal([]byte(argsJSON), &amp;args)
+
+    entries, err := os.ReadDir(args.Path)
+    if err != nil {
+        return "", err
+    }
+
+    type entry struct {
+        Name  string `json:"name"`
+        IsDir bool   `json:"is_dir"`
+    }
+    var result []entry
+    for _, e := range entries {
+        result = append(result, entry{Name: e.Name(), IsDir: e.IsDir()})
+    }
+    data, _ := json.Marshal(result)
+    return string(data), nil
+}
+</pre>
+
+<p><b>RunShellSkill</b> - run a shell command and return stdout. Use with caution.</p>
+
+<pre>
+type RunShellSkill struct {
+    // AllowedCommands is an optional whitelist of command prefixes
+    AllowedCommands []string
+}
+
+func (s *RunShellSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name: "run_shell",
+            Description: "Run a shell command and return its stdout output. " +
+                "Use for compiling code, running tests, or executing scripts. " +
+                "Stderr is not captured - only stdout is returned.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "command": {Type: "string", Description: "Shell command to run"},
+                },
+                Required: []string{"command"},
+            },
+        },
+    }
+}
+
+func (s *RunShellSkill) Execute(argsJSON string) (string, error) {
+    var args struct{ Command string `json:"command"` }
+    json.Unmarshal([]byte(argsJSON), &amp;args)
+
+    if len(s.AllowedCommands) &gt; 0 {
+        allowed := false
+        for _, prefix := range s.AllowedCommands {
+            if strings.HasPrefix(args.Command, prefix) {
+                allowed = true
+                break
+            }
+        }
+        if !allowed {
+            return "", fmt.Errorf("command not in allowlist: %s", args.Command)
+        }
+    }
+
+    out, err := exec.Command("sh", "-c", args.Command).Output()
+    if err != nil {
+        return "", fmt.Errorf("command failed: %w", err)
+    }
+    return string(out), nil
+}
+</pre>
+
+<h3>Putting It Together</h3>
+
+<pre>
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    reg := NewRegistry()
+    reg.Register(&amp;ReadFileSkill{})
+    reg.Register(&amp;WriteFileSkill{})
+    reg.Register(&amp;ListDirSkill{})
+    reg.Register(&amp;RunShellSkill{
+        AllowedCommands: []string{"go ", "ls ", "cat "},
+    })
+
+    agent := NewAgent(apiKey, "gpt-4o-mini",
+        "You are a coding assistant. Use tools to inspect and modify the filesystem.",
+        reg.Tools(),
+    )
+    // Wire the registry into the agent's dispatch:
+    agent.Dispatch = reg.Execute
+
+    result, err := agent.Run("Run go vet on main.go and tell me if there are any issues.")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+    fmt.Println(result)
+}
+</pre>
+
+<h3>Schema Conventions</h3>
+
+<p>
+A few conventions that improve model reliability:
+</p>
+
+<ul>
+<li>Use <code>string</code>, <code>number</code>, <code>boolean</code>, and <code>array</code> as types. Avoid complex nested objects in parameters - they confuse some models.</li>
+<li>For enumerated values, always include an <code>enum</code> field. The model will pick from the list rather than inventing values.</li>
+<li>Mark genuinely optional parameters as not required, but give them default values in your implementation so you never receive unexpected zeros.</li>
+<li>Keep tool names lowercase with underscores: <code>get_weather</code>, not <code>GetWeather</code>. The model handles either, but consistency helps.</li>
+</ul>
+
+<h3>Summary</h3>
+
+<p>
+The <code>Skill</code> interface decouples tool implementation from dispatch: a
+registry maps names to skills and generates the JSON schema list on demand.
+Tool descriptions matter more than parameter names — the model reads the
+description to decide when to call a skill, so treat it as a short natural-
+language contract. Build a small standard library of 5–10 commonly needed
+skills (file I/O, HTTP, shell, datetime) and reuse it across agents. The next
+step is MCP, which extends this pattern across process boundaries.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://json-schema.org/understanding-json-schema/reference/type">JSON Schema: Type keywords</a></li>
+<li><a href="https://platform.openai.com/docs/guides/function-calling/parallel-function-calling">OpenAI: Parallel Function Calling</a></li>
+<li><a href="https://pkg.go.dev/os/exec">Go os/exec - running external commands</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-04-agent-loop.htm">Building a Simple Agent Loop</a> - the agent loop that uses the registry</li>
+<li><a href="llm-06-mcp-intro.htm">Intro to MCP Servers</a> - a protocol for sharing skills across processes</li>
+<li><a href="llm-14-full-agent.htm">Putting It Together: A Full Agent</a> - assembles this skills library into a complete agent</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

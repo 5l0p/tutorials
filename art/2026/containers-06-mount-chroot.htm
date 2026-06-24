@@ -1,0 +1,380 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Containers - Part 6: Mount Namespaces & chroot</title>
+    <meta name="description" content="How mount namespaces let containers have independent filesystem trees, how bind mounts work, and why chroot alone is not safe for container isolation.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="linux, containers">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="containers-06-mount-chroot.txt">plain/text</a> | <i>2026-08-04</i> | <i><a href="../../linux.htm">linux</a>, <a href="../../containers.htm">containers</a></i>
+        <h2>Containers - Part 6: Mount Namespaces & chroot</h2>
+        <p>
+A container needs its own view of the filesystem. Mount namespaces provide this:
+each namespace maintains its own copy of the kernel's mount table, so that
+<code>mount()</code> and <code>umount()</code> inside one namespace do not affect any other.
+This article covers mount namespaces in detail, explains bind mounts, introduces
+mount propagation, and then examines <code>chroot()</code> - explaining why it provides
+only weak isolation and must be replaced by <code>pivot_root()</code> for production
+use.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How to create a mount namespace and why <code>CLONE_NEWNS</code> has an unusual name</li>
+<li>How bind mounts work and how container runtimes use them to map host directories into a container</li>
+<li>The four mount propagation modes and why making the root <code>MS_PRIVATE</code> must be the first operation in a new mount namespace</li>
+<li>How <code>chroot()</code> works and what it does not do</li>
+<li>The classic chroot escape technique and the three reasons chroot is insufficient for container security</li>
+<li>Why <code>pivot_root()</code> is the correct replacement</li>
+</ul>
+
+<h3>Creating a Mount Namespace</h3>
+
+<p>
+The flag for a new mount namespace is <code>CLONE_NEWNS</code> (the name predates the
+<code>CLONE_NEW*</code> convention). When a process enters a new mount namespace it
+inherits a copy of the parent's mount table. From that point, any mount or
+unmount operations in the new namespace are private.
+</p>
+
+<pre>
+/* Enter a new mount namespace from the shell */
+sudo unshare --mount bash
+
+/* In the new namespace, mount something */
+mount -t tmpfs tmpfs /mnt
+
+/* Verify on the host - /mnt is still unmounted there */
+# (open a second terminal and run: mount | grep /mnt)
+</pre>
+
+<p>
+From C, create the namespace with <code>CLONE_NEWNS</code> in <code>clone()</code> or call
+<code>unshare(CLONE_NEWNS)</code> before mounting:
+</p>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;sched.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;sys/mount.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(void) {
+    if (unshare(CLONE_NEWNS) == -1) {
+        perror("unshare");
+        return 1;
+    }
+
+    /* Make all mounts private so no propagation to host */
+    if (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
+        perror("mount private");
+        return 1;
+    }
+
+    /* Mount a tmpfs on /tmp */
+    if (mount("tmpfs", "/tmp", "tmpfs", 0, "size=64m") == -1) {
+        perror("mount tmpfs");
+        return 1;
+    }
+
+    printf("Mounted tmpfs on /tmp\n");
+    pause();
+    return 0;
+}
+</pre>
+
+<h3>Bind Mounts</h3>
+
+<p>
+A bind mount makes a file or directory visible at a second location in the
+filesystem tree. It is the mechanism container runtimes use to map host
+directories into a container:
+</p>
+
+<pre>
+/* Bind-mount a host directory into a container's rootfs */
+mount("/host/data", "/container/rootfs/data", NULL,
+      MS_BIND | MS_REC, NULL);
+</pre>
+
+<p>
+The <code>MS_REC</code> flag makes the bind recursive - it also bind-mounts any
+sub-mounts. Without it, sub-mounts under the source are not visible at the
+destination.
+</p>
+
+<pre>
+# Shell equivalent (requires root or CAP_SYS_ADMIN)
+mount --bind /host/data /container/rootfs/data
+
+# Bind a single file (for injecting config files)
+mount --bind /etc/resolv.conf /container/rootfs/etc/resolv.conf
+</pre>
+
+<h3>Mount Propagation</h3>
+
+<p>
+Mount propagation controls whether mounts performed in one namespace or peer
+group are visible in another. The kernel defines four propagation types set with
+<code>mount()</code> flags:
+</p>
+
+<ul>
+<li><b>MS_SHARED</b> - mounts propagate to and from peer namespaces that share this mount point.</li>
+<li><b>MS_PRIVATE</b> - no propagation in either direction. This is what containers need.</li>
+<li><b>MS_SLAVE</b> - receive propagation from the master, but do not propagate back. Useful for shared read-only data.</li>
+<li><b>MS_UNBINDABLE</b> - like private, but the mount cannot be bind-mounted.</li>
+</ul>
+
+<p>
+On modern Linux the default root mount uses <code>MS_SHARED</code> propagation.
+When a container creates a new mount namespace and inherits this, any mounts
+it performs propagate back to the host unless it first makes its root
+<code>MS_PRIVATE</code>:
+</p>
+
+<pre>
+/* Prevent any propagation back to the host */
+mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL);
+</pre>
+
+<p>
+This must be the first mount operation after entering the new mount namespace.
+runc and other runtimes do this unconditionally.
+</p>
+
+<h3>chroot: What It Does</h3>
+
+<p>
+<code>chroot(const char *path)</code> changes the root directory for the calling
+process and its children. Any absolute path resolution within that process
+starts at the new root. It requires <code>CAP_SYS_CHROOT</code> (which is included in
+the default capability set for root processes).
+</p>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(void) {
+    if (chroot("/container/rootfs") == -1) {
+        perror("chroot");
+        return 1;
+    }
+    if (chdir("/") == -1) {
+        perror("chdir");
+        return 1;
+    }
+
+    /* Now / refers to /container/rootfs */
+    char *argv[] = { "/bin/sh", NULL };
+    execv("/bin/sh", argv);
+    perror("execv");
+    return 1;
+}
+</pre>
+
+<p>
+The <code>chdir("/")</code> after <code>chroot()</code> is important: without it the process's
+current working directory is still the old root, which is accessible via
+<code>../../../</code> path traversal.
+</p>
+
+<h3>Why chroot Is Not Enough</h3>
+
+<p>
+A privileged process (with <code>CAP_SYS_CHROOT</code>) can escape a chroot jail with
+a classic technique:
+</p>
+
+<pre>
+/* Classic chroot escape - requires CAP_SYS_CHROOT */
+#include &lt;fcntl.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(void) {
+    int real_root = open("/", O_RDONLY);  /* Save real root fd */
+
+    mkdir("/tmp/escape", 0755);
+    chroot("/tmp/escape");
+
+    /* Traverse up with fchdir to the saved fd */
+    fchdir(real_root);
+    close(real_root);
+
+    /* Walk up beyond the false root */
+    for (int i = 0; i &lt; 64; i++) chdir("..");
+
+    chroot(".");  /* We are now at the real root */
+
+    char *argv[] = { "/bin/sh", NULL };
+    execv("/bin/sh", argv);
+    return 1;
+}
+</pre>
+
+<p>
+The escape works because <code>chroot()</code> does not update the kernel's concept of
+the process's file descriptor root. A file descriptor opened before the
+<code>chroot()</code> remains valid and can be used to reach the original filesystem.
+</p>
+
+<p>
+There are three reasons not to rely on chroot for container security:
+</p>
+
+<ul>
+<li>A process with <code>CAP_SYS_CHROOT</code> can call <code>chroot()</code> again to move back.</li>
+<li>Open file descriptors to directories outside the jail allow traversal.</li>
+<li>There is no isolation of processes, network, or IPC - only the filesystem path resolution root changes.</li>
+</ul>
+
+<h3>The Correct Alternative: pivot_root</h3>
+
+<p>
+<code>pivot_root()</code> replaces the filesystem root at the kernel level. It moves
+the current root mount to a subdirectory (so it can be unmounted) and replaces
+it with a new root. After unmounting the old root there is no path back to the
+host filesystem.
+</p>
+
+<pre>
+# Demonstrate the difference conceptually
+# With chroot: host mounts are still in the kernel's mount table
+# With pivot_root + umount: host mounts are gone from the process's namespace
+</pre>
+
+<p>
+The full <code>pivot_root()</code> implementation is covered in the next article.
+</p>
+
+<h3>Practical: A chroot Environment for Testing</h3>
+
+<p>
+Despite its limitations for security, <code>chroot</code> is useful for testing
+container filesystems before adding <code>pivot_root</code>. Here is how to build
+a minimal chroot environment with BusyBox:
+</p>
+
+<pre>
+# Download a static BusyBox binary
+mkdir -p /tmp/rootfs/bin
+wget https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox \
+     -O /tmp/rootfs/bin/busybox
+chmod +x /tmp/rootfs/bin/busybox
+
+# Install all BusyBox applets as symlinks
+chroot /tmp/rootfs /bin/busybox --install -s /bin
+
+# Create basic directories
+mkdir -p /tmp/rootfs/{etc,proc,sys,dev,tmp}
+
+# Enter the chroot
+sudo chroot /tmp/rootfs /bin/sh
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+Mount namespaces give each container its own copy of the kernel mount table.
+After entering a new namespace, mark the root <code>MS_PRIVATE</code> immediately to
+prevent propagation back to the host. Bind mounts map host paths into the
+container. <code>chroot()</code> changes path resolution but does not prevent escape by
+privileged processes — open file descriptors can traverse back to the real root.
+<code>pivot_root()</code>, covered in the next article, is the proper replacement.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://man7.org/linux/man-pages/man7/mount_namespaces.7.html">mount_namespaces(7) - Linux man page</a></li>
+<li><a href="https://man7.org/linux/man-pages/man2/chroot.2.html">chroot(2) - Linux man page</a></li>
+<li><a href="https://man7.org/linux/man-pages/man2/mount.2.html">mount(2) - Linux man page</a></li>
+<li><a href="https://www.kernel.org/doc/html/latest/filesystems/sharedsubtree.html">Shared Subtrees - kernel documentation</a></li>
+<li><a href="https://lwn.net/Articles/689856/">Mount namespaces and shared subtrees (LWN)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="containers-07-pivot-root.htm">pivot_root &amp; the Container Rootfs</a></li>
+<li><a href="containers-08-overlayfs.htm">OverlayFS &amp; Image Layers</a></li>
+<li><a href="containers-09-virtual-filesystems.htm">Virtual Filesystems: proc, sysfs &amp; devtmpfs</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

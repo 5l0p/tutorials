@@ -1,0 +1,384 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Algorithmic Composition - Part 7: Voice Leading</title>
+    <meta name="description" content="Why chord progressions need smooth voice movement, the nearest-neighbour assignment algorithm for three-voice voice leading, detecting and avoiding parallel fifths and octaves, and a complete Lua implementation.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="lua, puredata, audio, music-theory, generative">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="algo-07-voice-leading.txt">plain/text</a> | <i>2026-01-17</i> | <i><a href="../../lua.htm">lua</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../music-theory.htm">music-theory</a>, <a href="../../generative.htm">generative</a></i>
+        <h2>Algorithmic Composition - Part 7: Voice Leading</h2>
+        <p>
+The chord progression generator from Part 6 outputs chords as root-position triads —
+root in the bass, third in the middle, fifth on top, all within a single octave.
+Moving between chords this way produces large pitch jumps and parallel motion between
+voices. A I chord (C E G) followed by a IV chord (F A C) in root position means
+the bottom voice leaps a fourth, the middle voice leaps a fourth, and the top voice
+leaps a fifth — all moving up, all by similar intervals. The result sounds mechanical.
+</p>
+
+<p>
+Voice leading solves this by choosing the voicing of each chord — the distribution of
+chord tones across octaves and across the three voices — to minimise total pitch
+movement. The bass might descend by step while the middle voice ascends by a third and
+the top voice stays on a common tone. Each voice moves as little as possible, and no
+two voices move in parallel by the same interval.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What voice leading is and why parallel fifths and octaves are specifically avoided</li>
+<li>The nearest-neighbour assignment algorithm for three voices</li>
+<li>How to enumerate candidate octave positions for each chord tone</li>
+<li>Detecting parallel fifths and octaves between two consecutive voicings</li>
+<li>A complete Lua function that takes a current voicing and a target chord and returns the smoothest new voicing</li>
+</ul>
+
+<h3>What Voice Leading Is Solving</h3>
+
+<p>
+A chord's pitch classes (e.g. C, E, G for C major) do not specify which octave each
+note appears in or which "voice" (soprano, alto, bass) carries which pitch class. A
+root-position C major triad spanning two octaves has many possible voicings: C3-E4-G4,
+C3-G4-E5, E3-G4-C5, and so on. Voice leading chooses the specific voicing for each
+chord so that each voice moves by the smallest possible interval from the previous chord.
+</p>
+
+<p>
+Two specific motion patterns are avoided in classical voice leading:
+</p>
+
+<p>
+<b>Parallel fifths:</b> two voices that both move in the same direction, and the interval
+between them is a perfect fifth in both the old and new chord. Example: voices on G3 and
+D4 (a fifth apart) both move up by step to A3 and E4 (still a fifth apart). This is
+avoided because it causes the voices to blur into a single acoustic unit, losing
+independence.
+</p>
+
+<p>
+<b>Parallel octaves:</b> same issue but with an octave. If two voices double the same
+pitch at the octave and then both move to double another pitch at the octave, one voice
+becomes acoustically transparent.
+</p>
+
+<h3>Enumerating Candidate Voicings</h3>
+
+<p>
+Given a chord with three pitch classes (e.g. C, E, G as semitone values 0, 4, 7), and
+a current voicing of three MIDI notes (e.g. {60, 64, 67} = C4, E4, G4), the next chord
+has each pitch class available in multiple octaves. For each pitch class, consider the
+three candidate octave positions nearest to the corresponding voice in the current voicing:
+one octave below, same octave, one octave above.
+</p>
+
+<pre>
+-- Get candidate MIDI notes for a pitch class near a reference pitch
+-- pc: pitch class (0-11)
+-- near: MIDI note to centre candidates around
+local function candidates(pc, near)
+    -- Base: the pitch-class occurrence closest to 'near'
+    local base = pc + 12 * math.floor((near - pc) / 12)
+    return {base - 12, base, base + 12}
+end
+</pre>
+
+<h3>Nearest-Neighbour Assignment</h3>
+
+<p>
+For three voices, assign each voice to the nearest available pitch class from the new
+chord. The greedy approach: iterate over the current voices in order; for each, find
+the unused pitch class whose nearest octave position is closest; assign it and mark that
+pitch class as used.
+</p>
+
+<p>
+This greedy approach is optimal for three voices. (For four or more voices, the
+Hungarian algorithm is needed, but greedy suffices for triads.)
+</p>
+
+<pre>
+-- voice_lead: find the smoothest voicing for a target chord
+-- current: {midi1, midi2, midi3} — current voicing (bass to soprano)
+-- target_pcs: {pc1, pc2, pc3} — pitch classes of target chord (0-11)
+-- Returns: {midi1, midi2, midi3} — new voicing with minimum total movement
+local function voice_lead(current, target_pcs)
+    local used   = {false, false, false}
+    local result = {}
+
+    for v = 1, #current do
+        local best_pitch = nil
+        local best_dist  = 999
+        local best_pc_i  = nil
+
+        for pi, pc in ipairs(target_pcs) do
+            if not used[pi] then
+                -- Find nearest octave of this pc to current[v]
+                for _, cand in ipairs(candidates(pc, current[v])) do
+                    local d = math.abs(cand - current[v])
+                    if d &lt; best_dist then
+                        best_dist  = d
+                        best_pitch = cand
+                        best_pc_i  = pi
+                    end
+                end
+            end
+        end
+
+        used[best_pc_i] = true
+        result[v]       = best_pitch
+    end
+
+    return result
+end
+</pre>
+
+<h3>Detecting Parallel Motion</h3>
+
+<p>
+After assigning the new voicing, check for parallel fifths and octaves between all pairs
+of voices. A parallel fifth exists when two voices move in the same direction and maintain
+a perfect fifth (7 semitones mod 12) in both the old and new voicing:
+</p>
+
+<pre>
+-- Returns true if there are parallel fifths between voicings v1 and v2.
+-- v1, v2: arrays of MIDI notes (same length)
+local function has_parallel_fifths(v1, v2)
+    for i = 1, #v1 - 1 do
+        for j = i + 1, #v1 do
+            local int_before = (v1[j] - v1[i]) % 12
+            local int_after  = (v2[j] - v2[i]) % 12
+            if int_before == 7 and int_after == 7 then
+                -- Same interval; check that both moved (parallel, not oblique)
+                if v1[i] ~= v2[i] and v1[j] ~= v2[j] then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function has_parallel_octaves(v1, v2)
+    for i = 1, #v1 - 1 do
+        for j = i + 1, #v1 do
+            local int_before = (v1[j] - v1[i]) % 12
+            local int_after  = (v2[j] - v2[i]) % 12
+            if int_before == 0 and int_after == 0 then
+                if v1[i] ~= v2[i] and v1[j] ~= v2[j] then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+</pre>
+
+<p>
+When a parallel issue is detected, the simplest corrective action is to swap two of the
+voices in the new voicing and check again. In practice, swapping the top two voices
+resolves most cases:
+</p>
+
+<pre>
+local function fix_parallels(v_old, v_new, target_pcs)
+    if has_parallel_fifths(v_old, v_new) or has_parallel_octaves(v_old, v_new) then
+        -- Try swapping middle and top voice
+        local alt = {v_new[1], v_new[3], v_new[2]}
+        if not has_parallel_fifths(v_old, alt) and not has_parallel_octaves(v_old, alt) then
+            return alt
+        end
+    end
+    return v_new
+end
+</pre>
+
+<h3>Putting It Together</h3>
+
+<pre>
+local pitch = require("pitch")
+
+-- Extract pitch classes from a list of MIDI notes
+local function to_pcs(midi_notes)
+    local pcs = {}
+    for _, n in ipairs(midi_notes) do pcs[#pcs + 1] = n % 12 end
+    return pcs
+end
+
+local function smooth_progression(progression, root)
+    -- Start with root-position first chord in middle register
+    local current = {root, root + 4, root + 7}  -- I chord at root
+
+    local result = {}
+    for i, chord in ipairs(progression) do
+        local target_pcs = to_pcs(chord.notes)
+        local new_voicing = voice_lead(current, target_pcs)
+        new_voicing       = fix_parallels(current, new_voicing, target_pcs)
+        result[i]         = {notes=new_voicing, func=chord.func}
+        current           = new_voicing
+    end
+
+    return result
+end
+
+-- Example: apply voice leading to a progression from Part 6
+-- (assume generate_progression() is available from algo-06)
+math.randomseed(7)
+local raw_prog    = generate_progression(4, 60)
+local led_prog    = smooth_progression(raw_prog, 60)
+
+for i, chord in ipairs(led_prog) do
+    print(string.format("[%s] %s %s %s  (movement: %d semitones total)",
+        chord.func,
+        pitch.name(chord.notes[1]),
+        pitch.name(chord.notes[2]),
+        pitch.name(chord.notes[3]),
+        i == 1 and 0 or (
+            math.abs(chord.notes[1] - led_prog[i-1].notes[1]) +
+            math.abs(chord.notes[2] - led_prog[i-1].notes[2]) +
+            math.abs(chord.notes[3] - led_prog[i-1].notes[3])
+        )
+    ))
+end
+</pre>
+
+<p>
+Sample output:
+</p>
+
+<pre>
+[T] C4 E4 G4  (movement: 0 semitones total)
+[D] B3 D4 G4  (movement: 3 semitones total)
+[T] C4 E4 G4  (movement: 4 semitones total)
+[S] C4 F4 A4  (movement: 3 semitones total)
+</pre>
+
+<p>
+Compare the total movement (3–4 semitones per chord change) to what root-position
+chords would require: the V chord (G4 B4 D5) to I chord (C4 E4 G4) would require
+4+3+5 = 12 semitones of total movement. Voice leading reduces this to 3.
+</p>
+
+<h3>Sending Voiced Chords to Pure Data</h3>
+
+<pre>
+-- Each chord as three separate note-on messages to three voice receivers
+local function send_voiced_chord(voicing)
+    pd.send("voice-1", voicing[1])
+    pd.send("voice-2", voicing[2])
+    pd.send("voice-3", voicing[3])
+end
+</pre>
+
+<p>
+In the Pd patch, three separate synthesis voices (e.g. three instances of the
+Monomachine SuperWave engine from Series 10) each listen on their receiver. Each voice
+maintains continuous legato output; only the frequency changes on each chord update.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Voice leading chooses the octave position of each chord tone to minimise pitch movement
+between consecutive chords. The nearest-neighbour algorithm assigns each current voice
+to the closest available pitch class from the new chord, greedily and without reuse.
+Parallel fifths and octaves — two voices maintaining the same perfect fifth or octave
+while both moving — are detected and corrected by swapping voices. The result is a
+smooth chord sequence where each voice moves by a step or small leap rather than a large
+jump. Total movement for a typical chord change drops from 10–15 semitones (root position)
+to 3–6 semitones (voice led).
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://dmitri.mycpanel.princeton.edu/geometry-of-music.html">Dmitri Tymoczko — A Geometry of Music (Oxford UP, 2011)</a></li>
+<li><a href="https://www.musictheory.net/lessons/31">musictheory.net — Voice Leading</a></li>
+<li><a href="https://www.cambridge.org/core/books/music-and-probability/7B9B2697F0C4BDEE2C89BB05C87E4C2F">David Temperley — Music and Probability (MIT Press, 2007)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Voice_leading">Wikipedia — Voice Leading</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="algo-06-chord-progressions.htm">Part 6: Generating Chord Progressions</a> - the progressions that voice leading operates on</li>
+<li><a href="algo-05-harmony-fundamentals.htm">Part 5: Harmony Fundamentals</a> - why parallel fifths are specifically problematic</li>
+<li><a href="algo-11-putting-it-together.htm">Part 11: Putting It All Together</a> - the voiced chord output drives three SuperWave voices</li>
+<li><a href="elektron-12-mnm-superwave.htm">Monomachine SuperWave</a> - the three-voice synthesis engine</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

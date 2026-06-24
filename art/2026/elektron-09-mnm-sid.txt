@@ -1,0 +1,286 @@
+Elektron Synthesis - Part 9: Monomachine SID Engine
+2026-01-01
+
+
+The Monomachine's SID engine emulates the MOS6581 and MOS8580 SID chips — the sound
+generators in Commodore 64 computers. The SID chip defined a generation of computer
+music: its three oscillators with triangle, sawtooth, square (with variable pulse width),
+and noise waveforms, its hardware ring modulation and hard sync between oscillators,
+and its multimode resonant filter created a uniquely expressive analogue-digital hybrid
+architecture. The Monomachine exposes the SID model as a full synthesiser voice.
+
+
+What You Will Learn
+
+
+The MOS6581/8580 SID chip architecture: oscillators, filter, envelope
+Variable pulse width square waves in Pd
+Ring modulation between oscillators (SID-style)
+Hard sync: resetting one oscillator's phase from another
+The SID 4-pole multimode filter (LP, BP, HP with shared resonance)
+Monomachine SID parameter mapping to Pd receivers
+
+
+SID Chip Architecture
+
+
+The original SID chip (used in C64 from 1982) has three "voices", each with:
+
+
+
+One oscillator: selectable between triangle, sawtooth, square (variable pulse width), and noise. Multiple waveforms can be combined, though the combined outputs are ANDed (not summed), which produces characteristic gritty textures.
+Ring modulation input from the previous voice's oscillator (OSC1 rings OSC3, OSC2 rings OSC1, OSC3 rings OSC2)
+Hard sync input (same ring as ring mod)
+ADSR amplitude envelope (8-bit precision per stage)
+
+
+
+One shared filter with:
+
+
+
+Cutoff (0–2047 values → approx 30 Hz to 12 kHz, nonlinear)
+Resonance (0–15 → 4-bit)
+Filter route: each voice independently routable through the filter
+Filter mode: LP, HP, BP, or notch (any combination of LP+HP+BP)
+
+
+
+The Monomachine SID engine exposes all of this as a full synthesiser voice. The MNM
+uses all three SID oscillators for a single track voice, layering them for thick sounds.
+
+
+SID Waveforms in Pd
+
+Triangle wave:
+
+
+[phasor~ $freq]        ; 0 to 1 ramp
+|
+[*~ 2]
+|
+[-~ 1]                 ; -1 to +1 ramp
+|
+[abs~]                 ; 0 to 1 triangle (folded)
+|
+[*~ 2]
+|
+[-~ 1]                 ; -1 to +1 centred triangle
+
+
+Sawtooth:
+
+
+[phasor~ $freq]
+|
+[*~ 2]
+|
+[-~ 1]                 ; -1 to +1 sawtooth
+
+
+Square wave with variable pulse width (PW):
+
+
+[phasor~ $freq]
+|
+[ $pw]                ; 0 or 1 when phase crosses pulse width threshold
+|
+[*~ 2]
+|
+[-~ 1]                 ; -1 to +1 square
+
+; pw=0.5 = 50% duty cycle (classic square)
+; pw=0.1 = narrow pulse (thin, nasal)
+; pw=0.9 = wide pulse (similar to narrow, symmetric waveform)
+
+
+Noise (SID-style 23-bit LFSR):
+
+
+The SID chip uses a 23-bit linear feedback shift register (LFSR) clocked by the
+oscillator phase accumulator. This produces a pseudo-random noise stream at the
+oscillator's "frequency" (determining how often new noise values appear). In Pd,
+approximate with lowpass-filtered white noise with a cutoff that tracks the oscillator
+frequency:
+
+
+
+[noise~]
+|
+[lop~ $freq * 0.5]     ; LFSR noise character: filtered at ~half oscillator freq
+                        ; gives the characteristic "lo-fi" SID noise texture
+
+
+For a closer approximation, use a [samphold~] clocked by the oscillator:
+
+
+[phasor~ $freq]
+|
+[edge~]                ; fires on each rising edge (once per cycle)
+|
+[samphold~]            ← [noise~]   ; sample white noise once per oscillator cycle
+
+
+Multiple Waveforms AND'd
+
+
+The SID chip's unusual feature is that when multiple waveforms are selected
+simultaneously, they are ANDed (bitwise) rather than summed. At the digital level,
+this means multiplying the already quantised waveform values. At audio rate in Pd,
+approximate AND by multiplication:
+
+
+
+; AND approximation via multiplication (both waveforms -1 to +1):
+triangle_wave  → [*~ 0.5][+~ 0.5]    ; shift to 0–1
+square_wave    → [*~ 0.5][+~ 0.5]
+
+[*~]   ; multiply both 0–1 signals
+|
+[*~ 2]
+|
+[-~ 1]                               ; shift back to -1 to +1
+
+
+
+Triangle+square produces a staircase wave. Sawtooth+triangle produces a waveform
+tilted toward zero. These combinations are the source of many classic C64 timbres.
+
+
+Ring Modulation
+
+
+SID ring modulation multiplies a voice's triangle waveform by the oscillator output
+of the previous voice (the oscillator only — not its envelope). This creates sum and
+difference frequency sidebands without affecting the modulator voice's own output:
+
+
+
+; Ring mod: osc1 carrier × osc3_oscillator (raw, no envelope)
+[triangle_osc_1]      ; carrier triangle
+|
+[*~] ← [triangle_osc_3_raw]   ; modulator (osc3, no envelope)
+|
+ring_mod_output
+
+; Mix with unmodulated carrier based on RING amount:
+carrier × (1-ring) + ring_mod_output × ring
+
+
+Hard Sync
+
+
+Hard sync resets the slave oscillator's phase to zero every time the master oscillator
+completes a cycle. This locks the fundamental period to the master while the slave's
+frequency determines the harmonic content — producing the characteristic "ripping"
+sync sound when the slave is tuned above the master:
+
+
+
+; Hard sync: reset slave phase when master crosses zero
+
+[phasor~ $master_freq]
+|
+[edge~]                ; fires on each rising edge of master
+|
+[bang]
+→ [phasor~ $slave_freq] reset   ; force slave phase to 0
+
+; In Pd, [phasor~] cannot be reset externally with sample accuracy.
+; Approximate: drive slave as [osc~] and send a phase-reset message:
+; [osc~] does not support sample-accurate sync either.
+
+; Accurate implementation requires a C external or [else] library's
+; [sync~] or [vcf~] objects. For a vanilla approximation:
+; trigger a new [osc~] with initial phase 0 on each master edge —
+; causes a click, but approximates the sound.
+
+
+The SID Filter
+
+
+The SID filter is a 4-pole OTA (Operational Transconductance Amplifier) filter with
+a characteristic nonlinear saturation that makes it sound distinctly different from
+a textbook Moog ladder or state-variable filter. The cutoff frequency is set
+by a current controlled by the cutoff parameter — this is exponential in the original
+hardware:
+
+
+
+; SID filter approximation (4-pole lowpass using cascade of 1-pole stages):
+
+; Map cutoff (0–1 normalised) to Hz:
+; SID 6581: Fc ≈ 245 × (cutoff^1.5) kHz range nonlinear
+; Approximation: Fc_hz = 30 × 10^(cutoff × 2.6)  (30 Hz to 12 kHz)
+
+[r $0-cutoff]
+|
+[expr 30 * pow(10, $f1 * 2.6)]   ; nonlinear Hz mapping
+|
+→ $fc_hz
+
+; Four cascaded 1-pole sections:
+[lop~ $fc_hz]
+|
+[lop~ $fc_hz]
+|
+[lop~ $fc_hz]
+|
+[lop~ $fc_hz]   → LP output
+
+; For BP: take 2nd stage output
+; For HP: input - LP output
+; Mix with RES creates resonance (feedback in original SID):
+; SID resonance is built into the OTA nonlinearity — approximated with
+; mild positive feedback before the 4 poles, but keep gain 
+
+Monomachine SID Parameters
+
+
+KnobNameFunction
+OSC1 WAVEWaveform select for oscillator 1tri, saw, sqr, noi, combinations
+OSC2 WAVEWaveform select for oscillator 2same options
+OSC3 WAVEWaveform select for oscillator 3same options
+PULSEPulse width for square oscillators0–1
+RINGRing modulation depth0–1
+SYNCHard sync enableon/off
+CUTOFFFilter cutoff0–1 (nonlinear)
+RESFilter resonance0–1 (4-bit original)
+MODEFilter mode: LP, BP, HP, notchcombination flags
+
+
+
+Plus the standard MNM ADSR envelope and LFO (applied to pitch, pulse width, and
+filter cutoff independently).
+
+
+Characteristic SID Sounds in Pd
+
+
+SoundOsc typeFilterNotes
+Bass leadSawtoothLP, Fc low, Res 0.6Classic C64 bass
+ArpeggioSquare PW=0.5LP, Fc midFast arpeggio in sequencer
+Lead melodyTriangle + square ANDHP, Fc midBright, nasal lead
+Noise drumsNoiseLP, Fc lowShort ADSR, kick-like
+Sync bassSawtooth + syncLP, Fc env sweepAggressive sync sound
+
+
+Summary
+
+
+The Monomachine SID engine exposes all the key elements of the MOS6581/8580 SID chip:
+four oscillator waveforms (triangle, sawtooth, square with variable pulse width, and
+LFSR noise), AND-combination of multiple waveforms, ring modulation between voices,
+hard sync, and the characteristic 4-pole OTA filter with LP/BP/HP/notch modes.
+In Pd, implement each waveform from [phasor~], approximate hard sync
+with phase-reset messages, and build the filter as four cascaded [lop~]
+with mild feedback for resonance.
+
+
+See Also
+
+
+Monomachine VO Engine - 2-op FM, the MNM's next synthesis engine
+Machinedrum and Monomachine Architecture - the overall engine list and p-lock system
+Filters in C - the theory behind the SID 4-pole filter implementation
+

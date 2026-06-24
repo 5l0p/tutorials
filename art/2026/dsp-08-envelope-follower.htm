@@ -1,0 +1,337 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>DSP - Part 8: Envelope Follower & Parameter Smoothing</title>
+    <meta name="description" content="Peak and RMS envelope detection, attack/release timing with exponential coefficients, and one-pole smoothers to eliminate zipper noise on parameter changes.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="dsp-08-envelope-follower.txt">plain/text</a> | <i>2026-09-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a></i>
+        <h2>DSP - Part 8: Envelope Follower & Parameter Smoothing</h2>
+        <p>
+An envelope follower extracts the slowly-varying amplitude contour from an audio signal.
+It is used as a building block in compressors, gates, auto-wah effects, and ducking
+systems. Related is the one-pole smoother, which eliminates the clicks (zipper noise)
+that occur when a parameter changes abruptly. This article covers both: the math, the
+C implementation, and the timing formulas that convert milliseconds into filter
+coefficients.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How peak and RMS envelope detection work and when to use each</li>
+<li>How to derive attack and release coefficients from millisecond timing values</li>
+<li>A complete C implementation of an envelope follower with separate attack and release</li>
+<li>How one-pole smoothers eliminate zipper noise on parameter changes</li>
+<li>Block-level parameter smoothing: interpolating a target value over a block</li>
+<li>Practical timing values for compressors, gates, and auto-wah</li>
+</ul>
+
+<h3>The One-Pole Lowpass as an Envelope Smoother</h3>
+
+<p>
+The simplest envelope follower is a first-order (one-pole) lowpass filter applied to the
+rectified input signal. The one-pole filter has a single coefficient <code>c</code> that
+determines how quickly it follows changes:
+</p>
+
+<pre>
+output[n] = c * input[n] + (1 - c) * output[n-1]
+</pre>
+
+<p>
+This is an exponentially-weighted running average. When <code>c</code> is close to 1,
+the output tracks the input closely (fast response). When <code>c</code> is close to 0,
+the output is sluggish (slow response).
+</p>
+
+<p>
+Converting a desired time constant in milliseconds to a coefficient:
+</p>
+
+<pre>
+#include &lt;math.h&gt;
+
+#define SAMPLE_RATE 48000
+
+/* time_ms: time constant in milliseconds.
+   Returns the one-pole coefficient for that time constant. */
+float time_to_coeff(float time_ms) {
+    /* One-pole response is -60 dB (exp(-1)) in 'time_ms' milliseconds. */
+    float time_s = time_ms / 1000.0f;
+    return expf(-1.0f / (time_s * (float)SAMPLE_RATE));
+}
+
+/* Equivalently: exp(-2*pi*fc/fs) where fc = 1/(2*pi*time_s) */
+</pre>
+
+<p>
+The coefficient is derived from the 1/e point of an exponential decay. At the time
+constant the envelope has decayed to 1/e ≈ 36.8% of its starting value - equivalent
+to -8.7 dB. This is the standard definition used in all analogue and digital compressor
+attack/release specifications.
+</p>
+
+<h3>Peak Envelope Follower</h3>
+
+<p>
+A peak follower rectifies the input (takes the absolute value) and then applies the
+one-pole smoother. Separate attack and release coefficients let the follower respond
+quickly to sudden increases (short attack) while falling back slowly (long release):
+</p>
+
+<pre>
+typedef struct {
+    float  attack_coeff;   /* close to 1.0 = slow, close to 0.0 = fast */
+    float  release_coeff;
+    float  env;            /* current envelope value */
+} PeakFollower;
+
+void peak_init(PeakFollower *p, float attack_ms, float release_ms) {
+    p-&gt;attack_coeff  = time_to_coeff(attack_ms);
+    p-&gt;release_coeff = time_to_coeff(release_ms);
+    p-&gt;env = 0.0f;
+}
+
+float peak_process(PeakFollower *p, float x) {
+    float abs_x = fabsf(x);
+    float c = (abs_x &gt; p-&gt;env) ? p-&gt;attack_coeff : p-&gt;release_coeff;
+    p-&gt;env = c * p-&gt;env + (1.0f - c) * abs_x;
+    return p-&gt;env;
+}
+
+void peak_render(PeakFollower *p, const float *in,
+                 float *env_out, int n) {
+    for (int i = 0; i &lt; n; i++)
+        env_out[i] = peak_process(p, in[i]);
+}
+</pre>
+
+<p>
+Some implementations swap the coefficient direction: they apply the attack coefficient
+when the input is rising and the release coefficient when it is falling. Others use a
+level comparator with hysteresis. The formula above is correct for the standard
+analogue-style attack/release model.
+</p>
+
+<h3>RMS Envelope Follower</h3>
+
+<p>
+Peak detection is fast but susceptible to short transients. RMS (root mean square)
+detection averages the squared signal over a window, giving a measure that corresponds
+better to perceived loudness. The steps are: square, low-pass filter, square root.
+</p>
+
+<pre>
+typedef struct {
+    float  coeff;   /* from time_to_coeff */
+    float  state;   /* running sum of x^2 (filtered) */
+} RMSFollower;
+
+void rms_init(RMSFollower *r, float window_ms) {
+    r-&gt;coeff = time_to_coeff(window_ms);
+    r-&gt;state = 0.0f;
+}
+
+float rms_process(RMSFollower *r, float x) {
+    /* One-pole lowpass on x^2 */
+    r-&gt;state = r-&gt;coeff * r-&gt;state + (1.0f - r-&gt;coeff) * x * x;
+    return sqrtf(r-&gt;state);
+}
+</pre>
+
+<p>
+Typical window for loudness measurement: 50–300 ms. Short windows (5–10 ms) give faster
+response but more variance. The ITU-R BS.1770 loudness standard uses a 400 ms K-weighted
+RMS, but for dynamics processing (compressors) 30–100 ms is common.
+</p>
+
+<h3>Converting Envelope to dB</h3>
+
+<p>
+A compressor operates on the level in dB. Converting from the linear envelope to dB:
+</p>
+
+<pre>
+float lin_to_db(float x) {
+    if (x &lt;= 1e-10f) return -200.0f;
+    return 20.0f * log10f(x);
+}
+
+float db_to_lin(float db) {
+    return powf(10.0f, db / 20.0f);
+}
+</pre>
+
+<h3>One-Pole Parameter Smoother</h3>
+
+<p>
+When a parameter (filter cutoff, gain, pan) changes abruptly - for example when the user
+moves a slider - the jump in the audio signal causes a click or zipper noise audible as
+a high-frequency burst. The fix is to interpolate the parameter smoothly from its old
+value to its new value using a one-pole lowpass.
+</p>
+
+<pre>
+typedef struct {
+    float value;   /* current smoothed value */
+    float coeff;   /* one-pole coefficient */
+} Smoother;
+
+void smoother_init(Smoother *s, float initial_value, float time_ms) {
+    s-&gt;value = initial_value;
+    s-&gt;coeff = time_to_coeff(time_ms);
+}
+
+/* Call once per sample to advance the smoother toward target. */
+float smoother_tick(Smoother *s, float target) {
+    s-&gt;value = s-&gt;coeff * s-&gt;value + (1.0f - s-&gt;coeff) * target;
+    return s-&gt;value;
+}
+</pre>
+
+<p>
+A smoothing time of 5–20 ms is inaudible for most parameters. For gain automation a
+1–5 ms smoother is sufficient. For filter cutoff sweeps, 1 ms prevents clicks but lets
+the envelope drive the filter at useful rates.
+</p>
+
+<h3>Block-Level Parameter Smoothing</h3>
+
+<p>
+For efficiency, evaluate the smoother once per block and linearly interpolate within the
+block rather than calling <code>smoother_tick</code> 48000 times per second:
+</p>
+
+<pre>
+void apply_gain_smoothed(float *buf, int n,
+                         float gain_start, float gain_end) {
+    float step = (gain_end - gain_start) / (float)n;
+    float g    = gain_start;
+    for (int i = 0; i &lt; n; i++, g += step)
+        buf[i] *= g;
+}
+
+/* In the callback: */
+void audio_callback(AudioEngine *e, float *out, int n) {
+    float gain_target = atomic_load(&amp;e-&gt;gain_param);
+    float gain_start  = smoother_tick(&amp;e-&gt;gain_smooth, gain_target);
+    float gain_end    = smoother_tick(&amp;e-&gt;gain_smooth, gain_target);
+    apply_gain_smoothed(out, n, gain_start, gain_end);
+}
+</pre>
+
+<h3>Practical Timing Values</h3>
+
+<pre>
+Parameter              Attack       Release
+-----------            ------       -------
+Compressor (peak)       1-10 ms     50-500 ms
+Compressor (RMS)       10-50 ms    100-1000 ms
+Gate                    1-5 ms      50-500 ms
+Envelope follower       5-30 ms     50-300 ms
+Gain smoother          1-5 ms      1-5 ms
+Filter cutoff          1-10 ms     1-10 ms
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+An envelope follower uses a one-pole filter with separate coefficients for
+attack and release. The coefficient for a given time constant τ in milliseconds
+is <code>exp(-1 / (sr · τ / 1000))</code>. Peak detection follows the signal
+immediately on attack and decays on release. RMS detection squares the input,
+filters, then square-roots for a perceptually smoother result. The same one-pole
+structure smooths parameter changes — interpolate from current to target over
+a block to eliminate zipper noise.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://www.eecs.qmul.ac.uk/~josh/documents/2012/GiannoulisMassbergReiss-dynamicrangecompression-JAES2012.pdf">Digital Dynamic Range Compressor Design - Giannoulis, Massberg, Reiss (JAES 2012)</a></li>
+<li><a href="https://ccrma.stanford.edu/~jos/filters/One_Pole.html">One-Pole Filters - Julius O. Smith III</a></li>
+<li><a href="https://www.musicdsp.org/en/latest/Analysis/97-env-follower.html">Envelope follower - musicdsp.org</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="dsp-09-compressor.htm">Dynamics: Compressor</a></li>
+<li><a href="dsp-10-gate.htm">Dynamics: Gate</a></li>
+<li><a href="dsp-05-biquad.htm">Biquad Filters</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

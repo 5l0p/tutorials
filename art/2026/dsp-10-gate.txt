@@ -1,0 +1,264 @@
+DSP - Part 10: Dynamics: Gate
+2026-09-03
+
+
+A noise gate is the dynamic-range processor that silences a signal when it falls below
+a threshold. It is the opposite of a compressor: where a compressor reduces loud signals,
+a gate reduces quiet ones. Practical uses include removing mic bleed between drum hits,
+cutting amplifier hiss during silent passages, and gating sustain on synthesiser pads.
+This article builds a complete gate in C with hysteresis and a hold counter to avoid
+chatter on borderline signals.
+
+
+What You Will Learn
+
+
+How a noise gate state machine works: closed, opening, open, closing
+Threshold detection with hysteresis to prevent rapid open/close chatter
+The hold counter: keeping the gate open for a minimum time after the signal falls below threshold
+Attack and release smoothing of the gate gain signal
+How to wire a gate and compressor in series
+The expander variant: applying partial rather than full attenuation below threshold
+
+
+Gate States
+
+
+A gate operates as a simple state machine with three states:
+
+
+
+CLOSED: signal is below the open threshold; output is attenuated.
+OPEN: signal is above the close threshold; output passes through.
+HOLD: signal has dropped below the open threshold but the hold timer
+    has not expired; gate stays open temporarily to avoid premature closure.
+
+
+Hysteresis
+
+
+A gate with a single threshold chatters: as the signal hovers near the threshold,
+it opens and closes many times per second, producing a rapid clicking. The fix is
+hysteresis: use a higher threshold to open the gate and a lower threshold to
+close it. The gap between the two eliminates chatter.
+
+
+
+open_threshold  = threshold_db
+close_threshold = threshold_db - hysteresis_db
+
+
+
+Typical hysteresis is 3–6 dB. The gate opens when the signal rises above
+open_threshold and does not close again until the signal drops below
+close_threshold.
+
+
+The Hold Counter
+
+
+Even with hysteresis, a drum hit or syllable may briefly drop below the close threshold
+mid-event. A hold timer keeps the gate open for a fixed period after the signal
+first drops below the close threshold, preventing premature closure on natural pauses
+within an event.
+
+
+
+hold_samples = (int)(hold_ms * 0.001f * SAMPLE_RATE)
+
+
+Gate Implementation
+
+
+#include <math.h>
+#include <stdint.h>
+
+#define SAMPLE_RATE 48000
+
+typedef enum { GATE_CLOSED, GATE_HOLD, GATE_OPEN } GateState;
+
+typedef struct {
+    float      open_threshold_db;
+    float      close_threshold_db;
+    int        hold_samples;   /* samples to hold open after drop */
+    float      attack_coeff;
+    float      release_coeff;
+    float      floor_db;       /* attenuation when closed (e.g. -80 dB) */
+
+    /* State */
+    GateState  state;
+    int        hold_counter;
+    float      env;            /* peak envelope, linear */
+    float      gain;           /* current gate gain, linear */
+} Gate;
+
+static float time_to_coeff(float ms) {
+    return expf(-1.0f / (ms * 0.001f * (float)SAMPLE_RATE));
+}
+
+static float lin_to_db(float x) {
+    if (x <= 1e-10f) return -200.0f;
+    return 20.0f * log10f(x);
+}
+
+static float db_to_lin(float db) {
+    return powf(10.0f, db / 20.0f);
+}
+
+void gate_init(Gate *g,
+               float threshold_db,
+               float hysteresis_db,
+               float attack_ms,
+               float release_ms,
+               float hold_ms,
+               float floor_db) {
+    g->open_threshold_db  = threshold_db;
+    g->close_threshold_db = threshold_db - hysteresis_db;
+    g->hold_samples       = (int)(hold_ms * 0.001f * SAMPLE_RATE);
+    g->attack_coeff       = time_to_coeff(attack_ms);
+    g->release_coeff      = time_to_coeff(release_ms);
+    g->floor_db           = floor_db;
+    g->state              = GATE_CLOSED;
+    g->hold_counter       = 0;
+    g->env                = 0.0f;
+    g->gain               = db_to_lin(floor_db);
+}
+
+
+Per-Sample Gate Processing
+
+
+float gate_process(Gate *g, float x) {
+    /* Peak envelope detection */
+    float abs_x = fabsf(x);
+    float env_c = (abs_x > g->env) ? g->attack_coeff : g->release_coeff;
+    g->env = env_c * g->env + (1.0f - env_c) * abs_x;
+    float level_db = lin_to_db(g->env);
+
+    /* State machine */
+    switch (g->state) {
+        case GATE_CLOSED:
+            if (level_db >= g->open_threshold_db)
+                g->state = GATE_OPEN;
+            break;
+
+        case GATE_OPEN:
+            if (level_db < g->close_threshold_db) {
+                g->state       = GATE_HOLD;
+                g->hold_counter = g->hold_samples;
+            }
+            break;
+
+        case GATE_HOLD:
+            if (level_db >= g->open_threshold_db) {
+                g->state = GATE_OPEN;  /* Signal recovered, stay open */
+            } else if (--(g->hold_counter) <= 0) {
+                g->state = GATE_CLOSED;
+            }
+            break;
+    }
+
+    /* Target gain: open = 1.0 (0 dBFS), closed = floor_db */
+    float target_gain = (g->state != GATE_CLOSED)
+                        ? 1.0f
+                        : db_to_lin(g->floor_db);
+
+    /* Smooth gain with attack/release */
+    float gain_c = (target_gain > g->gain)
+                   ? g->attack_coeff
+                   : g->release_coeff;
+    g->gain = gain_c * g->gain + (1.0f - gain_c) * target_gain;
+
+    return x * g->gain;
+}
+
+void gate_render(Gate *g, const float *in, float *out, int n) {
+    for (int i = 0; i < n; i++)
+        out[i] = gate_process(g, in[i]);
+}
+
+
+Practical Parameter Values
+
+
+Application         Threshold  Hysteresis  Attack   Release   Hold
+-----------         ---------  ----------  ------   -------   ----
+Drum overhead gate    -30 dBFS    6 dB      1 ms    200 ms    50 ms
+Vocal gate            -40 dBFS    4 dB      5 ms    300 ms   100 ms
+Guitar amp noise      -50 dBFS    3 dB      1 ms    500 ms   200 ms
+Synth pad gate        -20 dBFS    6 dB     10 ms   1000 ms   500 ms
+
+
+Integrating Gate and Compressor
+
+
+In a typical signal chain the gate comes first (to remove noise floor before
+compression), followed by the compressor. Using the structs from this and the previous
+article:
+
+
+
+typedef struct {
+    Gate        gate;
+    Compressor  comp;
+} DynamicsChain;
+
+void dynamics_render(DynamicsChain *d, const float *in,
+                     float *out, int n) {
+    /* Gate first: removes noise so compressor doesn't act on it */
+    float tmp[512];
+    gate_render(&d->gate, in, tmp, n);
+
+    /* Compressor second: controls dynamics of the signal */
+    compressor_render(&d->comp, tmp, out, n);
+}
+
+
+Expander Variant
+
+
+An expander is a gate with a ratio less than infinity: instead of fully silencing
+the signal below threshold, it reduces the level by a ratio. A ratio of 1:2 means that
+for every 2 dB the signal drops below threshold, the output drops an extra 1 dB (total
+3 dB). To implement, replace the binary open/closed gain with the gain computer from the
+compressor article, using an inverted gain curve:
+
+
+
+/* Downward expansion gain computer.
+   Returns gain reduction in dB for a signal below threshold. */
+float expander_gain(float level_db, float threshold_db, float ratio) {
+    float x = level_db - threshold_db;
+    if (x >= 0.0f) return 0.0f;  /* above threshold: no action */
+    /* Gain reduction: expand the range below threshold */
+    return x - x * ratio;        /* e.g. ratio=2: 2x expansion */
+}
+
+
+Summary
+
+
+A noise gate uses an envelope follower and a state machine. The gate opens when
+the signal exceeds the open threshold, holds for a minimum time, then closes
+when it falls below the close threshold. Hysteresis (separate open and close
+thresholds) prevents chatter. Attack and release smoothing avoids clicks. An
+expander is a gate with ratio less than infinity — it attenuates rather than
+silences. Place the gate before the compressor in a signal chain so that noise
+does not trigger compression.
+
+
+Further Reading
+
+
+Digital Dynamic Range Compressor Design - Giannoulis et al.
+Gate algorithms - musicdsp.org
+Expanders - Julius O. Smith III
+
+
+See Also
+
+
+Dynamics: Compressor
+Envelope Follower & Parameter Smoothing
+The Audio Callback Model
+

@@ -1,0 +1,318 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>openFrameworks - Part 1: What Is openFrameworks?</title>
+    <meta name="description" content="An introduction to openFrameworks: what it is, how it compares to Processing and p5.js, and why C++ is a compelling choice for creative coding.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="cpp, openframeworks, graphics">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="of-01-what-is-of.txt">plain/text</a> | <i>2026-06-09</i> | <i><a href="../../cpp.htm">cpp</a>, <a href="../../openframeworks.htm">openframeworks</a>, <a href="../../graphics.htm">graphics</a></i>
+        <h2>openFrameworks - Part 1: What Is openFrameworks?</h2>
+        <p>
+openFrameworks (oF) is an open-source C++ toolkit designed for creative coding. Rather than
+being a framework that dictates your architecture, it is better understood as a thin, friendly
+layer over the operating system's graphics, audio, and input APIs. You get real-time OpenGL
+rendering, low-latency audio, mouse and keyboard input, cross-platform file I/O, and a large
+ecosystem of community addons - all accessible through a consistent, approachable C++ API.
+This article explains what oF is, where it sits relative to alternatives like Processing and
+p5.js, and why learning it through creative coding is a productive path into C++.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What openFrameworks is: a C++ creative coding toolkit, not a framework</li>
+<li>What oF provides out of the box: OpenGL rendering, audio, input, file I/O, addons</li>
+<li>How oF compares to Processing, p5.js, and SFML</li>
+<li>The ofApp lifecycle: setup, update, draw, and the event callbacks</li>
+<li>The addon ecosystem: how community addons extend oF for computer vision, OSC, GUI, and more</li>
+<li>Why C++ creative coding is a productive path to real-time audio and graphics programming</li>
+</ul>
+
+<h3>The Philosophy: A Thin Layer</h3>
+
+<p>
+The official description on openframeworks.cc calls it "a creative coding toolkit." The key
+word is <i>toolkit</i>, not framework. A framework typically owns your main loop, enforces a
+particular object model, and makes architectural decisions for you. openFrameworks hands you a
+clean <code>ofApp</code> class with virtual methods (<code>setup</code>, <code>update</code>,
+<code>draw</code>) and then largely gets out of your way.
+</p>
+
+<p>
+Under the hood, oF delegates to platform libraries that you would have to configure yourself
+in a bare C++ project:
+</p>
+
+<ul>
+  <li><b>Graphics:</b> OpenGL (via GLFW on desktop, EGL on embedded targets).</li>
+  <li><b>Audio:</b> ALSA or JACK on Linux, CoreAudio on macOS, WASAPI on Windows.</li>
+  <li><b>Window management:</b> GLFW for the cross-platform case, with platform-specific
+  backends available.</li>
+  <li><b>Fonts:</b> FreeType2, wrapped in <code>ofTrueTypeFont</code>.</li>
+  <li><b>Image loading:</b> FreeImage and the stb family of libraries.</li>
+  <li><b>Video:</b> GStreamer on Linux, AVFoundation on macOS, Media Foundation on Windows.</li>
+</ul>
+
+<p>
+The result is that a beginner can write a working interactive sketch in under twenty lines of
+C++ without knowing anything about OpenGL or ALSA. An expert can reach through the oF API to
+the raw platform layer whenever the abstraction is too coarse.
+</p>
+
+<h3>Comparison with Processing and p5.js</h3>
+
+<p>
+Processing (Java) and p5.js (JavaScript) are the most popular entry points for creative
+coding. They share oF's philosophy of making graphics approachable, and the conceptual model
+is deliberately similar: a <code>setup()</code> function that runs once, and a
+<code>draw()</code> function that runs every frame. If you already know Processing, reading oF
+code will feel familiar within minutes.
+</p>
+
+<p>
+The differences are in execution model and capability:
+</p>
+
+<ul>
+  <li><b>Performance:</b> C++ compiles to native machine code. A tight audio DSP loop or a
+  particle system with millions of elements runs orders of magnitude faster than the JVM or
+  V8 can manage. This matters for real-time audio, physical simulations, and machine learning
+  inference at the edge.</li>
+  <li><b>Memory control:</b> You decide when memory is allocated and freed. This removes
+  garbage-collector pauses, which are unacceptable in hard real-time audio code.</li>
+  <li><b>Access to hardware:</b> MIDI, OSC, serial ports, GPU compute shaders, webcam at full
+  resolution - oF either wraps these directly or has a community addon that does.</li>
+  <li><b>Ecosystem:</b> Any C or C++ library in existence - OpenCV, libfft, Bullet physics,
+  libtorch - can be linked into an oF project.</li>
+</ul>
+
+<p>
+The trade-off is complexity. C++ has a steeper learning curve than Java or JavaScript. You
+will encounter header files, compilation errors, memory bugs, and build system friction that do
+not exist in Processing. The bet this series makes is that the creative context makes that
+friction more tolerable: you are learning pointers because you are building a sound visualiser,
+not because a textbook told you to.
+</p>
+
+<h3>The ofApp Structure</h3>
+
+<p>
+Every openFrameworks application is a subclass of <code>ofBaseApp</code>, conventionally named
+<code>ofApp</code>. The project generator creates two files for you: <code>ofApp.h</code>
+(the declaration) and <code>ofApp.cpp</code> (the definitions). A minimal skeleton looks like
+this:
+</p>
+
+<pre>
+// ofApp.h
+#pragma once
+#include &lt;ofMain.h&gt;
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void update();
+    void draw();
+};
+</pre>
+
+<pre>
+// ofApp.cpp
+#include "ofApp.h"
+
+void ofApp::setup() {
+    ofSetFrameRate(60);
+    ofBackground(20, 20, 20);
+}
+
+void ofApp::update() {
+    // game logic, physics, audio analysis
+}
+
+void ofApp::draw() {
+    ofSetColor(255, 100, 50);
+    ofDrawCircle(ofGetWidth() / 2, ofGetHeight() / 2, 80);
+}
+</pre>
+
+<pre>
+// main.cpp  (also generated for you)
+#include &lt;ofMain.h&gt;
+#include "ofApp.h"
+
+int main() {
+    ofSetupOpenGL(1280, 720, OF_WINDOW);
+    ofRunApp(new ofApp());
+}
+</pre>
+
+<p>
+That is all you need to get a coloured circle on screen at 60 fps. The <code>main.cpp</code>
+creates an OpenGL window, hands control to the oF event loop, which repeatedly calls your
+<code>update()</code> and <code>draw()</code> methods until the window is closed.
+</p>
+
+<h3>The Addon Ecosystem</h3>
+
+<p>
+openFrameworks has a first-party set of bundled addons (prefixed <code>ofx</code>) that ship
+with every download: <code>ofxGui</code>, <code>ofxOSC</code>, <code>ofxAssimpModelLoader</code>,
+<code>ofxXmlSettings</code>, <code>ofxOpenCv</code>, and a handful of others. Beyond those,
+the community maintains hundreds of addons catalogued at
+<a href="https://ofxaddons.com">ofxaddons.com</a>. Installing an addon is usually a matter of
+cloning a repository into the <code>addons/</code> folder of the oF distribution and
+re-running the project generator.
+</p>
+
+<p>
+This is different from a package manager like npm or Cargo. There is no central registry with
+versioned, audited packages. Instead you get GitHub repositories of varying quality and
+maintenance status. As you grow as an oF developer you will learn which addons are well
+maintained and which are abandoned. The bundled addons are always a safe starting point.
+</p>
+
+<h3>Why C++ for Creative Coding?</h3>
+
+<p>
+The pragmatic answer: when you need real-time audio DSP, millisecond-accurate MIDI, GPU
+compute, or integration with vision libraries like OpenCV, C++ is simply the language where
+all those libraries live. Python wrappers exist for many of them, but wrappers add overhead and
+often lag behind the native API.
+</p>
+
+<p>
+The pedagogical answer: creative coding gives you immediate visual and auditory feedback for
+every change you make. A bug in a particle system manifests as a visible glitch, not a silent
+wrong number in a spreadsheet. That feedback loop makes it easier to build intuition about
+memory, performance, and object lifetime than working through abstract exercises.
+</p>
+
+<p>
+openFrameworks 0.12.x, the version used throughout this series, targets C++17. You will use
+modern features - range-based for loops, <code>auto</code>, lambdas, smart pointers - alongside
+the low-level control that makes C++ valuable for real-time work.
+</p>
+
+<h3>What This Series Covers</h3>
+
+<p>
+The 25 articles in this series move from first principles to advanced topics:
+</p>
+
+<ul>
+  <li>Tutorials 1–8: Setup, lifecycle, 2D drawing, images, fonts, input, and GUI controls.</li>
+  <li>Tutorials 9–12: Audio I/O, OSC, GLSL shaders, and 3D geometry.</li>
+  <li>Tutorials 13–14: Addons and external libraries (yaml-cpp).</li>
+  <li>Tutorials 15–20: Cross-platform builds - Linux, Windows, macOS, Android.</li>
+  <li>Tutorials 21–25: SDL2 as an alternative, OpenGL core profile, framebuffers,
+  compute shaders, and a complete audio-visual project.</li>
+</ul>
+
+<p>
+By the end you will have written a real-time audio visualiser that takes microphone input,
+computes an FFT on the GPU, and displays frequency data with a custom GLSL shader - all under
+your direct control, no black boxes.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+openFrameworks is a thin, consistent C++ layer over platform graphics, audio, and input APIs.
+It is not a game engine and not a framework — it is a toolkit you call into from an
+<code>ofApp</code> subclass with <code>setup()</code>, <code>update()</code>, and
+<code>draw()</code> methods. The addon ecosystem extends it with hundreds of community
+libraries for computer vision, networking, GUI, and hardware. Learning oF means learning
+real C++, real OpenGL, and real audio programming — without a framework hiding the details.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+  <li><a href="https://openframeworks.cc/about/">openFrameworks - About</a></li>
+  <li><a href="https://openframeworks.cc/documentation/">openFrameworks API Reference</a></li>
+  <li><a href="https://ofxaddons.com">ofxaddons.com - Community Addon Catalogue</a></li>
+  <li><a href="https://github.com/openframeworks/openFrameworks">openFrameworks on GitHub</a></li>
+  <li><a href="https://processing.org/overview/">Processing Overview (for comparison)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+  <li><a href="of-02-setup.htm">Setup &amp; Project Generator</a></li>
+  <li><a href="of-03-lifecycle.htm">The ofApp Lifecycle</a></li>
+  <li><a href="of-04-2d-drawing.htm">2D Drawing Primitives</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

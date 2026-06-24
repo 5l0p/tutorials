@@ -1,0 +1,253 @@
+Drums - Part 1: Electronic Drum Synthesis — Architecture and Approach
+2026-06-09
+
+
+Every classic drum machine — TR-808, TR-909, LinnDrum — synthesises its sounds from
+scratch using a small set of building blocks. No samples. Just oscillators, noise
+generators, filters, and envelopes. This series implements four voices (kick, snare,
+hi-hat, clap) in Pure Data, modelled on the Prok Drums synthesis engine, then
+assembles them into a sequenced drum machine.
+
+
+What You Will Learn
+
+
+Why synthesis outperforms sample playback for programmable drum machines
+The five building blocks present in every drum voice
+The extend-decay envelope: a 3-segment shape used throughout this series
+How "patches" work — parameter presets, not separate Pd files
+Setting up a reusable voice architecture in Pure Data with $0- namespacing
+
+
+Synthesis vs Sample Playback
+
+
+A sample-based drum machine plays back a recorded WAV file. The sound is fixed at
+record time. You can pitch-shift and time-stretch it, but the character is locked in.
+
+
+
+A synthesis-based drum machine generates audio from parameters. The same kick patch
+can sound like a 55 Hz sub-bass thud, a 90 Hz tight punch, or a 120 Hz short click —
+just by changing frequency and decay time. You can modulate those parameters in real
+time, automate them per step, and interpolate continuously between presets.
+
+
+
+For a modular or programmable instrument, synthesis is far more expressive. The cost
+is complexity: you need to understand what parameters exist and what they do.
+
+
+The Five Building Blocks
+
+
+Every drum voice in this series is built from some combination of:
+
+
+
+Tonal oscillators — [osc~], [phasor~], or [cos~]
+running at a specific frequency. In a kick, these produce the "body" tone. In a
+hi-hat, they produce the inharmonic metallic ring.
+
+Noise source — [noise~], often filtered and sometimes
+bit-crushed to a "SID" character. Noise provides the snap, sizzle, and
+breathiness that make percussion sound percussive rather than tonal.
+
+Pitch sweep — the frequency of tonal oscillators drops rapidly at the moment of
+attack. The 808 kick's characteristic "thud" is a 150 Hz sweep to 55 Hz in about
+100 ms. Without this sweep, kicks sound like sustained tones, not impacts.
+
+Amplitude envelope — a fast attack and exponential decay applied to each
+source independently. Different sources within one voice often have very different
+decay times: the transient click might be 2 ms; the sub sine might be 500 ms; the
+hi-hat sizzle might be 3000 ms.
+
+Filter — applied to noise to shape its spectrum (a lowpass makes a thud; a
+bandpass makes a crack; a highpass makes sizzle), and sometimes to the mixed
+signal for tonal shaping or mild resonance.
+
+
+The Extend-Decay Envelope
+
+
+The Prok Drums engine uses a 3-segment amplitude envelope throughout all four voices.
+It is more expressive than a simple exponential decay:
+
+
+
+amplitude
+1.0 ─┐
+     │ attack (0–10 ms)
+     ▼
+1.0 ─┬──── peak ────────────────────────────────
+     │ decay to ExtendLevel
+     ▼
+ExtendLevel ─────────────────────────── knee
+     │ hold for DecayTime × ExtendFactor
+     │
+     ▼ tail to 0
+0.0 ──────────────────────────────────────────── time
+
+
+
+The knee is a "hold" at a non-zero level, creating a shape that is fast initially
+(the snap) but lingers longer (the tail). Setting ExtendLevel to 0
+gives a plain exponential decay. Setting it to a high value creates a long flat
+sustain before the final release.
+
+
+
+Implement this in Pd with [vline~] using a 3-message sequence on trigger:
+
+
+
+; On trigger (bang):
+; 1. Jump to 0, then rise to 1 over attack time
+; 2. Decay from 1 to ExtendLevel over DecayTime
+; 3. Decay from ExtendLevel to 0 over DecayTime * ExtendFactor (delay = atk + decay)
+
+[vline~ messages]:
+  0 0,                              ; reset to 0
+  1 $atk,                           ; rise to 1 over attack
+  $extLvl $decay $atk,              ; fall to extend level, starting after atk
+  0 $tail $delay                    ; fall to 0 after the knee
+
+
+
+Where $tail = $decay * $extFactor and $delay = $atk + $decay.
+
+
+
+In PD code:
+
+
+
+; pre-compute: tail = decay * extFactor, delay = atk + decay
+[r $0-trigger]
+|
+[bang]
+|
+[pack 0 0 f f f f f f f f]   ; not practical; use [trigger] tree or a message-rate
+                                ; prep sub-patch instead
+
+; Simpler: use a [list] to pack the vline messages from receive values
+; See each voice article for the concrete PD implementation.
+
+
+
+The concrete vline wiring is shown in each voice article — the pattern is the same for
+every envelope in the series.
+
+
+The $0 Namespacing Pattern
+
+
+A drum machine runs multiple voice instances simultaneously. If two kick drums both
+use [send freq] and [receive freq], they share the same
+global name and interfere with each other.
+
+
+
+Pd's $0 prefix is a unique integer assigned to each patch instance at
+load time. Use it as a namespace prefix for all send/receive pairs:
+
+
+
+[r $0-trigger]   ; only receives triggers sent to THIS instance's trigger
+[s $0-freq]      ; only sends to THIS instance's frequency receiver
+
+
+
+When building the drum machine in Part 7, each voice is loaded as a subpatch and its
+$0-trigger is sent from the sequencer via [pd-send INSTANCEID-trigger].
+
+
+Patches Are Parameter Sets
+
+
+Throughout this series, "patch" means a named set of parameter values, not a different
+Pd file. One Pd file implements the full synthesis graph for a voice. Switching
+presets means sending a new set of values to all the $0- receivers.
+
+
+
+This is an important separation: the synthesis engine (the Pd file) is fixed; the
+character (the preset) is data. In Lua:
+
+
+
+local function loadPreset(presets, name)
+    local p = presets[name]
+    for param, value in pairs(p) do
+        pd.send(instanceID .. "-" .. param, value)
+    end
+end
+
+
+
+The XY pad then overrides a subset of those parameters in real time on top of the
+loaded preset — providing continuous exploration within and between preset characters.
+
+
+Voice Architecture in Pd
+
+
+Every voice in this series uses the same top-level layout:
+
+
+
+; --- VOICE TEMPLATE ---
+
+; Trigger input
+[r $0-trigger] → [bang] → fire all envelopes
+
+; Velocity scaling
+[r $0-velocity] → stored float, applied as final *~ before outlet
+
+; Parameters (received at message rate, applied on next trigger or immediately):
+[r $0-param1]  → [f] stored value
+[r $0-param2]  → [f]
+...
+
+; Signal graph — specific to each voice
+
+; Output
+[*~ velocity] → [outlet~]
+
+
+
+The voice is instantiated as a subpatch inside the drum machine's top-level patch.
+The parent patch sends to INSTANCE-trigger where INSTANCE is the value
+of $0 for that subpatch.
+
+
+Sequence of Articles
+
+
+Part 2 — Kick Drum: Two sines with pitch sweep, noise burst, transient click, distortion.
+Part 3 — Snare: Two sines, SID noise through dual filters, dual delay rattle.
+Part 4 — Hi-Hat: Six detuned square oscillators, 3-band filtering, open/closed via decay.
+Part 5 — Clap: Three noise sources, roll, MAIN/VERB envelope pair, reverb.
+Part 6 — Effects: Airwindows externals (tape saturation, vinyl EQ, lowpass) as per-channel inserts.
+Part 7 — The Machine: Sequencer, pattern storage, Lua UI, and all four voices assembled into a working drum machine.
+
+
+Summary
+
+
+Electronic drum synthesis builds percussive sounds from tonal oscillators with pitch
+sweeps, filtered noise, transient clicks, and multi-segment amplitude envelopes.
+The extend-decay pattern — attack, decay to a knee, hold, tail to zero — is the
+envelope shape used throughout this series. All parameters are named with $0-
+prefixes to namespace each voice instance. A "patch" is a Lua table of parameter
+values sent to an otherwise fixed Pd signal graph. Parts 2–5 implement one voice
+each; Part 6 adds effects; Part 7 assembles everything into a playable machine.
+
+
+See Also
+
+
+What Is libpd? - how to embed the Pd engine in a C host
+Biquad Filters - the filter theory behind the noise shaping in each voice
+Oscillators - phasor and sine oscillators used in the kick and snare
+

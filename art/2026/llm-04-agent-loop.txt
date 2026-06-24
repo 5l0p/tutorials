@@ -1,0 +1,378 @@
+LLM - Part 4: Building a Simple Agent Loop
+2026-06-13
+
+
+An agent is a program that uses a language model to decide what to do next, executes that
+decision, observes the result, and repeats until the task is complete. The previous article
+showed one iteration of this cycle. This article wraps it into a proper loop with
+termination conditions, maximum iteration guards, and structured error handling - and
+builds a simple file-system agent that can read and write files.
+
+
+What You Will Learn
+
+
+The think→act→observe cycle as a Go for loop with a maximum iteration guard
+An Agent type with system prompt, history, tool registry, and a Run() method
+How to detect the stop condition: finish_reason: "stop" with no tool calls
+Structured error handling: API errors, tool execution errors, and loop termination
+File-system tools: read file, write file, list directory
+Testing the agent with a task that requires multiple tool-call iterations
+
+
+
+The Think → Act → Observe Cycle
+
+
+Each iteration of the loop has three phases:
+
+
+
+Think - send the current conversation history to the model. The model produces a response: either text (the task is done or it needs to say something) or a set of tool calls.
+Act - execute each tool call your code receives. This is your code running, not the model's - the model only specifies what to call and with what arguments.
+Observe - append the tool results to the message history as role: "tool" messages, then loop back to Think.
+
+
+
+The loop terminates when finish_reason is "stop" (the model wrote
+a response without calling any tools), or when a maximum iteration count is reached.
+
+
+The Agent Type
+
+
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+)
+
+const apiURL = "http://localhost:8001/v1/chat/completions"
+const maxIterations = 20
+
+type Agent struct {
+    APIKey  string
+    Model   string
+    Tools   []Tool
+    History []Message
+}
+
+func NewAgent(apiKey, model, systemPrompt string, tools []Tool) *Agent {
+    return &Agent{
+        APIKey: apiKey,
+        Model:  model,
+        Tools:  tools,
+        History: []Message{
+            {Role: "system", Content: systemPrompt},
+        },
+    }
+}
+
+func (a *Agent) Run(userMessage string) (string, error) {
+    a.History = append(a.History, Message{Role: "user", Content: userMessage})
+
+    for i := 0; i < maxIterations; i++ {
+        resp, err := a.think()
+        if err != nil {
+            return "", fmt.Errorf("iteration %d think: %w", i, err)
+        }
+
+        if len(resp.Choices) == 0 {
+            return "", fmt.Errorf("no choices returned")
+        }
+
+        choice := resp.Choices[0]
+        a.History = append(a.History, choice.Message)
+
+        if choice.FinishReason == "stop" || len(choice.Message.ToolCalls) == 0 {
+            return choice.Message.Content, nil
+        }
+
+        if err := a.act(choice.Message.ToolCalls); err != nil {
+            return "", fmt.Errorf("iteration %d act: %w", i, err)
+        }
+    }
+
+    return "", fmt.Errorf("agent exceeded %d iterations without finishing", maxIterations)
+}
+
+
+The Think Step
+
+
+func (a *Agent) think() (*ChatResponse, error) {
+    req := ChatRequest{
+        Model:    a.Model,
+        Messages: a.History,
+        Tools:    a.Tools,
+    }
+
+    data, err := json.Marshal(req)
+    if err != nil {
+        return nil, err
+    }
+
+    r, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(data))
+    if err != nil {
+        return nil, err
+    }
+    r.Header.Set("Content-Type", "application/json")
+    r.Header.Set("Authorization", "Bearer "+a.APIKey)
+
+    resp, err := http.DefaultClient.Do(r)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("API %d: %s", resp.StatusCode, body)
+    }
+
+    var result ChatResponse
+    if err := json.Unmarshal(body, &result); err != nil {
+        return nil, fmt.Errorf("unmarshal: %w, body: %s", err, body)
+    }
+    return &result, nil
+}
+
+
+The Act Step
+
+
+func (a *Agent) act(calls []ToolCall) error {
+    for _, tc := range calls {
+        result, err := a.dispatch(tc.Function.Name, tc.Function.Arguments)
+        if err != nil {
+            // Don't abort the loop - return the error as a tool result
+            // so the model can handle it gracefully
+            result = fmt.Sprintf(`{"error": "%s"}`, err.Error())
+        }
+
+        a.History = append(a.History, Message{
+            Role:       "tool",
+            Content:    result,
+            ToolCallID: tc.ID,
+        })
+    }
+    return nil
+}
+
+
+
+Note that tool execution errors are returned to the model as JSON error objects rather
+than aborting the loop. The model can then decide to retry with different arguments,
+explain the failure to the user, or try a different approach. Hard-stopping the loop on
+every tool error makes agents brittle.
+
+
+File System Tools
+
+
+A practical set of tools for a coding agent: read a file, write a file, list a directory.
+
+
+
+func (a *Agent) dispatch(name, argsJSON string) (string, error) {
+    switch name {
+    case "read_file":
+        return toolReadFile(argsJSON)
+    case "write_file":
+        return toolWriteFile(argsJSON)
+    case "list_dir":
+        return toolListDir(argsJSON)
+    default:
+        return "", fmt.Errorf("unknown tool: %s", name)
+    }
+}
+
+func toolReadFile(argsJSON string) (string, error) {
+    var args struct {
+        Path string `json:"path"`
+    }
+    if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+        return "", err
+    }
+    data, err := os.ReadFile(args.Path)
+    if err != nil {
+        return "", err
+    }
+    return string(data), nil
+}
+
+func toolWriteFile(argsJSON string) (string, error) {
+    var args struct {
+        Path    string `json:"path"`
+        Content string `json:"content"`
+    }
+    if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+        return "", err
+    }
+    if err := os.WriteFile(args.Path, []byte(args.Content), 0644); err != nil {
+        return "", err
+    }
+    return `{"status": "written"}`, nil
+}
+
+func toolListDir(argsJSON string) (string, error) {
+    var args struct {
+        Path string `json:"path"`
+    }
+    if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+        return "", err
+    }
+    entries, err := os.ReadDir(args.Path)
+    if err != nil {
+        return "", err
+    }
+    var names []string
+    for _, e := range entries {
+        names = append(names, e.Name())
+    }
+    data, _ := json.Marshal(names)
+    return string(data), nil
+}
+
+
+Tool Definitions
+
+
+var fsTools = []Tool{
+    {
+        Type: "function",
+        Function: ToolFunction{
+            Name:        "read_file",
+            Description: "Read the contents of a file at the given path. Returns the file contents as a string.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "path": {Type: "string", Description: "Relative or absolute path to the file"},
+                },
+                Required: []string{"path"},
+            },
+        },
+    },
+    {
+        Type: "function",
+        Function: ToolFunction{
+            Name:        "write_file",
+            Description: "Write content to a file at the given path. Creates the file if it does not exist.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "path":    {Type: "string", Description: "Path to write to"},
+                    "content": {Type: "string", Description: "Content to write"},
+                },
+                Required: []string{"path", "content"},
+            },
+        },
+    },
+    {
+        Type: "function",
+        Function: ToolFunction{
+            Name:        "list_dir",
+            Description: "List files and directories in the given directory path.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "path": {Type: "string", Description: "Directory path to list"},
+                },
+                Required: []string{"path"},
+            },
+        },
+    },
+}
+
+
+Running the Agent
+
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    agent := NewAgent(
+        apiKey,
+        "gpt-4o-mini",
+        "You are a helpful coding assistant with access to the local filesystem. "+
+            "When asked to create files or explore the codebase, use the available tools.",
+        fsTools,
+    )
+
+    result, err := agent.Run("List the current directory, then create a file called hello.txt with 'Hello, agent!' in it.")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "agent error:", err)
+        os.Exit(1)
+    }
+
+    fmt.Println(result)
+}
+
+
+Termination Conditions
+
+
+The loop terminates in three ways:
+
+
+
+Natural completion - finish_reason == "stop" and no tool calls in the response. The model has decided the task is done.
+Max iterations exceeded - the agent is stuck in a loop or the task is more complex than anticipated. Return an error; the caller can decide what to do.
+Unrecoverable API error - authentication failure, rate limit that exhausted retries, network unreachable. Propagate the error up.
+
+
+
+Tool execution errors do not terminate the loop - they are fed back to the model
+as results, allowing it to recover.
+
+
+Safety Considerations
+
+
+A file-system agent with write access can do significant damage if the model behaves
+unexpectedly. For development, consider:
+
+
+
+Running in a temporary directory or a container.
+Logging every tool call before executing it.
+Requiring confirmation for write operations (a human-in-the-loop hook).
+Restricting paths with an allowlist before passing to os.WriteFile.
+
+
+
+Article 05 shows how a skills library can encapsulate these safety checks in one place.
+
+
+Summary
+
+
+An agent loop calls the model, checks whether the response contains tool calls,
+executes them, appends the results to history, and loops. Termination has two
+conditions: finish_reason: "stop" with no tool calls (task
+complete), or the maximum iteration count (safety guard). A maximum of 20–50
+iterations is usually sufficient; beyond that the model is likely stuck.
+Structure the Agent type to hold history, tools, and configuration
+so it can be instantiated for different tasks with different system prompts.
+
+
+Further Reading
+
+
+Anthropic: Building Effective Agents
+OpenAI: Function Calling
+Go os package - ReadFile, WriteFile, ReadDir
+
+
+See Also
+
+
+Tool Calls (Function Calling) - the mechanics of tool definitions and call/response format
+Skills & Structured Tool Libraries - organising tools into a typed registry
+Adding Memory to Agents - persisting state across agent runs
+

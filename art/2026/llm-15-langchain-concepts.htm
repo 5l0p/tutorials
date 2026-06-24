@@ -1,0 +1,332 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 15: LangChain & LangGraph Concepts</title>
+    <meta name="description" content="A conceptual tour of chains, graphs, and agent patterns from the LangChain ecosystem - and how they map to what you have already built in Go.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-15-langchain-concepts.txt">plain/text</a> | <i>2026-06-24</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 15: LangChain & LangGraph Concepts</h2>
+        <p>
+LangChain (Python/JavaScript) is the most widely deployed LLM application framework.
+You will encounter it in tutorials, job listings, and production codebases. There is no
+official Go port worth using in production, but understanding LangChain's abstractions
+makes you a better agent developer: the framework crystallised concepts that were once
+scattered across papers and blog posts. This article is a conceptual tour - no code that
+requires LangChain, only Go analogues and comparisons.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>LangChain's core abstractions: Chains, PromptTemplates, OutputParsers, Agents, and Tools</li>
+<li>How LangGraph extends LangChain with stateful, cyclical execution graphs</li>
+<li>How each LangChain concept maps to the Go primitives built in this series</li>
+<li>The LCEL (LangChain Expression Language) pipeline syntax and its Go equivalent</li>
+<li>When to use a framework and when building your own agent loop is the better choice</li>
+</ul>
+
+<h3>What LangChain Provides</h3>
+
+<p>
+LangChain is a collection of abstractions over the common patterns in LLM applications.
+Its core ideas:
+</p>
+
+<ul>
+<li><b>Chains</b> - composable pipelines where each step takes input and produces output, with one step feeding the next.</li>
+<li><b>Agents</b> - chains that use a model to decide which tool to call at each step, rather than following a fixed sequence.</li>
+<li><b>Tools</b> - functions the agent can invoke (identical in concept to what we built in article 03).</li>
+<li><b>Memory</b> - components for persisting conversation state (article 10).</li>
+<li><b>Retrievers</b> - abstractions over vector stores and other retrieval backends (article 11).</li>
+<li><b>Prompt Templates</b> - reusable prompt structures with variable substitution.</li>
+</ul>
+
+<p>
+These are the same concepts you have implemented from scratch over the past fourteen
+articles. LangChain provides them as a library with many pre-built connectors (OpenAI,
+Anthropic, Pinecone, PostgreSQL, etc.). The trade-off is convenience vs transparency.
+</p>
+
+<h3>Chains</h3>
+
+<p>
+A chain is a sequence of operations where the output of one step becomes the input of
+the next. The simplest chain is a single LLM call. A more complex chain:
+</p>
+
+<pre>
+Input text
+  → PromptTemplate (format a prompt)
+  → LLM (generate a response)
+  → OutputParser (extract structured data)
+  → Result
+</pre>
+
+<p>
+In Go (article 16 implements this), a chain is:
+</p>
+
+<pre>
+type Chain interface {
+    Run(ctx context.Context, input string) (string, error)
+}
+</pre>
+
+<p>
+A sequential chain runs a slice of chains in order, passing each output to the next:
+</p>
+
+<pre>
+type SequentialChain struct {
+    Steps []Chain
+}
+
+func (sc *SequentialChain) Run(ctx context.Context, input string) (string, error) {
+    current := input
+    for _, step := range sc.Steps {
+        var err error
+        current, err = step.Run(ctx, current)
+        if err != nil {
+            return "", err
+        }
+    }
+    return current, nil
+}
+</pre>
+
+<h3>The Runnable Protocol</h3>
+
+<p>
+LangChain Expression Language (LCEL) extended the chain concept with a pipe operator:
+<code>prompt | llm | parser</code>. Each component implements a common <code>Runnable</code>
+interface. The pipe operator composes runnables left to right.
+</p>
+
+<p>
+This is analogous to Go function composition or method chaining. The elegance is that
+anything implementing <code>Runnable</code> can appear anywhere in a pipeline - you can
+swap an LLM for a retriever, or a parser for a database lookup, without changing
+surrounding code.
+</p>
+
+<h3>LangGraph: Graphs Instead of Chains</h3>
+
+<p>
+LangChain's chains are linear: step A always leads to step B. LangGraph (built on top
+of LangChain) replaces the linear sequence with a directed graph where nodes are
+processing steps and edges can be conditional. A node can emit different edges based on
+its output, enabling branching, looping, and dynamic routing.
+</p>
+
+<p>
+A LangGraph agent is a graph with three node types:
+</p>
+
+<ul>
+<li><b>Agent node</b> - calls the model and decides what to do. If the model returns tool calls, it emits the "tools" edge. If it produces final text, it emits the "end" edge.</li>
+<li><b>Tool node</b> - executes the requested tools. Emits the "agent" edge when done, sending results back to the agent node.</li>
+<li><b>END</b> - a terminal node; the graph stops here.</li>
+</ul>
+
+<p>
+This graph structure is exactly the agent loop from article 04 - but expressed as a
+graph so it can be visualised, debugged, and extended without touching the loop code.
+Adding a "human review" node between the agent and tool nodes, for example, requires
+inserting a new node and redirecting two edges. In a monolithic loop it would require
+modifying the loop body.
+</p>
+
+<h3>Agent Patterns in LangGraph</h3>
+
+<p>
+LangGraph supports several named patterns:
+</p>
+
+<p><b>ReAct</b> (Reason + Act) - the model alternates between reasoning steps ("I need to
+find out X") and action steps (tool calls). The reasoning is made explicit in the
+model's output. This is the default pattern for most LangGraph agents and corresponds
+closely to the agent loop you have already built.</p>
+
+<p><b>Plan and Execute</b> - a planner agent generates a task list; separate executor
+agents work through the tasks in order. The planner does not re-evaluate after each task.
+Good for long, structured tasks. Article 17 implements this in Go.</p>
+
+<p><b>Reflection</b> - after generating a response, the model critiques its own output and
+optionally revises it. The reflection loop runs until the model judges the response
+satisfactory. Good for writing tasks, code generation, and structured output validation.</p>
+
+<p><b>Multi-Agent</b> - multiple specialised agents collaborate. A supervisor routes tasks
+to sub-agents based on their expertise. Article 19 covers this pattern.</p>
+
+<h3>Prompt Templates</h3>
+
+<p>
+LangChain's <code>PromptTemplate</code> is a string with named placeholders:
+</p>
+
+<pre>
+template = "You are a {role}. Answer the following question: {question}"
+prompt = template.format(role="Go expert", question="What is a goroutine?")
+</pre>
+
+<p>
+In Go (implemented in article 16):
+</p>
+
+<pre>
+type PromptTemplate struct {
+    Template string
+}
+
+func (pt *PromptTemplate) Format(vars map[string]string) string {
+    result := pt.Template
+    for k, v := range vars {
+        result = strings.ReplaceAll(result, "{"+k+"}", v)
+    }
+    return result
+}
+</pre>
+
+<p>
+Templates enforce prompt consistency across an application. When multiple places in your
+code need to format the same kind of prompt, centralising it in a template prevents
+drift.
+</p>
+
+<h3>When LangChain Adds Value vs When It Adds Opacity</h3>
+
+<p>
+LangChain is a large framework with many layers of abstraction. The opaqueness is a real
+cost: stack traces through LangChain are hard to read, behaviour can be surprising when
+deep defaults interact, and debugging requires understanding framework internals.
+</p>
+
+<p>
+Use LangChain when:
+</p>
+
+<ul>
+<li>You need connectors to many external services (Pinecone, Redis, Notion, etc.) and do not want to write them yourself.</li>
+<li>Your team is already fluent in Python and wants to move fast.</li>
+<li>You need LangGraph's graph-based orchestration for complex multi-agent flows.</li>
+</ul>
+
+<p>
+Build your own when:
+</p>
+
+<ul>
+<li>You need to understand exactly what is happening on the wire.</li>
+<li>Latency matters - every abstraction layer adds overhead.</li>
+<li>Your use case is narrow and you would use only a small fraction of the framework.</li>
+<li>You want to run in Go (or any language without a mature LangChain port).</li>
+</ul>
+
+<p>
+The articles in this series take the "build your own" path. Not because frameworks are
+bad, but because understanding the primitives makes you better at using frameworks
+when you do reach for them.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+LangChain formalises four concepts: a Chain (a callable step), a PromptTemplate (an
+interpolated string), an OutputParser (a structured-output transformer), and an Agent
+(a chain that loops until it decides to stop). LangGraph adds statefulness and cycles
+to chains, enabling patterns like self-critique and supervisor delegation. Every
+LangChain abstraction maps to something in this series — the value of the framework
+is discoverability and ecosystem integrations, not fundamental new ideas.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://python.langchain.com/docs/introduction/">LangChain Documentation</a></li>
+<li><a href="https://langchain-ai.github.io/langgraph/">LangGraph Documentation</a></li>
+<li><a href="https://blog.langchain.dev/langgraph/">LangGraph announcement blog post</a></li>
+<li><a href="https://arxiv.org/abs/2210.03629">ReAct: Synergizing Reasoning and Acting in Language Models (2022)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-04-agent-loop.htm">Building a Simple Agent Loop</a> - the ReAct loop in Go</li>
+<li><a href="llm-16-mini-langchain.htm">Implementing a Mini LangChain in Go</a> - building chains and prompt templates from scratch</li>
+<li><a href="llm-17-multi-agent.htm">Multi-Agent Orchestration</a> - Go implementation of multi-agent patterns</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

@@ -1,0 +1,459 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Pico — Part 7: UART MIDI Input</title>
+    <meta name="description" content="UART MIDI at 31250 baud on the RP2040 — IRQ handler, MIDI byte-stream state machine with running status, and a lock-free ring buffer to the audio core.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, embedded, audio, pico">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="pico-07-midi-uart.txt">plain/text</a> | <i>2026-11-13</i> | <i><a href="../../c.htm">c</a>, <a href="../../embedded.htm">embedded</a>, <a href="../../audio.htm">audio</a>, <a href="../../pico.htm">pico</a></i>
+        <h2>Pico — Part 7: UART MIDI Input</h2>
+        <p>
+MIDI was designed in 1983 for a world of 5-pin DIN connectors, optoisolators, and
+31250-baud serial lines. The byte format has barely changed since then. Getting MIDI
+into the Pico is straightforward - UART0 or UART1 configured at 31250 baud, an IRQ
+handler that collects bytes as they arrive, a state machine that assembles bytes into
+messages, and a ring buffer that gets those messages to the audio core without locking.
+The tricky parts are running status (MIDI's byte-saving shorthand), the ring buffer
+discipline between cores, and the GPIO pin assignment. This article covers all of it.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Configuring UART at 31250 baud with <code>uart_init</code>, GPIO assignment, and RX interrupt enable</li>
+<li>The UART RX IRQ handler: reading bytes from the hardware FIFO without blocking</li>
+<li>MIDI byte-stream state machine: status bytes, data bytes, running status, System Realtime</li>
+<li>Handling note on/off, CC, and pitch bend messages</li>
+<li>A lock-free single-producer single-consumer ring buffer for cross-core message passing</li>
+<li>Complete example: MIDI note on/off drives oscillator frequency and gate on core 1</li>
+</ul>
+
+<h3>UART Setup at 31250 Baud</h3>
+
+<p>
+MIDI uses 31250 baud, 8 data bits, no parity, 1 stop bit - abbreviated 8N1. The RP2040
+has two UARTs. UART0 defaults to GPIO 0 (TX) and GPIO 1 (RX); UART1 defaults to GPIO 4
+(TX) and GPIO 5 (RX). Any UART-capable GPIO can be reassigned using
+<code>gpio_set_function</code>. We use UART1 on GPIO 5 (RX only - MIDI input is
+receive-only in the simplest case) to avoid conflict with the USB serial UART0 debug
+path.
+</p>
+
+<pre>
+#include "hardware/uart.h"
+#include "hardware/gpio.h"
+#include "hardware/irq.h"
+
+#define MIDI_UART        uart1
+#define MIDI_UART_IRQ    UART1_IRQ
+#define MIDI_BAUD        31250
+#define MIDI_RX_GPIO     5    /* GPIO 5 = UART1 RX, pin 7 on Pico */
+
+static void midi_uart_init(void) {
+    uart_init(MIDI_UART, MIDI_BAUD);
+
+    /* Assign GPIO 5 to UART1 RX function */
+    gpio_set_function(MIDI_RX_GPIO, GPIO_FUNC_UART);
+
+    /* 8 data bits, 1 stop bit, no parity (MIDI spec) */
+    uart_set_format(MIDI_UART, 8, 1, UART_PARITY_NONE);
+
+    /* Disable hardware flow control (MIDI doesn't use it) */
+    uart_set_hw_flow(MIDI_UART, false, false);
+
+    /* Enable the UART RX FIFO interrupt.
+       Fire when the RX FIFO reaches 1/8 full (4 bytes on RP2040's 32-byte FIFO),
+       which at 31250 baud gives us ~1 ms before the FIFO could overflow.
+       MIDI is slow enough that even 1/2-full is fine; 1/8 is safe margin. */
+    uart_set_fifo_enabled(MIDI_UART, true);
+    irq_set_exclusive_handler(MIDI_UART_IRQ, midi_uart_irq_handler);
+    irq_set_enabled(MIDI_UART_IRQ, true);
+    uart_set_irq_enables(MIDI_UART, true, false); /* RX only */
+}
+</pre>
+
+<p>
+The RP2040's UART hardware contains a 32-byte receive FIFO. When you enable the FIFO
+the IRQ fires at a programmable fill level - the UART_UARTIFLS register controls this.
+The SDK sets it via the FIFO level parameter to <code>uart_set_fifo_enabled</code>. With
+FIFO enabled and the interrupt at 1/8 level (4 bytes), the IRQ fires before the FIFO
+fills, giving the handler time to drain it. At 31250 baud, one byte takes
+320 microseconds - a 4-byte FIFO level means you have 1.28 ms of slack before overflow.
+That is generous.
+</p>
+
+<h3>The UART RX IRQ Handler</h3>
+
+<p>
+The handler runs on core 0 (because <code>midi_uart_init</code> is called from core 0
+main). It drains the hardware FIFO into the ring buffer as fast as possible and returns.
+No parsing happens here.
+</p>
+
+<pre>
+/* Ring buffer for raw MIDI bytes from IRQ to parser.
+   Power-of-two size enables cheap index masking. */
+#define RAW_BUF_SIZE  128
+#define RAW_BUF_MASK  (RAW_BUF_SIZE - 1)
+
+static volatile uint8_t  raw_buf[RAW_BUF_SIZE];
+static volatile uint32_t raw_head = 0;   /* written by IRQ  */
+static volatile uint32_t raw_tail = 0;   /* read by parser  */
+
+static void midi_uart_irq_handler(void) {
+    /* Drain all available bytes from hardware FIFO */
+    while (uart_is_readable(MIDI_UART)) {
+        uint8_t byte = uart_getc(MIDI_UART);
+
+        /* Drop byte if ring buffer is full (should not happen at MIDI rates) */
+        uint32_t next_head = (raw_head + 1) &amp; RAW_BUF_MASK;
+        if (next_head != raw_tail) {
+            raw_buf[raw_head] = byte;
+            raw_head = next_head;  /* write index last - memory barrier below */
+        }
+    }
+    /* Compiler barrier: prevent reordering of the raw_head store past this point.
+       On Cortex-M0+ all stores are strongly ordered, but the compiler is not. */
+    __dmb();
+}
+</pre>
+
+<p>
+The <code>__dmb()</code> (Data Memory Barrier) is important for the cross-core visibility of
+<code>raw_head</code>. The Cortex-M0+ memory model guarantees that writes to normal
+(non-device) memory are sequentially consistent from the perspective of one core, but
+when core 0 updates <code>raw_head</code> and core 1 reads it, a memory barrier ensures
+the store of <code>raw_buf[raw_head]</code> is visible before the store of
+<code>raw_head</code> itself. Without it, the compiler might reorder the writes and core 1
+could see the updated head index before the byte data.
+</p>
+
+<h3>MIDI Byte-Stream State Machine</h3>
+
+<p>
+MIDI is a byte stream with two categories of byte: <b>status bytes</b> (bit 7 set,
+0x80-0xFF) and <b>data bytes</b> (bit 7 clear, 0x00-0x7F). A status byte begins a
+new message and encodes the message type in bits 6-4 and the MIDI channel in bits 3-0.
+Data bytes follow with the message's parameters.
+</p>
+
+<p>
+<b>Running status:</b> if a second message of the same type and channel follows without
+a status byte, the status byte is omitted. A data byte arriving when the previous
+message has been completed is treated as the first data byte of the same message type.
+This is running status. A parser that ignores it will miss most real-world note-on
+streams.
+</p>
+
+<p>
+<b>System Realtime:</b> bytes 0xF8 (Clock), 0xFA (Start), 0xFB (Continue), 0xFC (Stop),
+0xFE (Active Sensing), and 0xFF (Reset) are single-byte messages that can appear
+anywhere in the stream, even in the middle of a two-byte message. They must be
+processed immediately without disrupting the current parse state.
+</p>
+
+<pre>
+/* Parsed MIDI message */
+typedef struct {
+    uint8_t type;     /* 0x80=note_off, 0x90=note_on, 0xB0=CC, 0xE0=pitch_bend */
+    uint8_t channel;  /* 0-15 */
+    uint8_t data1;
+    uint8_t data2;
+} MidiMsg;
+
+/* Expected data byte counts per status nybble (high 4 bits of status byte) */
+static const uint8_t midi_data_len[8] = {
+    2, /* 0x80 Note Off          */
+    2, /* 0x90 Note On           */
+    2, /* 0xA0 Poly Aftertouch   */
+    2, /* 0xB0 Control Change    */
+    1, /* 0xC0 Program Change    */
+    1, /* 0xD0 Channel Pressure  */
+    2, /* 0xE0 Pitch Bend        */
+    0, /* 0xF0 System (variable) */
+};
+
+typedef struct {
+    uint8_t  status;      /* current status byte (running status) */
+    uint8_t  data[2];     /* accumulated data bytes */
+    int      data_count;  /* how many data bytes accumulated */
+    int      data_needed; /* how many we need for this message */
+} MidiParser;
+
+/* Feed one byte into the parser.
+   If a complete message is assembled, writes it to *out and returns 1.
+   Returns 0 otherwise. */
+static int midi_parser_feed(MidiParser *p, uint8_t byte, MidiMsg *out) {
+    /* System Realtime (0xF8-0xFF): single byte, ignore here */
+    if (byte >= 0xF8) {
+        /* Handle clock, transport etc. if needed - for now discard */
+        return 0;
+    }
+
+    if (byte &amp; 0x80) {
+        /* Status byte: begin new message */
+        /* Ignore SysEx (0xF0-0xF7) for simplicity */
+        if (byte &gt;= 0xF0) {
+            p-&gt;status     = 0;   /* clear running status on system common */
+            p-&gt;data_count = 0;
+            return 0;
+        }
+        p-&gt;status      = byte;
+        p-&gt;data_count  = 0;
+        p-&gt;data_needed = midi_data_len[(byte &gt;&gt; 4) &amp; 0x07];
+        return 0;
+    }
+
+    /* Data byte */
+    if (p-&gt;status == 0) return 0;   /* no running status, ignore */
+
+    p-&gt;data[p-&gt;data_count++] = byte;
+
+    if (p-&gt;data_count &gt;= p-&gt;data_needed) {
+        /* Complete message */
+        out-&gt;type    = p-&gt;status &amp; 0xF0;
+        out-&gt;channel = p-&gt;status &amp; 0x0F;
+        out-&gt;data1   = p-&gt;data[0];
+        out-&gt;data2   = (p-&gt;data_needed &gt; 1) ? p-&gt;data[1] : 0;
+        /* Running status: reset count but keep status byte */
+        p-&gt;data_count = 0;
+        return 1;
+    }
+    return 0;
+}
+</pre>
+
+<h3>Lock-Free Ring Buffer: Core 0 to Core 1</h3>
+
+<p>
+The MIDI parser runs on core 0 (where the UART IRQ fires). The synthesiser runs on
+core 1. We need to pass <code>MidiMsg</code> structs from core 0 to core 1 without
+using a mutex - mutexes can stall the audio core. A single-producer single-consumer
+(SPSC) ring buffer is safe without locks when one core writes and the other reads,
+provided the head and tail indices are updated atomically (they are, for 32-bit aligned
+words on Cortex-M0+) and memory barriers are used at the publish/consume points.
+</p>
+
+<pre>
+#define MSG_BUF_SIZE  32
+#define MSG_BUF_MASK  (MSG_BUF_SIZE - 1)
+
+static MidiMsg          msg_buf[MSG_BUF_SIZE];
+static volatile uint32_t msg_head = 0;   /* written by core 0 */
+static volatile uint32_t msg_tail = 0;   /* written by core 1 */
+
+/* Push one message from core 0 (parser thread).
+   Returns 0 if buffer full (drop the message). */
+static int midi_msg_push(const MidiMsg *m) {
+    uint32_t next = (msg_head + 1) &amp; MSG_BUF_MASK;
+    if (next == msg_tail) return 0;   /* full */
+    msg_buf[msg_head] = *m;
+    __dmb();                          /* ensure data written before head update */
+    msg_head = next;
+    return 1;
+}
+
+/* Pop one message from core 1 (audio thread).
+   Returns 1 if a message was available, 0 if empty. */
+static int midi_msg_pop(MidiMsg *m) {
+    if (msg_tail == msg_head) return 0;   /* empty */
+    *m = msg_buf[msg_tail];
+    __dmb();                              /* ensure data read before tail update */
+    msg_tail = (msg_tail + 1) &amp; MSG_BUF_MASK;
+    return 1;
+}
+</pre>
+
+<h3>Core 0: Parse Loop</h3>
+
+<pre>
+/* Run on core 0 - call this in the core 0 main loop */
+static void midi_poll(void) {
+    static MidiParser parser = {0};
+    MidiMsg msg;
+
+    /* Drain raw byte ring buffer and feed parser */
+    while (raw_tail != raw_head) {
+        uint8_t byte = raw_buf[raw_tail];
+        __dmb();
+        raw_tail = (raw_tail + 1) &amp; RAW_BUF_MASK;
+
+        if (midi_parser_feed(&amp;parser, byte, &amp;msg)) {
+            midi_msg_push(&amp;msg);
+        }
+    }
+}
+</pre>
+
+<h3>Core 1: Handling MIDI Messages</h3>
+
+<pre>
+/* MIDI note number to frequency (Hz), standard equal temperament */
+static float midi_note_to_freq(uint8_t note) {
+    /* A4 = note 69 = 440 Hz */
+    return 440.0f * powf(2.0f, (note - 69) / 12.0f);
+}
+
+/* Call this from the core 1 fill loop, once per buffer, before DSP */
+static void midi_apply_events(Oscillator *osc, bool *gate) {
+    MidiMsg msg;
+    while (midi_msg_pop(&amp;msg)) {
+        switch (msg.type) {
+        case 0x90:  /* Note On */
+            if (msg.data2 &gt; 0) {
+                /* velocity &gt; 0: genuine note on */
+                osc_set_freq(osc, midi_note_to_freq(msg.data1), SAMPLE_RATE);
+                *gate = true;
+            } else {
+                /* velocity 0 = note off (MIDI spec) */
+                *gate = false;
+            }
+            break;
+        case 0x80:  /* Note Off */
+            *gate = false;
+            break;
+        /* CC and pitch bend handling can be added here */
+        }
+    }
+}
+</pre>
+
+<p>
+Note that <code>midi_note_to_freq</code> calls <code>powf</code> - roughly 200 cycles.
+This is fine because it happens at most once per event, never per sample. If you want
+to avoid all soft-float in the event handler, pre-compute a 128-entry frequency table
+during init:
+</p>
+
+<pre>
+static float midi_freq_table[128];
+
+static void midi_freq_table_init(void) {
+    for (int i = 0; i &lt; 128; i++)
+        midi_freq_table[i] = 440.0f * powf(2.0f, (i - 69) / 12.0f);
+}
+</pre>
+
+<h3>CMakeLists.txt Changes</h3>
+
+<pre>
+target_link_libraries(my_target
+    pico_stdlib
+    pico_multicore
+    hardware_uart
+    hardware_irq
+    hardware_dma
+    hardware_pio
+)
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+UART MIDI on the RP2040 is four pieces that compose cleanly: UART hardware configured at
+31250 baud, an IRQ handler that drains the hardware FIFO into a raw byte buffer, a MIDI
+state machine that handles running status and assembles messages on core 0, and a
+lock-free SPSC ring buffer that carries those messages to the audio core without ever
+stalling it. The memory barrier (<code>__dmb()</code>) at each ring buffer publish and
+consume point is the only synchronisation primitive needed between the cores for this
+pattern.
+</p>
+
+<p>
+Part 8 adds USB MIDI using TinyUSB, so the Pico can present itself as a class-compliant
+MIDI device and receive note events over USB without a physical UART cable.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 Datasheet - Chapter 4 (UART), Chapter 2 (SIO/multicore)</a></li>
+<li><a href="https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf">Raspberry Pi Pico C/C++ SDK - hardware_uart chapter</a></li>
+<li><a href="https://www.midi.org/specifications-old/item/the-midi-1-0-specification">MIDI 1.0 Specification - midi.org</a></li>
+<li><a href="https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message">Summary of MIDI Messages - midi.org</a></li>
+<li><a href="https://developer.arm.com/documentation/ddi0432/c">Cortex-M0+ Technical Reference Manual - ARM</a></li>
+<li><a href="https://github.com/raspberrypi/pico-examples">pico-examples on GitHub</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="pico-04-render-loop.htm">Pico - Part 4: The Audio Render Loop on Bare Metal</a></li>
+<li><a href="pico-08-usb-midi.htm">Pico - Part 8: USB MIDI with TinyUSB</a></li>
+<li><a href="pico-09-multicore.htm">Pico - Part 9: Multicore Communication</a></li>
+<li><a href="pico-10-synth-voice.htm">Pico - Part 10: Complete Synthesiser Voice</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

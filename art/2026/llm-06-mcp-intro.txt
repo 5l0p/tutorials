@@ -1,0 +1,175 @@
+LLM - Part 6: Intro to MCP Servers
+2026-06-15
+
+
+The Model Context Protocol (MCP) is an open standard - proposed by Anthropic and adopted
+across the industry - for connecting language models to external tools, data sources, and
+services. Where the previous articles built tool calling directly into a single Go binary,
+MCP separates the tool server from the agent. The server runs independently, the agent
+connects to it, and the same server can be reused by different agents and different models.
+
+
+What You Will Learn
+
+
+Why MCP exists: decoupling tool servers from agents so they can be shared and versioned independently
+The MCP protocol: JSON-RPC 2.0 messages, capabilities negotiation
+The three transport types: stdio, HTTP+SSE, and WebSocket — when each is appropriate
+The three primitives: Resources (data), Tools (callable functions), Prompts (reusable templates)
+How MCP maps to the agent loop you already have
+
+
+Why MCP Exists
+
+
+Without a standard, every agent implements its own protocol for talking to tools. If you
+have a filesystem tool, a GitHub tool, and a database tool, you either bundle them all
+into one binary or write custom integration code for each. This does not compose well.
+
+
+
+MCP defines a common wire protocol. A tool server that speaks MCP can be used by any MCP
+client - Claude, GPT-4, a local model via llama.cpp, or a custom agent. You write the
+tool server once. The agent side is equally generic: one MCP client implementation works
+with any MCP server.
+
+
+
+From the agent's perspective, an MCP server is just a source of tools - the same
+[]Tool slice sent to the API. The agent loop from article 04 does not need
+to change. Only the Registry from article 05 gains a new source: instead of
+locally defined skills, it can pull tool definitions from an MCP server at startup and
+route calls to it at runtime.
+
+
+The Protocol
+
+
+MCP runs over JSON-RPC 2.0. Every message is a JSON object with a method name and
+parameters. The client sends requests; the server sends responses and, optionally,
+notifications. The schema is published at spec.modelcontextprotocol.io.
+
+
+
+The key methods:
+
+
+
+initialize - client sends its capabilities; server responds with its capabilities and protocol version. Must be the first exchange.
+tools/list - client requests the list of available tools. Server responds with an array of tool definitions (name, description, input schema). This is how the agent discovers what the server can do.
+tools/call - client requests execution of a named tool with JSON arguments. Server responds with the result (or an error).
+resources/list and resources/read - for data sources (files, database records, web pages) that the model can read as context.
+prompts/list and prompts/get - for pre-written prompt templates the server exposes.
+
+
+
+For this series, we focus on tools. Resources and prompts are useful features but
+orthogonal to the agent loop.
+
+
+Three Transport Types
+
+
+JSON-RPC needs a transport - a channel for passing messages. MCP defines three:
+
+
+stdio - the client spawns the server as a subprocess and communicates via stdin/stdout.
+Each message is a newline-delimited JSON object. Simple to implement, no networking,
+the server dies when the client exits. Ideal for local tools - filesystem access,
+shell commands, code execution.
+
+HTTP (with SSE) - the server is a long-running HTTP process. The client sends requests
+as POST to /message; the server pushes responses and notifications as
+Server-Sent Events on a /sse endpoint. Suitable for shared services that
+multiple clients connect to, and for tools that need to survive client restarts.
+
+WebSocket - a persistent bidirectional connection. Better than SSE for high-frequency
+tool calls or streaming results. More complex to implement. Appropriate when latency
+matters or when the server needs to push events to the client without a pending request.
+
+Resources, Tools, and Prompts
+
+
+MCP has three first-class primitives:
+
+
+
+Tools - functions the model can invoke. Execution has side effects. Equivalent to what we built in articles 03–05.
+Resources - read-only data sources. The model can request a resource by URI and receive its content. No side effects. Examples: a file, a database row, a web page.
+Prompts - parameterised prompt templates. The server exposes named templates; the client instantiates them by passing arguments. Useful for enforcing prompt consistency across agents.
+
+
+Mapping MCP to the Agent Loop
+
+
+With a registry-backed agent (article 05), adding MCP support is a matter of:
+
+
+
+At startup, connect to the MCP server and call tools/list. Convert the response to []Tool and add them to the registry.
+When a tool call arrives with a name that maps to an MCP tool, call tools/call on the server instead of executing locally.
+Return the server's response as the tool result.
+
+
+
+The agent loop, the model, and the user are unaware of whether a tool runs locally or
+via MCP. The abstraction is complete.
+
+
+The mcp-go Library
+
+
+Writing JSON-RPC from scratch is tedious. The github.com/mark3labs/mcp-go
+library implements the MCP spec for Go on both the server and client sides. It handles
+the initialize handshake, the SSE lifecycle for HTTP transport, and the message framing
+for stdio. Articles 07, 08, and 09 use this library to build concrete servers.
+
+
+
+# Add to your go.mod
+go get github.com/mark3labs/mcp-go
+
+
+Security Considerations
+
+
+An MCP server that exposes filesystem access or shell execution is a powerful thing to
+expose on a network. For local development:
+
+
+
+stdio servers are only reachable by the parent process - low risk.
+HTTP servers should bind to 127.0.0.1 for local use, not 0.0.0.0.
+Use authentication on any server reachable from outside localhost.
+Scope tools to the minimum capability the agent needs.
+
+
+Summary
+
+
+MCP is JSON-RPC 2.0 over a transport. The client sends tools/list
+to discover what the server provides, and tools/call to invoke a
+tool by name. The three transports serve different deployment patterns: stdio
+for local co-process tools, HTTP+SSE for shared network services, WebSocket
+for bidirectional streaming. The three primitives are Tools (functions),
+Resources (data endpoints), and Prompts (templates). Any compliant MCP server
+can be connected to any compliant agent.
+
+
+Further Reading
+
+
+MCP Specification
+MCP Introduction (modelcontextprotocol.io)
+mcp-go library on GitHub
+JSON-RPC 2.0 Specification
+
+
+See Also
+
+
+Skills & Structured Tool Libraries - the local tool model MCP extends
+MCP over stdio - building and connecting your first MCP server
+MCP over HTTP - running MCP as a shared network service
+MCP over WebSocket - bidirectional streaming transport
+

@@ -1,0 +1,405 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 2: Chat Completions Deep Dive</title>
+    <meta name="description" content="Understand roles, temperature, token limits, and how to build a stateful REPL that manages conversation history.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-02-chat-completions.txt">plain/text</a> | <i>2026-06-11</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 2: Chat Completions Deep Dive</h2>
+        <p>
+The previous article made a single round-trip to the API and printed the result. Real
+applications need persistent conversations - the model must remember what was said earlier
+in the same session. This article covers how the message array works, what temperature and
+other sampling parameters do, and how to build a stateful command-line chat loop in Go.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The three message roles — system, user, assistant — and how they form the conversation history</li>
+<li>Temperature, top_p, and other sampling parameters: what they control and sensible values</li>
+<li>Token limits: how to count tokens, what happens when you exceed the context window</li>
+<li>How to build a stateful REPL in Go that accumulates messages and maintains conversational context</li>
+<li>How to watch the context window and trim old messages when it fills up</li>
+<li>How to use streaming responses (<code>stream: true</code>) for real-time output</li>
+</ul>
+
+<h3>The Messages Array</h3>
+
+<p>
+OpenAI's chat completions API is stateless. The server does not store conversation history.
+Every request must include the complete history you want the model to see, from the first
+message to the latest. The <code>messages</code> field is an ordered array of objects, each
+with a <code>role</code> and <code>content</code>.
+</p>
+
+<p>
+There are three roles:
+</p>
+
+<ul>
+<li><b>system</b> - instructions that shape the model's behaviour for the entire conversation. Appears once, first in the array. The model treats it as authoritative context.</li>
+<li><b>user</b> - input from the human. Can appear multiple times, alternating with assistant messages.</li>
+<li><b>assistant</b> - the model's previous responses. You include these yourself when you want the model to have memory of what it said.</li>
+</ul>
+
+<p>
+A two-turn conversation looks like this in the wire format:
+</p>
+
+<pre>
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    {"role": "system",    "content": "You are a Go programming tutor."},
+    {"role": "user",      "content": "What is a goroutine?"},
+    {"role": "assistant", "content": "A goroutine is a lightweight thread managed by the Go runtime..."},
+    {"role": "user",      "content": "How does it differ from an OS thread?"}
+  ]
+}
+</pre>
+
+<p>
+The model sees all four messages and uses them to answer the second question with the
+context of the first exchange. Without that history, it would answer "how does it differ"
+with no referent.
+</p>
+
+<h3>Temperature and Sampling</h3>
+
+<p>
+The <code>temperature</code> parameter (0.0 to 2.0, default 1.0) controls randomness.
+At temperature 0 the model is nearly deterministic - given the same input it will almost
+always produce the same output. Higher temperatures introduce more variation.
+</p>
+
+<ul>
+<li><b>0.0 – 0.3</b> - deterministic, factual. Good for structured output (JSON, code, data extraction).</li>
+<li><b>0.7 – 1.0</b> - balanced. Good for general conversation and explanation.</li>
+<li><b>1.2 – 2.0</b> - creative, unpredictable. Good for brainstorming, poetry, variation generation.</li>
+</ul>
+
+<p>
+For agentic code - agents that call tools, write code, and make decisions - use temperature
+0.0 to 0.3. You want the model to be consistent and precise, not creative. For a conversational
+assistant helping a user explore ideas, 0.7 to 1.0 is more appropriate.
+</p>
+
+<p>
+Add <code>Temperature</code> to the request struct:
+</p>
+
+<pre>
+type ChatRequest struct {
+    Model       string    `json:"model"`
+    Messages    []Message `json:"messages"`
+    Temperature float64   `json:"temperature,omitempty"`
+    MaxTokens   int       `json:"max_tokens,omitempty"`
+}
+</pre>
+
+<p>
+<code>omitempty</code> means the field is omitted from JSON if it is the zero value (0.0
+for float64, 0 for int). This lets the API use its own defaults when you don't set them,
+rather than sending explicit zeros.
+</p>
+
+<h3>Token Limits and the Context Window</h3>
+
+<p>
+Every model has a context window - the maximum number of tokens it can process in a single
+request (input plus output combined). Tokens are not characters or words; roughly speaking,
+one token is about four characters of English text. <code>gpt-4o-mini</code> has a 128k token
+context window. <code>gpt-4o</code> also has 128k.
+</p>
+
+<p>
+<code>max_tokens</code> in the request limits how many tokens the model can generate in its
+response. If you do not set it the model will generate until it reaches its natural stopping
+point or hits the model's internal output limit (which varies by model).
+</p>
+
+<p>
+The practical constraint is the input side. As a conversation grows, so does the messages
+array. Eventually it will exceed the context window and the API will return a 400 error.
+You must manage this yourself. Strategies:
+</p>
+
+<ul>
+<li><b>Sliding window</b> - keep only the system message and the N most recent exchanges. Simple but loses early context.</li>
+<li><b>Summarisation</b> - when the history grows too long, ask the model to summarise the conversation so far, replace the history with the summary, then continue. Covered in article 10.</li>
+<li><b>Selective retention</b> - tag messages as important and keep them; drop unimportant ones first. Works well for task-oriented agents.</li>
+</ul>
+
+<h3>Building a Stateful REPL</h3>
+
+<p>
+Here is a complete interactive chat loop. The user types messages at a prompt, the
+assistant responds, and the full history is maintained in memory for the duration of
+the session.
+</p>
+
+<pre>
+package main
+
+import (
+    "bufio"
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+    "strings"
+)
+
+const apiURL = "http://localhost:8001/v1/chat/completions"
+
+type Message struct {
+    Role    string `json:"role"`
+    Content string `json:"content"`
+}
+
+type ChatRequest struct {
+    Model       string    `json:"model"`
+    Messages    []Message `json:"messages"`
+    Temperature float64   `json:"temperature,omitempty"`
+}
+
+type Choice struct {
+    Message      Message `json:"message"`
+    FinishReason string  `json:"finish_reason"`
+}
+
+type ChatResponse struct {
+    Choices []Choice `json:"choices"`
+    Usage   struct {
+        TotalTokens int `json:"total_tokens"`
+    } `json:"usage"`
+}
+
+func complete(apiKey string, req ChatRequest) (*ChatResponse, error) {
+    data, _ := json.Marshal(req)
+    r, _ := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(data))
+    r.Header.Set("Content-Type", "application/json")
+    r.Header.Set("Authorization", "Bearer "+apiKey)
+
+    resp, err := http.DefaultClient.Do(r)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("API %d: %s", resp.StatusCode, body)
+    }
+
+    var result ChatResponse
+    json.Unmarshal(body, &amp;result)
+    return &amp;result, nil
+}
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    if apiKey == "" {
+        fmt.Fprintln(os.Stderr, "OPENAI_API_KEY not set")
+        os.Exit(1)
+    }
+
+    history := []Message{
+        {Role: "system", Content: "You are a helpful assistant. Be concise."},
+    }
+
+    scanner := bufio.NewScanner(os.Stdin)
+    fmt.Print("&gt; ")
+
+    for scanner.Scan() {
+        input := strings.TrimSpace(scanner.Text())
+        if input == "" || input == "quit" || input == "exit" {
+            break
+        }
+
+        history = append(history, Message{Role: "user", Content: input})
+
+        resp, err := complete(apiKey, ChatRequest{
+            Model:       "gpt-4o-mini",
+            Messages:    history,
+            Temperature: 0.7,
+        })
+        if err != nil {
+            fmt.Fprintln(os.Stderr, "error:", err)
+            history = history[:len(history)-1] // remove the failed user message
+            fmt.Print("&gt; ")
+            continue
+        }
+
+        if len(resp.Choices) == 0 {
+            fmt.Fprintln(os.Stderr, "no response")
+            fmt.Print("&gt; ")
+            continue
+        }
+
+        reply := resp.Choices[0].Message
+        history = append(history, reply)
+
+        fmt.Printf("\n%s\n\n[%d tokens total]\n&gt; ", reply.Content, resp.Usage.TotalTokens)
+    }
+}
+</pre>
+
+<p>
+Run it with <code>go run main.go</code>. Type messages and press enter. Type <code>quit</code>
+to exit. Each exchange adds two messages to the history (user + assistant), so the token
+count printed at each turn grows over the conversation.
+</p>
+
+<h3>Watching the Context Window</h3>
+
+<p>
+Add a simple guard to prevent hitting the context limit. A rough estimate: if
+<code>resp.Usage.TotalTokens</code> exceeds 90% of the model's limit, trim the oldest
+non-system messages:
+</p>
+
+<pre>
+const contextLimit = 128000
+
+func trimHistory(history []Message, totalTokens int) []Message {
+    if totalTokens &lt; int(float64(contextLimit)*0.9) {
+        return history
+    }
+    // Keep system message (index 0) and drop oldest pairs
+    if len(history) &gt; 3 {
+        // Remove messages at index 1 and 2 (oldest user+assistant pair)
+        return append(history[:1], history[3:]...)
+    }
+    return history
+}
+</pre>
+
+<p>
+Call it after each successful response: <code>history = trimHistory(history, resp.Usage.TotalTokens)</code>.
+This is the simplest possible strategy. Article 10 covers more sophisticated memory
+management with summarisation.
+</p>
+
+<h3>Streaming Responses</h3>
+
+<p>
+The API supports streaming via server-sent events. Add <code>"stream": true</code> to the
+request and the response body becomes a stream of <code>data: {...}</code> lines, each
+containing a partial delta. This is how ChatGPT shows text appearing word by word.
+</p>
+
+<p>
+Streaming is not required for agentic applications - the agent loop (article 04) sends
+a request and waits for the full response before acting on it. But for conversational
+interfaces where latency is noticeable, streaming improves perceived responsiveness.
+The implementation requires reading the response body line by line and accumulating
+the content deltas, which is covered when we build the full agent UI in article 14.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Conversation state is the messages array: each turn appends a user message,
+sends the full array, and appends the assistant's reply. The system message
+sets persistent behaviour. Temperature controls randomness — 0 for deterministic
+output, 0.7–1.0 for creative tasks. The context window is finite; trim the
+oldest messages or summarise when it fills. Streaming (<code>"stream": true</code>)
+sends tokens as Server-Sent Events so the user sees output incrementally rather
+than waiting for the full response.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://platform.openai.com/docs/guides/text-generation">OpenAI: Text Generation Guide</a></li>
+<li><a href="https://platform.openai.com/docs/api-reference/chat/create">API Reference: Create Chat Completion</a></li>
+<li><a href="https://platform.openai.com/tokenizer">OpenAI Tokenizer (visualise token counts)</a></li>
+<li><a href="https://pkg.go.dev/bufio">Go bufio package - Scanner for reading stdin line by line</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-01-openai-api-basics.htm">OpenAI API Basics</a> - making your first API call with net/http</li>
+<li><a href="llm-03-tool-calls.htm">Tool Calls (Function Calling)</a> - adding executable functions to the conversation</li>
+<li><a href="llm-10-memory.htm">Adding Memory to Agents</a> - long-term memory and summarisation strategies</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

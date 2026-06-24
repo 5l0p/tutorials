@@ -1,0 +1,325 @@
+openFrameworks - Part 3: The ofApp Lifecycle
+2026-09-24
+
+
+Every interactive program needs an event loop: a piece of code that wakes up at regular
+intervals, processes input, updates state, and renders a new frame. In openFrameworks that
+loop is handled for you, and your job is to fill in four virtual methods on your
+ofApp class. Understanding exactly when each method is called, and what
+you can safely do in each one, removes a whole class of bugs and makes your sketches more
+predictable.
+
+
+What You Will Learn
+
+
+When setup(), update(), draw(), and exit() are called and what each is for
+The OpenGL context lifecycle: what you can and cannot call before setup() returns
+How to use ofGetLastFrameTime() for frame-rate-independent animation with delta time
+How to control frame rate with ofSetFrameRate() and ofSetVerticalSync()
+Debugging lifecycle issues with ofLog() and log level control
+
+
+
+The Four Core Methods
+
+
+When you call ofRunApp(new ofApp()) in main.cpp, oF enters its event
+loop. The sequence of calls for the lifetime of the application is:
+
+
+
+main()
+  ofSetupOpenGL(...)    // creates the window and the OpenGL context
+  ofRunApp(app)
+    app->setup()        // called once, after the GL context exists
+    loop:
+      app->update()     // called once per frame, before draw
+      app->draw()       // called once per frame, after update
+    app->exit()         // called once, before the window closes
+
+
+
+Event callbacks (mouse, keyboard, audio) are dispatched by the OS event queue, interleaved
+between frames. They do not interrupt update() or draw().
+
+
+setup()
+
+
+setup() is called once, after the OpenGL context has been created and the window
+is on screen. This is the right place to:
+
+
+
+  Load images, fonts, and other assets from disk.
+  Allocate framebuffer objects (FBOs) and textures.
+  Open the sound stream.
+  Set global rendering state (ofSetFrameRate, ofBackground,
+  ofEnableDepthTest).
+  Initialise simulation state (particle positions, random seeds).
+
+
+
+void ofApp::setup() {
+    ofSetFrameRate(60);
+    ofSetWindowTitle("My Sketch");
+    ofBackground(10, 10, 20);
+
+    font.load("fonts/IBMPlexMono-Regular.ttf", 14);
+    img.load("images/texture.png");
+    fbo.allocate(ofGetWidth(), ofGetHeight());
+
+    particles.resize(500);
+    for (auto &p : particles) {
+        p.pos = { ofRandom(ofGetWidth()), ofRandom(ofGetHeight()) };
+        p.vel = { ofRandom(-2, 2), ofRandom(-2, 2) };
+    }
+}
+
+
+
+Do not call OpenGL functions before setup() is reached. The constructor of
+ofApp runs before the GL context exists, so allocating a texture there will
+silently produce a broken object.
+
+
+update()
+
+
+update() runs once per frame, before draw(). This is where you
+advance your simulation: move particles, sample audio buffers, decode video frames, run
+physics. The key discipline is to keep rendering code out of update() and keep
+simulation code out of draw(). Mixing them is a common beginner mistake that
+makes code hard to reason about.
+
+
+
+void ofApp::update() {
+    float dt = ofGetLastFrameTime();   // seconds since last frame
+
+    for (auto &p : particles) {
+        p.vel.y += 0.1f * dt * 60.0f; // gravity, frame-rate independent
+        p.pos += p.vel;
+
+        if (p.pos.x < 0 || p.pos.x > ofGetWidth())  p.vel.x *= -1;
+        if (p.pos.y > ofGetHeight()) {
+            p.pos.y = 0;
+            p.vel.y = ofRandom(-4, -1);
+        }
+    }
+}
+
+
+Frame Rate and Delta Time
+
+
+ofSetFrameRate(n) asks oF to cap the loop at n frames per second.
+It uses a sleep-based limiter, so the actual rate may be slightly lower on a loaded system.
+Use ofGetFrameRate() to query the running average.
+
+
+
+Critically, do not hard-code movement speeds as pixels-per-frame. A sketch that runs at 60 fps
+on your machine will run at 30 fps on a slower laptop and your animation will be half speed.
+Use delta time instead: multiply all velocities and accelerations by
+ofGetLastFrameTime(), which returns the elapsed time in seconds since the last
+call to draw().
+
+
+
+// Bad: frame-rate dependent
+p.pos.x += 3.0f;
+
+// Good: frame-rate independent
+float dt = ofGetLastFrameTime();
+p.pos.x += 180.0f * dt;  // 180 pixels per second regardless of frame rate
+
+
+
+ofGetElapsedTimef() returns the total seconds since setup() was
+called. Use it for time-based animations and oscillators:
+
+
+
+void ofApp::draw() {
+    float t = ofGetElapsedTimef();
+    float x = ofGetWidth()  / 2.0f + sin(t * 1.5f) * 200.0f;
+    float y = ofGetHeight() / 2.0f + cos(t * 0.8f) * 150.0f;
+    ofDrawCircle(x, y, 20);
+}
+
+
+draw()
+
+
+draw() is called immediately after update(). By the time it runs,
+oF has cleared the back buffer (or you clear it yourself with ofBackground()).
+You issue OpenGL draw calls here, then oF swaps the front and back buffers (double buffering)
+at the end of the method.
+
+
+
+A few rules:
+
+
+
+  Do not modify simulation state in draw(). If you need to record a screenshot
+  or save a frame, do so in update() after checking a flag set by a key press.
+  The coordinate system has its origin at the top-left corner, with y increasing
+  downward. This is different from standard mathematical convention but matches most 2D UI
+  toolkits.
+  All oF 2D draw calls operate in pixels by default. ofGetWidth() and
+  ofGetHeight() return the window dimensions.
+
+
+
+void ofApp::draw() {
+    // Clear to dark grey every frame
+    ofBackground(20, 20, 20);
+
+    // Draw all particles
+    ofSetColor(255, 80, 30);
+    for (const auto &p : particles) {
+        ofDrawCircle(p.pos.x, p.pos.y, 4);
+    }
+
+    // HUD
+    ofSetColor(200);
+    ofDrawBitmapString("FPS: " + ofToString(ofGetFrameRate(), 1), 10, 20);
+}
+
+
+exit()
+
+
+exit() is called once when the user closes the window or the process receives a
+termination signal. Use it to:
+
+
+
+  Close the audio stream cleanly.
+  Save state to disk (preset files, settings, recording buffers).
+  Release any resources that need an explicit teardown (serial ports, network sockets).
+
+
+
+void ofApp::exit() {
+    soundStream.close();
+    preset.saveToFile("lastPreset.xml");
+    ofLogNotice("ofApp") << "Exiting cleanly.";
+}
+
+
+
+RAII objects (smart pointers, ofSoundStream, ofFbo) clean themselves
+up automatically when they go out of scope. exit() is for the cases where that
+is not sufficient - usually side-effecting resources with OS handles.
+
+
+The OpenGL Context and Setup Order
+
+
+oF creates the OpenGL context inside ofSetupOpenGL(), which is called from
+main() before ofRunApp(). By the time your ofApp
+constructor runs the context may or may not exist depending on platform details - do not
+rely on it. By the time setup() is called it always exists.
+
+
+
+This matters for textures, shaders, and FBOs. Declare them as member variables in
+ofApp.h, but construct and allocate them only in setup():
+
+
+
+// ofApp.h
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void update();
+    void draw();
+private:
+    ofImage          backgroundImg;   // declared but not loaded
+    ofTrueTypeFont   font;            // declared but not loaded
+    ofFbo            renderTarget;    // declared but not allocated
+};
+
+
+
+// ofApp.cpp
+void ofApp::setup() {
+    backgroundImg.load("bg.jpg");       // safe: GL context exists
+    font.load("font.ttf", 18);
+    renderTarget.allocate(1920, 1080);
+}
+
+
+Windowed vs Fullscreen
+
+
+Call ofToggleFullscreen() at any time to switch modes. Set the initial mode in
+main.cpp:
+
+
+
+// main.cpp
+#include <ofMain.h>
+#include "ofApp.h"
+
+int main() {
+    ofSetupOpenGL(1280, 720, OF_FULLSCREEN);  // or OF_WINDOW
+    ofRunApp(new ofApp());
+}
+
+
+
+ofGetWidth() and ofGetHeight() always return the current window
+dimensions, so your drawing code does not need to change when switching modes.
+
+
+Logging
+
+
+oF has a lightweight logging system that routes to the console and optionally to a file.
+Use it instead of printf for anything non-trivial:
+
+
+
+ofLogVerbose("ofApp") << "Particle count: " << particles.size();
+ofLogNotice("ofApp")  << "Audio stream opened at " << sampleRate << " Hz";
+ofLogWarning("ofApp") << "Asset not found: " << path;
+ofLogError("ofApp")   << "Critical failure in setup.";
+
+
+
+Set the global log level with ofSetLogLevel(OF_LOG_VERBOSE) in
+setup() during development, and OF_LOG_WARNING in release builds.
+
+
+Summary
+
+
+setup() runs once after the OpenGL context is created — allocate GPU resources
+here, not before. update() runs once per frame before drawing — advance
+simulation state here using ofGetLastFrameTime() as the delta. draw()
+renders the frame — do not modify simulation state here. exit() is called before
+the window closes — release any resources that need explicit cleanup. Control frame rate with
+ofSetFrameRate(60); set log level to OF_LOG_VERBOSE during
+development.
+
+
+Further Reading
+
+
+  ofBaseApp API Reference
+  ofGetElapsedTimef Documentation
+  ofLog Documentation
+
+
+See Also
+
+
+  Setup & Project Generator
+  2D Drawing Primitives
+  Mouse, Keyboard & Touch Input
+

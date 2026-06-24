@@ -1,0 +1,325 @@
+LLM - Part 2: Chat Completions Deep Dive
+2026-06-11
+
+
+The previous article made a single round-trip to the API and printed the result. Real
+applications need persistent conversations - the model must remember what was said earlier
+in the same session. This article covers how the message array works, what temperature and
+other sampling parameters do, and how to build a stateful command-line chat loop in Go.
+
+
+What You Will Learn
+
+
+The three message roles — system, user, assistant — and how they form the conversation history
+Temperature, top_p, and other sampling parameters: what they control and sensible values
+Token limits: how to count tokens, what happens when you exceed the context window
+How to build a stateful REPL in Go that accumulates messages and maintains conversational context
+How to watch the context window and trim old messages when it fills up
+How to use streaming responses (stream: true) for real-time output
+
+
+The Messages Array
+
+
+OpenAI's chat completions API is stateless. The server does not store conversation history.
+Every request must include the complete history you want the model to see, from the first
+message to the latest. The messages field is an ordered array of objects, each
+with a role and content.
+
+
+
+There are three roles:
+
+
+
+system - instructions that shape the model's behaviour for the entire conversation. Appears once, first in the array. The model treats it as authoritative context.
+user - input from the human. Can appear multiple times, alternating with assistant messages.
+assistant - the model's previous responses. You include these yourself when you want the model to have memory of what it said.
+
+
+
+A two-turn conversation looks like this in the wire format:
+
+
+
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    {"role": "system",    "content": "You are a Go programming tutor."},
+    {"role": "user",      "content": "What is a goroutine?"},
+    {"role": "assistant", "content": "A goroutine is a lightweight thread managed by the Go runtime..."},
+    {"role": "user",      "content": "How does it differ from an OS thread?"}
+  ]
+}
+
+
+
+The model sees all four messages and uses them to answer the second question with the
+context of the first exchange. Without that history, it would answer "how does it differ"
+with no referent.
+
+
+Temperature and Sampling
+
+
+The temperature parameter (0.0 to 2.0, default 1.0) controls randomness.
+At temperature 0 the model is nearly deterministic - given the same input it will almost
+always produce the same output. Higher temperatures introduce more variation.
+
+
+
+0.0 – 0.3 - deterministic, factual. Good for structured output (JSON, code, data extraction).
+0.7 – 1.0 - balanced. Good for general conversation and explanation.
+1.2 – 2.0 - creative, unpredictable. Good for brainstorming, poetry, variation generation.
+
+
+
+For agentic code - agents that call tools, write code, and make decisions - use temperature
+0.0 to 0.3. You want the model to be consistent and precise, not creative. For a conversational
+assistant helping a user explore ideas, 0.7 to 1.0 is more appropriate.
+
+
+
+Add Temperature to the request struct:
+
+
+
+type ChatRequest struct {
+    Model       string    `json:"model"`
+    Messages    []Message `json:"messages"`
+    Temperature float64   `json:"temperature,omitempty"`
+    MaxTokens   int       `json:"max_tokens,omitempty"`
+}
+
+
+
+omitempty means the field is omitted from JSON if it is the zero value (0.0
+for float64, 0 for int). This lets the API use its own defaults when you don't set them,
+rather than sending explicit zeros.
+
+
+Token Limits and the Context Window
+
+
+Every model has a context window - the maximum number of tokens it can process in a single
+request (input plus output combined). Tokens are not characters or words; roughly speaking,
+one token is about four characters of English text. gpt-4o-mini has a 128k token
+context window. gpt-4o also has 128k.
+
+
+
+max_tokens in the request limits how many tokens the model can generate in its
+response. If you do not set it the model will generate until it reaches its natural stopping
+point or hits the model's internal output limit (which varies by model).
+
+
+
+The practical constraint is the input side. As a conversation grows, so does the messages
+array. Eventually it will exceed the context window and the API will return a 400 error.
+You must manage this yourself. Strategies:
+
+
+
+Sliding window - keep only the system message and the N most recent exchanges. Simple but loses early context.
+Summarisation - when the history grows too long, ask the model to summarise the conversation so far, replace the history with the summary, then continue. Covered in article 10.
+Selective retention - tag messages as important and keep them; drop unimportant ones first. Works well for task-oriented agents.
+
+
+Building a Stateful REPL
+
+
+Here is a complete interactive chat loop. The user types messages at a prompt, the
+assistant responds, and the full history is maintained in memory for the duration of
+the session.
+
+
+
+package main
+
+import (
+    "bufio"
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+    "strings"
+)
+
+const apiURL = "http://localhost:8001/v1/chat/completions"
+
+type Message struct {
+    Role    string `json:"role"`
+    Content string `json:"content"`
+}
+
+type ChatRequest struct {
+    Model       string    `json:"model"`
+    Messages    []Message `json:"messages"`
+    Temperature float64   `json:"temperature,omitempty"`
+}
+
+type Choice struct {
+    Message      Message `json:"message"`
+    FinishReason string  `json:"finish_reason"`
+}
+
+type ChatResponse struct {
+    Choices []Choice `json:"choices"`
+    Usage   struct {
+        TotalTokens int `json:"total_tokens"`
+    } `json:"usage"`
+}
+
+func complete(apiKey string, req ChatRequest) (*ChatResponse, error) {
+    data, _ := json.Marshal(req)
+    r, _ := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(data))
+    r.Header.Set("Content-Type", "application/json")
+    r.Header.Set("Authorization", "Bearer "+apiKey)
+
+    resp, err := http.DefaultClient.Do(r)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("API %d: %s", resp.StatusCode, body)
+    }
+
+    var result ChatResponse
+    json.Unmarshal(body, &result)
+    return &result, nil
+}
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    if apiKey == "" {
+        fmt.Fprintln(os.Stderr, "OPENAI_API_KEY not set")
+        os.Exit(1)
+    }
+
+    history := []Message{
+        {Role: "system", Content: "You are a helpful assistant. Be concise."},
+    }
+
+    scanner := bufio.NewScanner(os.Stdin)
+    fmt.Print("> ")
+
+    for scanner.Scan() {
+        input := strings.TrimSpace(scanner.Text())
+        if input == "" || input == "quit" || input == "exit" {
+            break
+        }
+
+        history = append(history, Message{Role: "user", Content: input})
+
+        resp, err := complete(apiKey, ChatRequest{
+            Model:       "gpt-4o-mini",
+            Messages:    history,
+            Temperature: 0.7,
+        })
+        if err != nil {
+            fmt.Fprintln(os.Stderr, "error:", err)
+            history = history[:len(history)-1] // remove the failed user message
+            fmt.Print("> ")
+            continue
+        }
+
+        if len(resp.Choices) == 0 {
+            fmt.Fprintln(os.Stderr, "no response")
+            fmt.Print("> ")
+            continue
+        }
+
+        reply := resp.Choices[0].Message
+        history = append(history, reply)
+
+        fmt.Printf("\n%s\n\n[%d tokens total]\n> ", reply.Content, resp.Usage.TotalTokens)
+    }
+}
+
+
+
+Run it with go run main.go. Type messages and press enter. Type quit
+to exit. Each exchange adds two messages to the history (user + assistant), so the token
+count printed at each turn grows over the conversation.
+
+
+Watching the Context Window
+
+
+Add a simple guard to prevent hitting the context limit. A rough estimate: if
+resp.Usage.TotalTokens exceeds 90% of the model's limit, trim the oldest
+non-system messages:
+
+
+
+const contextLimit = 128000
+
+func trimHistory(history []Message, totalTokens int) []Message {
+    if totalTokens < int(float64(contextLimit)*0.9) {
+        return history
+    }
+    // Keep system message (index 0) and drop oldest pairs
+    if len(history) > 3 {
+        // Remove messages at index 1 and 2 (oldest user+assistant pair)
+        return append(history[:1], history[3:]...)
+    }
+    return history
+}
+
+
+
+Call it after each successful response: history = trimHistory(history, resp.Usage.TotalTokens).
+This is the simplest possible strategy. Article 10 covers more sophisticated memory
+management with summarisation.
+
+
+Streaming Responses
+
+
+The API supports streaming via server-sent events. Add "stream": true to the
+request and the response body becomes a stream of data: {...} lines, each
+containing a partial delta. This is how ChatGPT shows text appearing word by word.
+
+
+
+Streaming is not required for agentic applications - the agent loop (article 04) sends
+a request and waits for the full response before acting on it. But for conversational
+interfaces where latency is noticeable, streaming improves perceived responsiveness.
+The implementation requires reading the response body line by line and accumulating
+the content deltas, which is covered when we build the full agent UI in article 14.
+
+
+Summary
+
+
+Conversation state is the messages array: each turn appends a user message,
+sends the full array, and appends the assistant's reply. The system message
+sets persistent behaviour. Temperature controls randomness — 0 for deterministic
+output, 0.7–1.0 for creative tasks. The context window is finite; trim the
+oldest messages or summarise when it fills. Streaming ("stream": true)
+sends tokens as Server-Sent Events so the user sees output incrementally rather
+than waiting for the full response.
+
+
+Further Reading
+
+
+OpenAI: Text Generation Guide
+API Reference: Create Chat Completion
+OpenAI Tokenizer (visualise token counts)
+Go bufio package - Scanner for reading stdin line by line
+
+
+See Also
+
+
+OpenAI API Basics - making your first API call with net/http
+Tool Calls (Function Calling) - adding executable functions to the conversation
+Adding Memory to Agents - long-term memory and summarisation strategies
+

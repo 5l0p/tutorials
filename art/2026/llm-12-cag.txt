@@ -1,0 +1,279 @@
+LLM - Part 12: CAG: Cache-Augmented Generation
+2026-06-21
+
+
+Cache-Augmented Generation (CAG) is a complementary strategy to RAG. Where RAG retrieves
+a slice of a large knowledge base for each query, CAG loads the entire relevant
+context into the prompt once, caches it on the server, and reuses the cached representation
+for subsequent queries. No embedding step, no retrieval, no approximation - the model sees
+all the context directly, and subsequent calls with the same prefix are faster and cheaper
+because the API provider does not need to reprocess the cached prefix.
+
+
+What You Will Learn
+
+
+How OpenAI prompt caching works: automatic prefix caching, token thresholds, and the cached_tokens field
+How to structure prompts for maximum cache hit rate: what goes first and why
+How to load a knowledge base into the system prompt and keep the cache warm between calls
+When CAG is better than RAG: static context, low-latency requirements, small-to-medium knowledge bases
+How to measure cache performance and calculate cost savings
+
+
+How OpenAI Prompt Caching Works
+
+
+OpenAI automatically caches prompt prefixes that are at least 1024 tokens long. When you
+send a request, the API checks whether the prompt's prefix (specifically, the first N tokens
+in multiples of 128) matches a recently cached entry. If it does, you pay a reduced rate
+for those cached tokens (50% off input token price for most models) and the latency is
+lower because the key-value cache in the transformer does not need to be recomputed.
+
+
+
+The cache entry for a given prefix expires after approximately 5–10 minutes of disuse.
+If you keep sending requests with the same prefix, the cache stays warm.
+
+
+
+The API response includes a prompt_tokens_details field that tells you how
+many tokens were served from cache:
+
+
+
+type Usage struct {
+    PromptTokens     int `json:"prompt_tokens"`
+    CompletionTokens int `json:"completion_tokens"`
+    TotalTokens      int `json:"total_tokens"`
+    PromptTokensDetails struct {
+        CachedTokens int `json:"cached_tokens"`
+    } `json:"prompt_tokens_details"`
+}
+
+
+
+Log CachedTokens during development to confirm your cache strategy is working.
+
+
+Structuring Prompts for Maximum Cache Hit Rate
+
+
+Caching is prefix-based. For cache hits to occur, the beginning of every prompt must be
+identical. This has a direct implication for prompt structure:
+
+
+
+Put static content first. System prompt, knowledge base, tools, examples - anything that does not change between requests.
+Put dynamic content last. The user's message, per-request variables, session state.
+Never modify the cached prefix. Even a single character difference at the start of the prompt breaks the cache for the entire prefix.
+
+
+
+A CAG-optimised prompt structure:
+
+
+
+[SYSTEM PROMPT]                     ← static, always first
+[STATIC KNOWLEDGE BASE DOCUMENTS]  ← static, same every request
+[TOOLS/SCHEMAS]                     ← static (tool definitions rarely change)
+[CONVERSATION HISTORY]              ← semi-static, grows each turn
+[CURRENT USER MESSAGE]              ← dynamic, changes every request
+
+
+Go Implementation: Cached Context Manager
+
+
+package cag
+
+import "strings"
+
+type CachedContext struct {
+    staticPrefix []string // system prompt + static docs
+    history      []string // conversation turns (appended each round)
+}
+
+func New(systemPrompt string) *CachedContext {
+    return &CachedContext{
+        staticPrefix: []string{systemPrompt},
+    }
+}
+
+func (c *CachedContext) AddStaticDocument(doc string) {
+    c.staticPrefix = append(c.staticPrefix, doc)
+}
+
+func (c *CachedContext) BuildMessages(userMessage string) []Message {
+    var msgs []Message
+
+    // The combined static prefix - this part will be cached
+    staticContent := strings.Join(c.staticPrefix, "\n\n---\n\n")
+    msgs = append(msgs, Message{
+        Role:    "system",
+        Content: staticContent,
+    })
+
+    // Prior conversation history
+    for _, h := range c.history {
+        msgs = append(msgs, Message{Role: "user", Content: h})
+        // In real use, history would alternate user/assistant
+    }
+
+    // Current user message (always last)
+    msgs = append(msgs, Message{Role: "user", Content: userMessage})
+
+    return msgs
+}
+
+func (c *CachedContext) AddToHistory(userMsg, assistantReply string) {
+    c.history = append(c.history, userMsg, assistantReply)
+}
+
+
+CAG vs RAG: Decision Guide
+
+
+Neither strategy is universally better. The choice depends on your knowledge base
+characteristics.
+
+
+Use CAG when:
+
+
+The knowledge base is small enough to fit in the context window (under ~100k tokens).
+It changes infrequently (daily or less). Frequent changes invalidate the cache.
+Precision matters - you need the model to reason over the full context, not just retrieved snippets.
+You make many queries against the same corpus - the cost savings from caching compound quickly.
+Examples: a company's internal documentation, a programming language spec, a legal document set.
+
+
+Use RAG when:
+
+
+The knowledge base is larger than the context window.
+It changes frequently (hourly or more).
+Each query only needs a small slice of the total knowledge.
+Examples: a product catalogue with thousands of items, a codebase with hundreds of files.
+
+
+
+A hybrid approach works for some use cases: use CAG for a core reference document that
+rarely changes, and RAG for a larger corpus of supporting documents.
+
+
+Loading a Knowledge Base for CAG
+
+
+A practical example: loading a set of markdown files into the static prefix at startup.
+
+
+
+func loadKnowledgeBase(dir string) ([]string, error) {
+    entries, err := os.ReadDir(dir)
+    if err != nil {
+        return nil, err
+    }
+    var docs []string
+    for _, e := range entries {
+        if !strings.HasSuffix(e.Name(), ".md") {
+            continue
+        }
+        data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+        if err != nil {
+            return nil, err
+        }
+        docs = append(docs, fmt.Sprintf("## %s\n\n%s", e.Name(), data))
+    }
+    return docs, nil
+}
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    ctx := cag.New("You are a helpful assistant. The knowledge base below contains documentation you should use to answer questions.")
+
+    docs, _ := loadKnowledgeBase("./docs")
+    for _, d := range docs {
+        ctx.AddStaticDocument(d)
+    }
+
+    // All subsequent calls share the same static prefix - cache hit after first call
+    for _, q := range []string{
+        "What is a goroutine?",
+        "How do channels work?",
+        "When should I use a mutex instead of a channel?",
+    } {
+        msgs := ctx.BuildMessages(q)
+        resp, err := chat(apiKey, "gpt-4o-mini", msgs)
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Printf("Q: %s\nA: %s\n\n", q,
+            resp.Choices[0].Message.Content)
+        fmt.Printf("  cached tokens: %d / %d\n",
+            resp.Usage.PromptTokensDetails.CachedTokens,
+            resp.Usage.PromptTokens)
+    }
+}
+
+
+
+The first call will show 0 cached tokens. By the second or third call, the static prefix
+will be cached and CachedTokens will equal the length of your combined
+system prompt and documents.
+
+
+Anthropic's Explicit Cache Control
+
+
+Anthropic's API for Claude models takes an explicit approach: you mark specific message
+parts with "cache_control": {"type": "ephemeral"} to tell the API exactly
+what to cache. This gives you more control than OpenAI's automatic prefix caching but
+requires explicit annotation. If you are building a multi-model agent (covered in article
+13), design your context manager to support both approaches.
+
+
+Cost Analysis
+
+
+Assume gpt-4o-mini at $0.15 per million input tokens. A 10,000-token knowledge
+base loaded in every request, over 100 queries:
+
+
+
+Without caching: 100 × 10,000 = 1,000,000 tokens = $0.15
+With caching (50% discount after first call): ~$0.075 + $0.0075 ≈ $0.08
+
+
+
+The savings scale with request volume. For a high-traffic application making thousands of
+queries per hour against a shared knowledge base, prompt caching can cut input token costs
+by 40–50%.
+
+
+Summary
+
+
+CAG loads the entire knowledge base into the system prompt once and relies on the API
+provider's prefix cache to avoid reprocessing it on subsequent calls. Structure your
+prompt so the static knowledge block comes first, immediately after the system message,
+followed by the user turn. OpenAI caches prefixes of at least 1024 tokens and returns
+cached_tokens in the usage object so you can verify hit rate. Choose CAG over RAG when
+the knowledge base fits in the context window and queries do not require fine-grained
+retrieval — the model sees everything directly with no approximation.
+
+
+Further Reading
+
+
+OpenAI: Prompt Caching Guide
+Anthropic: Prompt Caching
+CAG: Cache-Augmented Generation (2024)
+
+
+See Also
+
+
+RAG: Retrieval-Augmented Generation - retrieval-based approach for large knowledge bases
+Adding Memory to Agents - session-level memory management
+Putting It Together: A Full Agent - where CAG and RAG fit in a complete system
+

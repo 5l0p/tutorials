@@ -1,0 +1,188 @@
+Elektron Synthesis - Part 13: Monomachine DigiPro Engine
+2026-01-01
+
+
+The Monomachine's DigiPro engine uses digital oscillator techniques that go beyond
+simple analogue waveform emulation: phase distortion synthesis (Casio CZ-inspired),
+wavetable scanning, and combinations of shaped waveforms. The key idea is that
+distorting the phase accumulator's output — before feeding it into a sine lookup —
+produces complex, harmonically rich timbres from a single oscillator cycle without
+aliasing artifacts that would occur from hard-clipping the waveform directly.
+
+
+DigiPro Machine Variants
+
+
+MachineDescriptionCharacter
+DP SINPhase-distorted sine (basic CZ model)From pure sine to buzzy complex waveform
+DP TRIPhase-distorted triangleSoft, glassy, flute-like
+DP SAWPhase-distorted sawtoothBright, string-like
+DP SQRPhase-distorted square (pulse)Hollow, clarinet-like
+DP TBLXWavetable scanning (multiple waveform tables)Complex, evolving timbres
+
+
+Phase Distortion Synthesis
+
+
+In standard wavetable synthesis, the output is:
+y = lookup_table[phase] where phase increments linearly from 0 to 1
+at the oscillator frequency.
+
+
+
+In phase distortion, a nonlinear function is applied to the phase before the table
+lookup:
+y = lookup_table[distort(phase)]
+
+
+
+The distortion function reshapes how quickly the phase traverses the table — faster
+at some points (producing higher-frequency content in that portion of the waveform)
+and slower at others (producing lower-frequency content). The overall fundamental
+pitch is unchanged because the distorted phase still completes one full cycle per period.
+
+
+The CZ-Style Distortion Function
+
+
+The Casio CZ series uses a simple piecewise linear distortion: the phase moves quickly
+through the first half of the cycle and slowly through the second half, controlled
+by a single "distortion" parameter D:
+
+
+
+; Casio CZ phase distortion:
+; input_phase: 0 to 1 (linear)
+; output_phase: 0 to 1 (distorted)
+
+; If D = 0: linear (no distortion)
+; If D = 1: maximum distortion
+
+; Algorithm:
+; if input_phase 
+
+
+; Pd implementation:
+[phasor~ $freq]           ; 0 to 1 linear phase
+|
+[t a a a]                 ; fan out for piecewise comparison
+|        |        |
+[
+
+Effect of Phase Distortion on Spectrum
+
+
+As D increases from 0 to 1, harmonics are progressively added to the output:
+
+
+
+D valueSpectrumCharacter
+0.0Pure sine (fundamental only)Clean, flute-like
+0.22nd, 3rd harmonic addedSlightly nasal
+0.5Rich odd harmonicsClarinet-like
+0.8Very bright, many harmonicsBuzzy, oboe-like
+1.0Near-square wave harmonic contentFull harmonics
+
+
+DigiPro Parameters
+
+
+KnobNameFunctionRange
+1DIST1 (d1)Phase distortion amount on carrier half-cycle0–1
+2DIST2 (d2)Phase distortion on modulator / second waveform0–1
+3WAVE MIX (wm)Blend between primary and secondary waveform0–1
+4TABLE (tbl)Wavetable position (DP TBLX only)0–1 (scans tables)
+5RESONANCE (res)Resonant sine reset (CZ "resonance 1/2/3")0–7
+6PWSymmetry / pulse width offset0–1
+7CUTOFFShared MNM filter cutoff0–1
+8LEVELOutput level0–1
+
+
+CZ Resonance Modes
+
+
+The Casio CZ series has an additional feature called "resonance" (not filter resonance)
+that adds a sub-cycle reset of the waveform's phase. At resonance=0, the waveform
+completes one full cycle per period. At resonance=N, the waveform completes N+1 or
+more sub-cycles within one fundamental period — creating a much brighter, formant-like
+spectrum:
+
+
+
+; CZ-style resonance: multiply the waveform phase by (1 + resonance)
+; but reset to 0 at the fundamental period boundary (wrap to 0 at full period):
+
+[phasor~ $freq]          ; fundamental period phase (0 to 1)
+|
+[* (1 + resonance)]      ; sub-cycle frequency multiplier
+|
+[wrap~]                  ; stays 0–1 within each sub-cycle
+|
+[cos~]                   ; lookup
+
+; Combine with amplitude envelope that also tracks fundamental period:
+; The amplitude of the waveform decreases as it reaches the fundamental period
+; boundary, creating a formant-like amplitude pattern:
+[phasor~ $freq]
+|
+[* -1][+~ 1]             ; 1 to 0 ramp (amplitude window)
+→ multiply waveform output by this ramp
+
+
+
+Resonance modes 1–7 create progressively brighter, formant-like spectra — useful for
+string, brass, and vocal-like sounds.
+
+
+DP TBLX: Wavetable Scanning
+
+
+The DP TBLX variant adds a wavetable dimension — instead of a fixed CZ-style
+distortion, the TABLE parameter scans through a sequence of stored waveforms. As TABLE
+moves from 0 to 1, the oscillator transitions smoothly between different timbres:
+
+
+
+; Wavetable scanning with linear interpolation:
+[array dp_table_0 1024]   ; waveform at table position 0
+[array dp_table_1 1024]   ; waveform at table position 0.33
+[array dp_table_2 1024]   ; waveform at table position 0.67
+[array dp_table_3 1024]   ; waveform at table position 1.0
+
+[r $0-tbl]     → $tbl_pos   ; 0 to 1
+
+; Interpolated table read:
+; find which two tables to blend and their mix ratio:
+; table_index = tbl_pos × 3         ; 0 to 3
+; table_floor = floor(table_index)  ; 0, 1, 2, or 3
+; blend_frac  = table_index - floor ; 0 to 1 fractional blend
+
+[phasor~ $freq]    → phase signal (0 to 1)
+|
+[tabread4~ dp_table_0] × (1 - blend) ─┐
+[tabread4~ dp_table_1] × blend         ─┘  → [+~] interpolated output
+
+
+
+By LFO-modulating the TABLE parameter, continuously evolving pads can be created.
+By ADSR-shaping the TABLE parameter, the timbre can transform as the note decays.
+
+
+Summary
+
+
+The DigiPro engine uses phase distortion synthesis: a nonlinear mapping applied to the
+phase accumulator before sine lookup. The distortion parameter D controls harmonic
+content from pure sine (D=0) to square-wave-rich (D=1). The resonance parameter adds
+sub-cycle reset for formant-like spectra. The DP TBLX variant replaces phase distortion
+with wavetable scanning — smoothly interpolating between stored waveform tables via the
+TABLE parameter. All variants share the MNM's 2-pole multimode filter and amplitude ADSR.
+
+
+See Also
+
+
+Monomachine SuperWave Engine - detuned unison oscillators as an alternative approach
+Monomachine Percussion Toolbox - built-in drum voices using DigiPro-related techniques
+Wavetable Oscillators - [tabread4~] interpolated wavetable scanning technique
+

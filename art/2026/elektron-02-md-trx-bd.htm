@@ -1,0 +1,358 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Elektron Synthesis - Part 2: Machinedrum TRX-BD Bass Drum</title>
+    <meta name="description" content="Reverse-engineering and recreating the Machinedrum TRX-BD bass drum machine in Pure Data: two exponentially-swept oscillators, a transient oscillator for click, filtered noise burst, waveshaping distortion, and parameter-lock-ready receivers for all eight track parameters.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, puredata, audio, synthesis, elektron">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="elektron-02-md-trx-bd.txt">plain/text</a> | <i>2026-01-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../synthesis.htm">synthesis</a>, <a href="../../elektron.htm">elektron</a></i>
+        <h2>Elektron Synthesis - Part 2: Machinedrum TRX-BD Bass Drum</h2>
+        <p>
+The TRX-BD is the Machinedrum's analog-modeled bass drum — its closest analogue to
+the Roland TR-808 kick. Two oscillators produce the body tone, a steep exponential
+pitch sweep creates the characteristic downward "thud", filtered noise adds body
+texture, and a waveshaper introduces controlled distortion. All eight track parameters
+are p-lockable per step. This article reverse-engineers the synthesis architecture
+and builds a complete Pd recreation.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The eight TRX-BD parameters and what synthesis stage each controls</li>
+<li>An exponential pitch sweep sharper than a linear VCO sweep</li>
+<li>A "transient click" oscillator distinct from the body oscillator</li>
+<li>Distortion via waveshaping (not hard clip) for the MD's characteristic grit</li>
+<li>Noise filtering tuned to the sub-kick frequency range</li>
+<li>P-lock compatible receiver architecture: every parameter settable per step</li>
+</ul>
+
+<h3>The Eight TRX-BD Parameters</h3>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Knob</th><th>Name</th><th>Function</th><th>Range</th></tr>
+<tr><td>1</td><td>PITCH (ptch)</td><td>Base oscillator frequency</td><td>40–300 Hz</td></tr>
+<tr><td>2</td><td>DECAY (dcy)</td><td>Amplitude envelope decay time</td><td>10–8000 ms</td></tr>
+<tr><td>3</td><td>SWEEP (swp)</td><td>Pitch sweep depth (Hz added at peak)</td><td>0–1200 Hz</td></tr>
+<tr><td>4</td><td>PITCH DECAY (pdcy)</td><td>Pitch sweep duration</td><td>5–1000 ms</td></tr>
+<tr><td>5</td><td>NOISE (nse)</td><td>Level of noise burst</td><td>0–1</td></tr>
+<tr><td>6</td><td>CLICK (clk)</td><td>Level of transient click oscillator</td><td>0–1</td></tr>
+<tr><td>7</td><td>DIST (dst)</td><td>Waveshaper drive amount</td><td>0–1</td></tr>
+<tr><td>8</td><td>TUNE (tun)</td><td>Fine tune ±semitones</td><td>±24 st</td></tr>
+</table>
+
+<p>
+The Machinedrum track also has a global LEVEL (amplitude) and a NOTE/PITCH offset from
+the sequencer, which transpose the PITCH parameter value.
+</p>
+
+<h3>Synthesis Architecture</h3>
+
+<pre>
+; TRX-BD signal flow:
+
+TRIGGER
+  │
+  ├─ [BODY OSC] ──────────────────────────────────────────────────────
+  │   [osc~ pitch]                  ; sine oscillator
+  │   swept by [vline~] from (pitch+sweep) to pitch over pdcy ms
+  │   amplitude: [vline~] 0→1→0 over dcy ms (attack 2ms)
+  │   [*~ bodyAmp]
+  │
+  ├─ [CLICK OSC] ─────────────────────────────────────────────────────
+  │   [osc~ pitch*3.5]              ; 3rd-ish harmonic, very short
+  │   amplitude: [vline~] 0→1→0 over 8ms (very fast, click only)
+  │   [*~ clk]
+  │
+  ├─ [NOISE BURST] ───────────────────────────────────────────────────
+  │   [noise~] → [lop~ pitch*4]     ; lowpass at 4× body frequency
+  │   amplitude: [vline~] 0→1→0 over dcy*0.3 ms
+  │   [*~ nse]
+  │
+  [+~] sum
+  │
+  [WAVESHAPER]                      ; tanh-like soft saturation
+  │   driven by dst parameter
+  │
+  [*~ level]                        ; output level
+  │
+  [outlet~]
+</pre>
+
+<h3>The Exponential Pitch Sweep</h3>
+
+<p>
+The TRX-BD pitch sweep sounds more natural than a linear ramp — it follows a curve
+closer to exponential decay. The perceptual pitch drops fast at first and slows as it
+approaches the base pitch. In Pd, approximate with a <code>[vline~]</code> to a
+post-processing curve, or use two-segment ramp:
+</p>
+
+<pre>
+; Exponential pitch sweep via two-segment vline~:
+; Segment 1: drop 80% of the sweep in 20% of the time
+; Segment 2: drop remaining 20% over the remaining 80% of the time
+
+[r $0-pitch]
+|
+[f] → $baseHz
+
+; On trigger, compute peak = base + sweep:
+[+ $sweep]   → $peakHz
+
+; Send to freq vline~:
+; "peakHz 0, baseHz*1.15 pdcy*0.2, baseHz pdcy"
+; (rapid drop first, slow approach to base)
+
+[vline~]     ; → [osc~] signal inlet
+</pre>
+
+<p>
+For a closer match to the original, use the Pd <code>[expr~]</code> object to apply
+an exponential curve to a linear 0–1 ramp:
+</p>
+
+<pre>
+; Apply exponential shaping to a 0-1 ramp:
+[vline~]             ; linear 0 to 1 ramp over pdcy ms
+|
+[expr~ exp(-5 * $v1) * $sweep + $pitch]   ; exponential sweep
+|
+[osc~]               ; frequency signal inlet
+</pre>
+
+<p>
+<code>exp(-5 * x)</code> where x goes from 0 to 1 gives values from 1.0 to 0.0067 —
+a steep drop that slows to near-zero, matching the perceptual pitch sweep of a struck
+body resonance.
+</p>
+
+<h3>The Click Oscillator</h3>
+
+<p>
+The click oscillator runs at approximately 3.5× the body frequency and has a very
+short envelope — 6–10 ms. It produces the initial "crack" that distinguishes a MD kick
+from a pure sine body:
+</p>
+
+<pre>
+; Click oscillator:
+[r $0-pitch]
+|
+[* 3.5]              ; click is above body, creates harmonic transient
+|
+[osc~]
+|
+[*~]   ← [vline~]: 1 0, 0 8 0    ; 8 ms decay, fire on trigger
+|
+[*~ $0-clk]          ; level control
+</pre>
+
+<p>
+Without the click, kicks sound too pure — like a sine sweep rather than a physical
+impact. Even a small amount (clk = 0.1–0.3) makes a significant perceptual difference.
+</p>
+
+<h3>Noise Burst Filtering</h3>
+
+<p>
+The noise burst cutoff is linked to the body pitch — a lower-pitched kick needs a
+lower-frequency noise character to sit in the same register:
+</p>
+
+<pre>
+; Noise cutoff tracks pitch:
+[r $0-pitch]
+|
+[* 4.5]              ; noise cutoff ≈ 4–5× body pitch
+|
+[lop~ freq]          ; signal-rate lop~ or message-rate [lop~]
+
+[noise~]
+|
+[lop~ $noiseCutoff]  ; shaped noise
+|
+[*~]   ← [vline~]: 1 0, 0 dcy*0.3 0   ; decays faster than body
+|
+[*~ $0-nse]
+</pre>
+
+<h3>Waveshaper (Soft Saturation)</h3>
+
+<p>
+The TRX-BD uses a soft waveshaper — not a hard clipper — for a rounder, warmer
+saturation that sounds like an analogue circuit being driven. The <code>tanh</code>
+function is the canonical soft saturator:
+</p>
+
+<pre>
+; tanh waveshaping with variable drive:
+; f(x) = tanh(drive * x) / tanh(drive)
+; At drive=1: nearly linear. At drive=10: near hard clip.
+
+[r $0-dst]
+|
+[* 9]
+|
+[+ 1]               ; dst range 1–10
+→ $drive
+
+sum bus
+|
+[* $drive]          ; scale up before waveshaping
+|
+[expr~ tanh($v1)]   ; Pd's expr~ has tanh
+|
+[/ $tanhDrive]      ; normalise: divide by tanh(drive) to restore unity gain
+|
+[*~ level]
+</pre>
+
+<p>
+If <code>[expr~]</code> tanh is unavailable, approximate with a polynomial:
+<code>x*(1 - x*x/3)</code> for |x| &lt; 1 — accurate to within 1.7% at the clip boundary.
+</p>
+
+<h3>Complete Pd Patch Receivers</h3>
+
+<pre>
+$0-trig         ; bang on trigger
+$0-vel          ; 0–1 velocity (multiplies output level)
+$0-pitch        ; Hz (40–300)
+$0-dcy          ; amplitude decay ms (10–8000)
+$0-swp          ; pitch sweep depth Hz (0–1200)
+$0-pdcy         ; pitch decay duration ms (5–1000)
+$0-nse          ; noise mix (0–1)
+$0-clk          ; click level (0–1)
+$0-dst          ; waveshaper drive (0–1)
+$0-tun          ; fine tune in semitones (±24)
+$0-level        ; output level (0–1)
+</pre>
+
+<h3>P-Lock Architecture in Pd</h3>
+
+<p>
+For parameter locks to work correctly, parameters must be set <em>before</em> the
+trigger fires on the same step. In Pd's message ordering, sends arrive before bangs
+if they come from the same outlet chain. For a sequencer driving the voice:
+</p>
+
+<pre>
+; Step trigger sequence (in Lua or from sequencer patch):
+1. Send all p-locked parameters: pd.send("inst-param", value)
+2. Then send the trigger: pd.send("inst-trig", "bang")
+
+; In Pd, if both come from the same [metro] tick:
+[metro]
+|
+[t b b b b b b]      ; trigger + all param sends
+|   |   |   |   |   |
+[s p-pitch] [s p-dcy] ... [s p-trig]   ; params sent before trig
+</pre>
+
+<p>
+Pd processes messages depth-first in the order outlets are connected, so connecting
+all param-send outlets before the trig-send outlet ensures correct ordering.
+</p>
+
+<h3>TRX-BD Preset Values</h3>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Preset</th><th>pitch</th><th>dcy</th><th>swp</th><th>pdcy</th><th>nse</th><th>clk</th><th>dst</th><th>Character</th></tr>
+<tr><td>Classic</td><td>55</td><td>800</td><td>400</td><td>80</td><td>0.1</td><td>0.3</td><td>0.1</td><td>Deep 808-style</td></tr>
+<tr><td>Tight</td><td>80</td><td>200</td><td>200</td><td>30</td><td>0.2</td><td>0.5</td><td>0.2</td><td>Short punchy</td></tr>
+<tr><td>Distorted</td><td>60</td><td>500</td><td>600</td><td>60</td><td>0.3</td><td>0.4</td><td>0.8</td><td>Overdriven gritty</td></tr>
+<tr><td>High</td><td>200</td><td>150</td><td>800</td><td>20</td><td>0.0</td><td>0.6</td><td>0.0</td><td>Mid-freq click</td></tr>
+</table>
+
+<h3>Summary</h3>
+
+<p>
+The TRX-BD is two swept sine oscillators (body + click transient), a pitch-tracked
+noise burst, and a <code>tanh</code> waveshaper. The exponential pitch sweep — using
+<code>[expr~]</code> to curve a linear 0–1 <code>[vline~]</code> — is the synthesis
+element that most closely matches the original's character. All eight parameters are
+exposed through <code>$0-</code> receivers for per-step p-lock control from a sequencer.
+</p>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="elektron-01-overview.htm">Machinedrum and Monomachine Architecture</a> - the p-lock receiver pattern</li>
+<li><a href="elektron-03-md-trx-sd.htm">Machinedrum TRX-SD Snare</a> - same oscillator architecture, adds noise rattle</li>
+<li><a href="drums-02-kick.htm">Kick Drum Synthesis (Series 9)</a> - a closely related kick design with more parameters</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

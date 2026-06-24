@@ -1,0 +1,285 @@
+Containers - Part 2: Linux Namespaces Overview
+2026-07-31
+
+
+A namespace is a kernel object that wraps a global resource so that each
+process inside the namespace has the illusion it owns that resource exclusively.
+Linux currently defines eight namespace types. This article covers what each one
+isolates, how the kernel represents namespaces as files under
+/proc/<pid>/ns/, and how to inspect the namespace topology of a
+running system.
+
+
+What You Will Learn
+
+
+What each of the eight Linux namespace types isolates and the CLONE_NEW* flag for each
+How the kernel represents namespaces as symlinks under /proc/<pid>/ns/
+How to read namespace inode numbers from C using stat() and readlink()
+How to keep a namespace alive after its processes exit using bind mounts
+How to inspect namespaces with lsns and enter them with nsenter and setns()
+How PID and user namespaces form a hierarchy
+
+
+The Eight Namespace Types
+
+
+Each namespace type has a name, a CLONE_NEW* flag used when creating it,
+and a corresponding file in /proc/<pid>/ns/:
+
+
+
+pid (CLONE_NEWPID) - PID numbering. Processes inside see themselves starting at PID 1. The host sees the real PID.
+mnt (CLONE_NEWNS) - the mount table. Each namespace can mount and unmount filesystems independently.
+net (CLONE_NEWNET) - network interfaces, routing tables, iptables rules, sockets, and port numbers.
+uts (CLONE_NEWUTS) - the hostname and NIS domain name returned by uname().
+ipc (CLONE_NEWIPC) - System V IPC objects (message queues, semaphores, shared memory) and POSIX message queues.
+user (CLONE_NEWUSER) - UID and GID mappings. A process can appear to be UID 0 inside while being UID 1000 on the host.
+cgroup (CLONE_NEWCGROUP) - the cgroup hierarchy root. Added in Linux 4.6.
+time (CLONE_NEWTIME) - CLOCK_MONOTONIC and CLOCK_BOOTTIME offsets per namespace. Added in Linux 5.6.
+
+
+
+The original mount namespace flag is CLONE_NEWNS (no "MNT" in the name)
+because it was the very first namespace type added to Linux, in 2002, before
+the naming convention was established.
+
+
+Namespaces as Files
+
+
+The kernel exposes each process's namespaces as symbolic links under
+/proc/<pid>/ns/. The link target is a string of the form
+type:[inode] where the inode number is the unique identifier of that
+namespace instance:
+
+
+
+$ ls -la /proc/self/ns/
+total 0
+dr-x--x--x 2 root root 0 Jan 13 09:00 .
+dr-xr-xr-x 9 root root 0 Jan 13 09:00 ..
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 cgroup -> cgroup:[4026531835]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 ipc    -> ipc:[4026531839]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 mnt    -> mnt:[4026531840]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 net    -> net:[4026531992]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 pid    -> pid:[4026531836]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 pid_for_children -> pid:[4026531836]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 time   -> time:[4026531834]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 user   -> user:[4026531837]
+lrwxrwxrwx 1 root root 0 Jan 13 09:00 uts    -> uts:[4026531838]
+
+
+
+Two processes sharing the same inode number for a namespace type are in the
+same namespace. You can check this in a shell:
+
+
+
+# Start a process in its own UTS namespace
+sudo unshare --uts bash &
+NEW_PID=$!
+
+# Compare UTS namespace inodes
+readlink /proc/self/ns/uts
+readlink /proc/$NEW_PID/ns/uts
+# They will differ
+
+
+Reading Namespace Inodes from C
+
+
+You can read namespace information from C by calling readlink() or
+stat() on the namespace file. The inode number returned by stat()
+is the namespace identifier:
+
+
+
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <sys/stat.h>
+#include <string.h>
+
+void print_ns(pid_t pid, const char *type) {
+    char path[64];
+    char target[128];
+    struct stat st;
+
+    snprintf(path, sizeof(path), "/proc/%d/ns/%s", pid, type);
+
+    if (stat(path, &st) == -1) {
+        perror("stat");
+        return;
+    }
+    ssize_t n = readlink(path, target, sizeof(target) - 1);
+    if (n != -1) target[n] = '\0';
+
+    printf("%-6s inode=%-12lu link=%s\n",
+           type, (unsigned long)st.st_ino, target);
+}
+
+int main(void) {
+    const char *types[] = {
+        "pid", "mnt", "net", "uts", "ipc", "user", "cgroup", "time", NULL
+    };
+    for (int i = 0; types[i]; i++) {
+        print_ns(getpid(), types[i]);
+    }
+    return 0;
+}
+
+
+Keeping a Namespace Alive
+
+
+Normally a namespace is destroyed when the last process inside it exits. But
+the kernel keeps it alive as long as something holds a file descriptor or a
+bind-mount pointing at the namespace file. This is how ip netns add
+works: it bind-mounts the network namespace file to
+/var/run/netns/<name> so that the namespace persists even when no
+process is inside it.
+
+
+
+# Create a named, persistent network namespace
+sudo ip netns add myns
+
+# Verify it is stored as a bind mount
+ls -la /var/run/netns/myns
+
+# Run a command inside it
+sudo ip netns exec myns ip link
+
+# Delete it
+sudo ip netns del myns
+
+
+
+You can do the same thing manually with open() on a namespace file and
+keeping the file descriptor open, or with mount --bind.
+
+
+The lsns Command
+
+
+lsns from the util-linux package lists all namespaces visible to
+the current user, their type, the number of processes inside, and the PID of
+one process in each namespace:
+
+
+
+$ lsns
+        NS TYPE   NPROCS   PID USER  COMMAND
+4026531835 cgroup    143     1 root  /sbin/init
+4026531836 pid       143     1 root  /sbin/init
+4026531837 user      143     1 root  /sbin/init
+4026531838 uts       143     1 root  /sbin/init
+4026531839 ipc       143     1 root  /sbin/init
+4026531840 mnt       139     1 root  /sbin/init
+4026531992 net       143     1 root  /sbin/init
+4026532304 mnt         4   847 root  /usr/lib/systemd/systemd-udevd
+
+
+
+The last line shows that systemd-udevd is in a private mount namespace
+(different inode from PID 1's mount namespace). This is a common pattern: system
+daemons run in their own mount namespaces for isolation without using full
+containers.
+
+
+Entering an Existing Namespace
+
+
+The setns() syscall moves the calling process into an existing namespace
+identified by a file descriptor. This is what nsenter uses:
+
+
+
+# Enter the network namespace of PID 1234
+sudo nsenter --net=/proc/1234/ns/net -- ip link
+
+# Enter all namespaces of a container's init process
+sudo nsenter -t 1234 --all -- bash
+
+
+
+From C, setns() takes the file descriptor of the namespace file and
+a type constant (CLONE_NEWNET etc.) or 0 to detect the type
+automatically:
+
+
+
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <sched.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int enter_netns(pid_t target_pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/ns/net", target_pid);
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd == -1) { perror("open"); return -1; }
+
+    if (setns(fd, CLONE_NEWNET) == -1) {
+        perror("setns");
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+
+Namespace Hierarchy
+
+
+Namespaces form a hierarchy for the types that support it. PID namespaces are
+nested: a process in an inner PID namespace is visible from the outer namespace
+with a different (larger) PID number. The kernel keeps both numbers in
+/proc/<pid>/status under the NSpid field:
+
+
+
+$ grep NSpid /proc/$(pgrep nginx)/status
+NSpid: 48372   1
+
+
+
+The first number is the PID on the host; the second is the PID as seen inside
+the container's PID namespace (1 - it is the init process of that namespace).
+User namespaces are also hierarchical: the kernel tracks a parent-child
+relationship and enforces that capabilities granted inside a child namespace
+are at most equal to those in the parent.
+
+
+Summary
+
+
+Linux has eight namespace types — pid, mnt, net, uts, ipc, user, cgroup, and
+time — each wrapping a different global resource. The kernel exposes them as
+symlinks under /proc/<pid>/ns/ where the inode number is the unique
+namespace identifier. Namespaces persist as long as a process or a bind-mount
+holds a reference. lsns shows the full topology; setns() and
+nsenter let you enter an existing namespace from outside.
+
+
+Further Reading
+
+
+namespaces(7) - Linux man page
+setns(2) - Linux man page
+Namespaces in operation, part 1 (LWN)
+Namespaces in operation, part 2: the namespaces API (LWN)
+Namespaces - kernel documentation
+
+
+See Also
+
+
+What Is a Container?
+The clone() and unshare() Syscalls
+PID Namespaces
+User Namespaces & Rootless Containers
+

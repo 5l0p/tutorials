@@ -1,0 +1,508 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>RPIPicoDSP - Part 3: Audio Input on the Pico</title>
+    <meta name="description" content="ADC DMA capture, I2S microphone input via PIO with the INMP441 and SPH0645, PDM microphones, and a complete example that reads a mic, computes peak level, and blinks an LED.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, embedded, audio, pico">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="pico-03-audio-input.txt">plain/text</a> | <i>2026-11-09</i> | <i><a href="../../c.htm">c</a>, <a href="../../embedded.htm">embedded</a>, <a href="../../audio.htm">audio</a>, <a href="../../pico.htm">pico</a></i>
+        <h2>RPIPicoDSP - Part 3: Audio Input on the Pico</h2>
+        <p>
+Getting audio into a microcontroller is harder than getting it out. The RP2040 does
+include a 12-bit SAR ADC, but it has a fundamental bandwidth limit that rules out
+standard 48 kHz stereo capture. The practical path for quality audio input is the same
+as output: use PIO state machines to implement the I2S slave protocol and receive data
+from a MEMS microphone module such as the INMP441 or SPH0645. This article explains
+why the ADC falls short, shows ADC DMA capture for low-rate applications, then builds
+up to a complete I2S microphone capture example with a DMA ring buffer and a
+peak-level LED indicator.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why the RP2040's ADC cannot do 48 kHz stereo and what sample rates are realistic</li>
+<li>How to configure ADC DMA capture for low-rate audio or sensor use</li>
+<li>The I2S microphone data frame format for the INMP441 and SPH0645</li>
+<li>How to write an I2S receive PIO program and configure it as an I2S slave</li>
+<li>How to implement a DMA ring buffer for continuous microphone capture</li>
+<li>A complete example: mic input, peak detection, LED brightness control</li>
+</ul>
+
+<h3>The RP2040 ADC - Capabilities and Limits</h3>
+
+<p>
+The RP2040 has one SAR (successive approximation register) ADC block with four input
+channels (GP26–GP28 plus an internal temperature sensor). The key specs:
+</p>
+
+<ul>
+<li><b>12-bit resolution</b> - 4096 levels, which gives a theoretical SNR around 74 dB.
+In practice, noise on the Pico board limits useful resolution to about 10–11 bits.</li>
+<li><b>Maximum sample rate:</b> The ADC clock runs at 48 MHz. Each conversion takes 96
+ADC clock cycles, giving a maximum rate of 500 kSa/s total across all channels. A
+single channel can reach 500 kSa/s. Two channels in round-robin mode top out at 250
+kSa/s each.</li>
+<li><b>48 kHz stereo is infeasible.</b> Two channels at 48 kHz = 96 kSa/s aggregate -
+well within the 500 kSa/s limit. The problem is not throughput; it is quality. The
+ADC input impedance and the switching noise from the round-robin multiplexer introduce
+crosstalk and distortion that degrade signal quality below what any serious audio
+application requires. The ADC is built for analogue sensor reading, not audio.</li>
+</ul>
+
+<p>
+For what the ADC is genuinely useful: low-rate control signals (LFO inputs from a
+potentiometer, pitch CV from a hardware knob), DC-biased line-level input through a
+buffering op-amp at 8–22 kHz, or reading hardware parameters between audio blocks.
+</p>
+
+<h3>ADC DMA Capture</h3>
+
+<p>
+Even with its limitations, ADC DMA capture is useful to understand because the DMA
+pattern is the same one used for I2S. Here is a complete setup that captures ADC at
+22050 Hz into a ping-pong buffer pair:
+</p>
+
+<pre>
+#include "hardware/adc.h"
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+#include "pico/stdlib.h"
+#include &lt;stdio.h&gt;
+
+#define ADC_PIN     26       /* GP26 = ADC channel 0 */
+#define ADC_CHANNEL  0
+#define SAMPLE_RATE  22050
+#define BUF_SAMPLES  512
+
+static uint16_t buf_a[BUF_SAMPLES];
+static uint16_t buf_b[BUF_SAMPLES];
+static volatile bool buf_a_ready = false;
+static volatile bool buf_b_ready = false;
+
+static int dma_chan;
+
+static void dma_irq_handler(void) {
+    /* Which buffer just finished? Restart from the other. */
+    if (dma_channel_get_irq0_status(dma_chan)) {
+        dma_channel_acknowledge_irq0(dma_chan);
+        /* buf_a just completed - restart into buf_b */
+        dma_channel_set_write_addr(dma_chan, buf_b, true);
+        buf_a_ready = true;
+    }
+}
+
+void adc_dma_init(void) {
+    adc_init();
+    adc_gpio_init(ADC_PIN);
+    adc_select_input(ADC_CHANNEL);
+
+    /* Set the ADC to free-run at our target sample rate.
+       ADC clock = 48 MHz; divider for 22050 Hz:
+       48e6 / 96 / 22050 = ~22.7 → use 22 (actual rate ~22,727 Hz, close enough) */
+    adc_set_clkdiv(22.0f);
+    adc_fifo_setup(
+        true,   /* Enable FIFO */
+        true,   /* Enable DMA data request (DREQ) */
+        1,      /* Assert DREQ when at least 1 sample is in FIFO */
+        false,  /* No error bit */
+        false   /* Keep 12-bit samples (not shifted to 8-bit) */
+    );
+
+    dma_chan = dma_claim_unused_channel(true);
+    dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
+    channel_config_set_transfer_data_size(&amp;cfg, DMA_SIZE_16);
+    channel_config_set_read_increment(&amp;cfg, false);  /* always read from ADC FIFO */
+    channel_config_set_write_increment(&amp;cfg, true);
+    channel_config_set_dreq(&amp;cfg, DREQ_ADC);
+
+    dma_channel_configure(
+        dma_chan,
+        &amp;cfg,
+        buf_a,               /* initial write address */
+        &amp;adc_hw-&gt;fifo,       /* read address: ADC FIFO register */
+        BUF_SAMPLES,
+        false                /* don't start yet */
+    );
+
+    /* Enable interrupt on DMA completion */
+    dma_channel_set_irq0_enabled(dma_chan, true);
+    irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
+    irq_set_enabled(DMA_IRQ_0, true);
+
+    /* Start ADC and DMA */
+    adc_run(true);
+    dma_channel_start(dma_chan);
+}
+</pre>
+
+<p>
+The gotcha here: the ADC FIFO is a hardware register at a fixed address
+(<code>&amp;adc_hw-&gt;fifo</code>). The DMA read address never increments (we set
+<code>read_increment</code> to false) - every transfer pulls one sample from the same FIFO
+address. The write address increments through the buffer.
+</p>
+
+<h3>I2S Microphone Input - INMP441 and SPH0645</h3>
+
+<p>
+The INMP441 (InvenSense, now TDK) and SPH0645 (Knowles) are MEMS I2S microphones
+that output a 24-bit word at sample rates from 16 kHz to 51.6 kHz. They are I2S
+<em>slaves</em>: you supply BCLK and LRCLK, and the mic outputs DATA synchronised to
+those clocks. The RP2040 acts as the I2S master.
+</p>
+
+<p>
+Wire the INMP441 or SPH0645 to the Pico:
+</p>
+
+<pre>
+Mic pin   Pico GPIO   Notes
+-------   ---------   -----
+VDD       3V3
+GND       GND
+WS        GP10        LRCLK - ties to the PIO side-set clock pin
+SCK       GP11        BCLK
+SD        GP12        DATA output from mic to Pico
+L/R       GND         Selects left channel (output on LRCLK low)
+            (or 3V3 for right channel - tie one mic L and one R for stereo)
+</pre>
+
+<p>
+The I2S frame: when LRCLK is low, the mic outputs the left channel. The MSB of a 24-bit
+sample appears one BCLK cycle after the falling edge of LRCLK (the standard I2S
+one-bit delay). The next 23 bits follow. Then LRCLK goes high and the right channel
+word is sent the same way. For a single mic tied to L/R GND, only the left channel
+carries audio; the right channel is zero.
+</p>
+
+<p>
+The SPH0645 is almost identical but outputs 18 significant bits in a 32-bit frame
+instead of 24. The upper 18 bits are the audio; the lower 14 are padding zeros. Either
+way, for 16-bit audio you right-shift the received 32-bit word by 14 (INMP441) or 14
+(SPH0645) and cast to int16_t.
+</p>
+
+<h3>I2S Receive PIO Program</h3>
+
+<pre>
+; i2s_in.pio - I2S slave input (master sends BCLK and LRCLK, we receive DATA)
+; Pin assignments (set in C):
+;   in base = DATA pin
+;   side-set pins = BCLK, LRCLK (we output these as master)
+; We read 32 bits per channel, autopush at 32 bits.
+
+.program i2s_in
+.side_set 2            ; [BCLK, LRCLK] - we are master so we drive both
+
+.wrap_target
+    ; --- Left channel ---
+    set x, 30  side 0b00   ; 31 more bits (32 total minus 1 below)
+left_loop:
+    in pins, 1 side 0b01   ; sample DATA on BCLK rising
+    jmp x-- left_loop side 0b00
+
+    in pins, 1 side 0b11   ; last bit, LRCLK goes high
+
+    ; --- Right channel ---
+    set x, 30  side 0b10
+right_loop:
+    in pins, 1 side 0b11
+    jmp x-- right_loop side 0b10
+
+    in pins, 1 side 0b10   ; last right bit
+.wrap
+</pre>
+
+<p>
+Setting autopush threshold to 32 in the C code causes the PIO to push a 32-bit word
+to its RX FIFO automatically after every 32 bits shifted in. DMA reads from the RX
+FIFO. Two DMA words per frame: one for left, one for right.
+</p>
+
+<h3>Complete Microphone Input Example</h3>
+
+<p>
+This example reads from a single INMP441 microphone, computes the peak absolute sample
+value over each 512-sample block, and drives the onboard LED with a PWM brightness
+proportional to the level - a simple VU meter.
+</p>
+
+<pre>
+/* CMakeLists.txt additions for I2S mic input:
+   target_link_libraries(mic_vu
+       pico_stdlib
+       hardware_pio
+       hardware_dma
+       hardware_irq
+       hardware_pwm
+   )
+   pico_generate_pio_header(mic_vu ${CMAKE_CURRENT_LIST_DIR}/i2s_in.pio)
+*/
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include "pico/stdlib.h"
+#include "hardware/pio.h"
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+#include "hardware/pwm.h"
+#include "i2s_in.pio.h"  /* generated from i2s_in.pio by pico_generate_pio_header */
+
+#define MIC_DATA_PIN   12   /* SD  */
+#define I2S_CLOCK_BASE 10   /* BCLK=GP10, LRCLK=GP11 */
+#define LED_PIN        25
+
+#define SAMPLE_RATE    44100
+#define BUF_FRAMES     512   /* stereo frames per buffer */
+/* Each frame = 2 words (L + R), 4 bytes each = 8 bytes.
+   Total buffer size = BUF_FRAMES * 2 uint32_t entries */
+#define BUF_WORDS      (BUF_FRAMES * 2)
+
+static uint32_t buf_a[BUF_WORDS];
+static uint32_t buf_b[BUF_WORDS];
+static volatile uint32_t *ready_buf = NULL;
+
+static PIO  pio_inst;
+static uint pio_sm;
+static int  dma_chan;
+
+static void dma_irq_handler(void) {
+    /* CRITICAL: clear the interrupt FIRST, before doing anything else.
+       If we clear it after restarting DMA and DMA completes instantly
+       (extremely unlikely here, but a good habit), we could miss the
+       next interrupt. Clearing first is always safe. */
+    dma_channel_acknowledge_irq0(dma_chan);
+
+    /* Restart DMA into whichever buffer is not yet claimed by the CPU.
+       Use a simple pointer-swap scheme. */
+    if (ready_buf == buf_a) {
+        /* buf_a was just delivered to CPU; DMA now fills buf_b */
+        dma_channel_set_write_addr(dma_chan, buf_b, true);
+        ready_buf = buf_b;   /* next ready will be buf_b */
+    } else {
+        dma_channel_set_write_addr(dma_chan, buf_a, true);
+        ready_buf = buf_a;
+    }
+}
+
+static void i2s_mic_init(void) {
+    /* Load PIO program */
+    pio_inst = pio0;
+    uint offset = pio_add_program(pio_inst, &amp;i2s_in_program);
+    pio_sm = pio_claim_unused_sm(pio_inst, true);
+
+    /* Configure the state machine using the init function generated by pioasm */
+    i2s_in_program_init(pio_inst, pio_sm, offset, MIC_DATA_PIN, I2S_CLOCK_BASE);
+
+    /* Autopush at 32 bits so each channel word triggers a FIFO push automatically */
+    pio_sm_set_consecutive_pindirs(pio_inst, pio_sm, MIC_DATA_PIN, 1, false); /* DATA = input */
+    pio_sm_set_consecutive_pindirs(pio_inst, pio_sm, I2S_CLOCK_BASE, 2, true); /* clocks = output */
+
+    /* Set the clock divider for 44100 Hz.
+       BCLK = sample_rate * 2 channels * 32 bits = 2.8224 MHz.
+       PIO clock = 125 MHz / divider.
+       Each PIO instruction takes 1 cycle (with side-set); our program is
+       2 instructions per bit = 2 PIO cycles per bit.
+       PIO cycles needed = 2.8224 MHz * 2 = 5.6448 MHz.
+       Divider = 125 / 5.6448 ≈ 22.15 */
+    pio_sm_set_clkdiv(pio_inst, pio_sm, 22.15f);
+
+    /* Configure DMA: read from PIO RX FIFO, write to our buffer */
+    dma_chan = dma_claim_unused_channel(true);
+    dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
+    channel_config_set_transfer_data_size(&amp;cfg, DMA_SIZE_32);
+    channel_config_set_read_increment(&amp;cfg, false);   /* PIO FIFO is fixed address */
+    channel_config_set_write_increment(&amp;cfg, true);
+    channel_config_set_dreq(&amp;cfg, pio_get_dreq(pio_inst, pio_sm, false)); /* RX dreq */
+
+    dma_channel_configure(
+        dma_chan,
+        &amp;cfg,
+        buf_a,
+        &amp;pio_inst-&gt;rxf[pio_sm],
+        BUF_WORDS,
+        false
+    );
+
+    ready_buf = buf_a;
+
+    dma_channel_set_irq0_enabled(dma_chan, true);
+    irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
+    irq_set_enabled(DMA_IRQ_0, true);
+
+    pio_sm_set_enabled(pio_inst, pio_sm, true);
+    dma_channel_start(dma_chan);
+}
+
+/* LED PWM setup for brightness control */
+static void led_pwm_init(void) {
+    gpio_set_function(LED_PIN, GPIO_FUNC_PWM);
+    uint slice = pwm_gpio_to_slice_num(LED_PIN);
+    pwm_config cfg = pwm_get_default_config();
+    pwm_config_set_wrap(&amp;cfg, 255);
+    pwm_init(slice, &amp;cfg, true);
+}
+
+static void led_set_brightness(uint8_t level) {
+    pwm_set_gpio_level(LED_PIN, level);
+}
+
+int main(void) {
+    stdio_init_all();
+    led_pwm_init();
+    i2s_mic_init();
+
+    printf("Mic VU meter running\n");
+
+    const uint32_t *process_buf = buf_b; /* start processing buf_b when buf_a fills */
+
+    while (true) {
+        /* Wait for DMA to swap - ready_buf changes in the IRQ */
+        while (ready_buf == process_buf)
+            tight_loop_contents();
+
+        /* Process the buffer that is not being written by DMA.
+           Each even word (index 0, 2, 4...) is a left-channel I2S sample.
+           The INMP441 delivers 24-bit audio left-aligned in a 32-bit word.
+           Shift right by 8 to get the MSB-aligned 24-bit value,
+           then take the upper 16 bits for int16_t. */
+        int32_t peak = 0;
+        for (int i = 0; i &lt; BUF_WORDS; i += 2) {
+            /* Left channel sample */
+            int32_t s = (int32_t)process_buf[i];
+            s = s &gt;&gt; 8;          /* 24-bit signed value in lower 24 bits */
+            s = s &gt;&gt; 8;          /* scale to 16-bit range */
+            if (s &lt; 0) s = -s;   /* absolute value */
+            if (s &gt; peak) peak = s;
+        }
+
+        /* Map peak (0..32767) to LED brightness (0..255) */
+        uint8_t brightness = (uint8_t)((peak * 255) / 32767);
+        led_set_brightness(brightness);
+
+        /* Swap which buffer we process */
+        process_buf = (process_buf == buf_a) ? buf_b : buf_a;
+    }
+}
+</pre>
+
+<h3>PDM Microphones</h3>
+
+<p>
+Some MEMS microphones output PDM (Pulse Density Modulation) instead of I2S. The
+SPH0641 and the IMP23ABSU are common examples. PDM uses a 1-bit stream at a very
+high clock rate (typically 1–3.25 MHz) where the density of 1s represents the
+instantaneous amplitude. Converting PDM to PCM requires a decimation filter
+(CIC + FIR) that runs on the Pico core. The Pico SDK's <code>pico-extras</code>
+repository includes a PDM microphone library (<code>microphone_i2s</code>) that handles
+the decimation. PDM mics are cheaper than I2S mics and only need two wires (clock and
+data), but the decimation filter eats CPU budget. For this series we use I2S mics
+(INMP441 or SPH0645) to keep the capture path simple and CPU cost predictable.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+The RP2040's ADC is usable for control signals and low-rate mono audio up to about
+22 kHz, but its analogue quality limits it to rough sketches rather than production
+audio. For proper microphone input, a MEMS I2S microphone (INMP441 or SPH0645) driven
+by a PIO state machine operating as I2S master gives 24-bit quality at 44.1 kHz with
+minimal CPU involvement. DMA captures samples into a ping-pong buffer pair, the IRQ
+handler swaps buffers and you process the idle one. You now have both audio input and
+output working; Part 4 binds them together into a proper dual-core audio render loop.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 Datasheet - Chapter 4 (ADC), Chapter 3 (PIO)</a></li>
+<li><a href="https://invensense.tdk.com/wp-content/uploads/2015/02/INMP441.pdf">INMP441 Datasheet - TDK InvenSense</a></li>
+<li><a href="https://www.knowles.com/docs/default-source/model-downloads/sph0645lm4h-b-datasheet-rev-b.pdf">SPH0645LM4H Datasheet - Knowles</a></li>
+<li><a href="https://github.com/raspberrypi/pico-extras">pico-extras - microphone_i2s and audio_i2s libraries</a></li>
+<li><a href="https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf">Raspberry Pi Pico C/C++ SDK - hardware_adc and hardware_dma</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="pico-02-audio-output.htm">Pico - Part 2: Audio Output on the Pico</a></li>
+<li><a href="pico-04-render-loop.htm">Pico - Part 4: The Audio Render Loop on Bare Metal</a></li>
+<li><a href="pico-05-porting-dsp.htm">Pico - Part 5: Porting DSP Code from the Desktop</a></li>
+<li><a href="dsp-01-audio-fundamentals.htm">DSP - Part 1: Audio Fundamentals</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

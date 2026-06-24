@@ -1,0 +1,313 @@
+Go - Part 6: defer, panic, and recover
+2026-07-09
+
+
+Go has three keywords for non-linear control flow that are unfamiliar to C programmers and
+work quite differently from their closest C# analogues. defer schedules a
+function call for when the surrounding function returns - it is Go's answer to
+using and try-finally. panic terminates normal
+execution and begins unwinding the stack. recover catches a panic inside a
+deferred function. Understanding these three together is essential; they are designed to
+work as a system.
+
+
+What You Will Learn
+
+
+How defer schedules a call for function return — Go's replacement for try-finally and using
+That deferred calls execute LIFO and that arguments are evaluated at the defer statement
+How defer interacts with named return values to modify return results
+When to use panic: programming errors, not expected failure conditions
+How recover catches a panic inside a deferred function to prevent process termination
+How Go's panic/recover compares to C# exceptions and why it is not a general error-handling mechanism
+
+
+defer: Guaranteed Cleanup
+
+
+A defer statement registers a function call to run when the enclosing
+function exits - whether it exits normally, via return, or via a
+panic. The deferred call runs with the arguments evaluated at the time of the
+defer statement, not at the time of the actual call.
+
+
+
+func readFile(path string) ([]byte, error) {
+    f, err := os.Open(path)
+    if err != nil {
+        return nil, err
+    }
+    defer f.Close() // will run when readFile returns, no matter how
+
+    return io.ReadAll(f)
+}
+
+
+
+In C you would use goto cleanup at error paths, or duplicate the cleanup code.
+In C# you use using (var f = File.Open(path)) { ... } or
+try { ... } finally { f.Close(); }. Go's defer is more flexible
+than using because it is not tied to a block - the cleanup is attached to the
+function return, not to an inner scope.
+
+
+
+The common idiom is to open/acquire a resource, check for error, and immediately
+defer the cleanup:
+
+
+
+func connectAndQuery(dsn, query string) ([]Row, error) {
+    db, err := sql.Open("postgres", dsn)
+    if err != nil {
+        return nil, fmt.Errorf("open db: %w", err)
+    }
+    defer db.Close()
+
+    rows, err := db.Query(query)
+    if err != nil {
+        return nil, fmt.Errorf("query: %w", err)
+    }
+    defer rows.Close()
+
+    // ... process rows
+}
+
+
+
+Notice that the defer rows.Close() is on the line immediately after the error
+check. This pattern is idiomatic - the cleanup lives next to the acquisition, making it
+easy to see that every resource is cleaned up.
+
+
+Deferred Calls Stack (LIFO)
+
+
+Multiple deferred calls in a function execute in last-in, first-out order - like a stack.
+This is the right behaviour when resources depend on each other:
+
+
+
+func demo() {
+    defer fmt.Println("first deferred - runs last")
+    defer fmt.Println("second deferred - runs second")
+    defer fmt.Println("third deferred - runs first")
+    fmt.Println("function body")
+}
+
+// Output:
+// function body
+// third deferred - runs first
+// second deferred - runs second
+// first deferred - runs last
+
+
+Arguments Are Evaluated Early
+
+
+The arguments to a deferred function are evaluated when the defer statement
+is executed, not when the deferred call actually runs. This is a common source of
+confusion:
+
+
+
+func countDown() {
+    for i := 0; i < 3; i++ {
+        defer fmt.Println(i) // i is evaluated NOW, not at function exit
+    }
+}
+
+// Output:
+// 2
+// 1
+// 0
+
+
+
+If you want to capture a variable's value at the time of the actual call (not the time of
+the defer), use a closure - but then explicitly capture the variable:
+
+
+
+func deferClosure() {
+    x := 0
+    defer func() {
+        fmt.Println("x at exit:", x) // captures x by reference
+    }()
+    x = 42
+    // prints "x at exit: 42"
+}
+
+
+defer and Return Values
+
+
+A deferred function can read and modify a function's named return values. This is used to
+add error context or to implement a cleanup that needs to inspect whether an error
+occurred:
+
+
+
+func writeFile(path string, data []byte) (err error) {
+    f, err := os.Create(path)
+    if err != nil {
+        return
+    }
+    defer func() {
+        closeErr := f.Close()
+        if err == nil {
+            err = closeErr // propagate close error if no earlier error
+        }
+    }()
+
+    _, err = f.Write(data)
+    return
+}
+
+
+
+This is a pattern with no clean equivalent in C or C#. In C# you would need a boolean
+flag or a nested try-finally to decide whether to propagate a close error.
+
+
+panic: Exceptional Termination
+
+
+panic is a built-in function that stops normal execution of the current
+goroutine. Deferred functions still run, then the goroutine terminates. If the panic
+reaches the top of the goroutine's stack, the program crashes with a stack trace.
+
+
+
+func mustOpen(path string) *os.File {
+    f, err := os.Open(path)
+    if err != nil {
+        panic(fmt.Sprintf("mustOpen: %v", err))
+    }
+    return f
+}
+
+
+
+Panic is not an exception system. In C# it is normal and expected to use exceptions
+for recoverable errors - network timeouts, invalid user input, missing configuration keys.
+In Go, panic is for situations that should not happen: violated invariants, logic
+bugs, nil pointer dereferences, index out of bounds. The working assumption is that if a
+panic reaches a goroutine boundary, something is fundamentally wrong with the program, not
+with the environment.
+
+
+
+Expected, recoverable errors use the (value, error) return pattern. Panic is
+the equivalent of C's abort(), not return -EINVAL.
+
+
+
+Functions that are helpers and must succeed to make any sense - database connection pools,
+configuration loading at startup, mandatory caches - are often wrapped in a
+Must convention:
+
+
+
+// regexp.MustCompile is an example from the standard library
+re := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+// panics if the pattern is invalid - correct at startup, not at runtime
+
+
+
+The standard library uses this convention: template.Must,
+regexp.MustCompile. Use it in your own code for things that must succeed at
+program start-up and where a failure indicates a programming error, not a runtime
+condition.
+
+
+recover: Catching a Panic
+
+
+recover is a built-in that stops a panic and returns the value passed to
+panic. It is only useful inside a deferred function - calling it outside a
+deferred function always returns nil.
+
+
+
+func safeDiv(a, b int) (result int, err error) {
+    defer func() {
+        if r := recover(); r != nil {
+            err = fmt.Errorf("recovered: %v", r)
+        }
+    }()
+    return a / b, nil // panics if b == 0
+}
+
+result, err := safeDiv(10, 0)
+// err is now non-nil, result is 0
+// the program continues
+
+
+
+The canonical use case for recover is at a goroutine boundary - for example,
+in an HTTP server where you do not want a single panicking handler to kill the entire
+server:
+
+
+
+func recoveryMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        defer func() {
+            if rec := recover(); rec != nil {
+                log.Printf("panic in handler: %v\n%s", rec, debug.Stack())
+                http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+            }
+        }()
+        next.ServeHTTP(w, r)
+    })
+}
+
+
+
+This is exactly how most Go HTTP frameworks and the net/http server itself (for goroutine
+isolation) use recover. It is a safety net, not a normal error-handling path.
+
+
+panic vs C# exceptions
+
+
+C# developers sometimes ask: if panic and recover look like throw and catch, why not use
+them for general error handling? The answer is that the Go runtime does not support using
+panic as a general control flow mechanism efficiently. There is no way to catch panics from
+different goroutines - each goroutine's stack is independent. And the cultural expectation
+in Go is that code which panics has a bug; code that fails gracefully returns an error.
+Using panic for expected conditions (like a missing config key at runtime) would be
+considered a code smell and would break the error-handling conventions that the rest of the
+Go ecosystem relies on.
+
+
+Summary
+
+
+defer runs a function call when its enclosing function returns,
+regardless of how it returns. Calls stack LIFO; arguments are captured at the
+defer statement. panic should signal bugs — invariant
+violations, impossible states — not expected errors; return an error value
+instead. recover can only catch a panic inside a deferred function
+and is typically used at API boundaries to prevent one goroutine's panic from
+crashing the whole program. It is not a substitute for error handling.
+
+
+Further Reading
+
+
+Effective Go: Defer
+Defer, Panic, and Recover - The Go Blog
+Go Specification: Defer Statements
+runtime/debug.Stack - pkg.go.dev
+
+
+See Also
+
+
+Error Handling Best Practices
+Goroutines & Channels
+The Context Package
+Testing in Go
+

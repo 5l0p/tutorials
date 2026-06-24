@@ -1,0 +1,284 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Elektron Synthesis - Part 10: Monomachine VO — Virtual Operator FM</title>
+    <meta name="description" content="Recreating the Monomachine VO (Virtual Operator) FM synthesis engine in Pure Data: 2-operator FM with carrier/modulator ratio, feedback FM, ADSR index envelopes, the four VO machine variants (VO SIN, VO TRP, VO EA, VO EB), and musical parameter mapping for bass, lead, and keyboard sounds.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, puredata, audio, synthesis, elektron">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="elektron-10-mnm-vo.txt">plain/text</a> | <i>2026-01-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../synthesis.htm">synthesis</a>, <a href="../../elektron.htm">elektron</a></i>
+        <h2>Elektron Synthesis - Part 10: Monomachine VO — Virtual Operator FM</h2>
+        <p>
+The Monomachine's VO (Virtual Operator) engine is 2-operator FM synthesis — a carrier
+oscillator whose frequency is modulated by a modulator oscillator. Where the EFM
+machines (Part 6) apply FM specifically to drum synthesis, the VO engine is designed
+for melodic and harmonic sounds: bass, lead, organ, metallic pads, and bell tones.
+The VO variants (VO SIN, VO TRP, VO EA, VO EB) provide different waveform combinations
+for the carrier and modulator operators.
+</p>
+
+<h3>VO Engine Parameters</h3>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Knob</th><th>Name</th><th>Function</th><th>Range</th></tr>
+<tr><td>1</td><td>RATIO (rto)</td><td>C:M frequency ratio</td><td>0.25–16</td></tr>
+<tr><td>2</td><td>INDEX (idx)</td><td>Modulation index (timbre)</td><td>0–12</td></tr>
+<tr><td>3</td><td>FEEDBACK (fb)</td><td>Modulator self-feedback amount</td><td>0–7</td></tr>
+<tr><td>4</td><td>LEVEL (lvl)</td><td>Carrier output level</td><td>0–1</td></tr>
+<tr><td>5</td><td>ATTACK (atk)</td><td>Index envelope attack time</td><td>0–8000 ms</td></tr>
+<tr><td>6</td><td>DECAY (dcy)</td><td>Index envelope decay time</td><td>0–8000 ms</td></tr>
+<tr><td>7</td><td>SUSTAIN (sus)</td><td>Index sustain level</td><td>0–1</td></tr>
+<tr><td>8</td><td>RELEASE (rel)</td><td>Index envelope release time</td><td>0–8000 ms</td></tr>
+</table>
+
+<p>
+The INDEX and its ADSR envelope control how the timbre evolves over the note lifetime.
+A high attack means the sound starts clean (low index) and becomes brighter as it
+ramps up. A fast decay from high index to low sustain produces a bright attack that
+settles into a smooth body.
+</p>
+
+<h3>VO Machine Variants</h3>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Machine</th><th>Carrier wave</th><th>Modulator wave</th><th>Character</th></tr>
+<tr><td>VO SIN</td><td>Sine</td><td>Sine</td><td>Classic DX-style: clean, bell-like</td></tr>
+<tr><td>VO TRP</td><td>Sine</td><td>Triangle + Pulse AND</td><td>More harmonically rich, buzzy attack</td></tr>
+<tr><td>VO EA</td><td>Sawtooth</td><td>Sine</td><td>Warm, rich, analogue-like</td></tr>
+<tr><td>VO EB</td><td>Square</td><td>Sine</td><td>Hollow, nasal, woodwind-like</td></tr>
+</table>
+
+<h3>2-Operator FM in Pd</h3>
+
+<pre>
+; VO engine Pd implementation:
+
+[r $0-note_hz]     → $carrier_freq
+[r $0-rto]         → $ratio
+[r $0-idx]         → $index_peak
+[r $0-fb]          → $feedback
+
+; Modulator frequency:
+$carrier_freq × $ratio = $mod_freq
+
+; INDEX ADSR envelope (4 vline~ segments):
+; attack: 0 → idx_peak over atk ms
+; decay: idx_peak → idx_peak × sus over dcy ms
+; sustain: hold at idx_peak × sus while key held
+; release: idx_peak×sus → 0 over rel ms after key release
+
+[vline~]    ; index envelope → $idx_t
+
+; Feedback FM: modulator feeds back on itself
+; VO feedback level maps to ~0, π/8, π/4, π/2, π, 2π, 4π, 8π (like DX7 levels 0-7)
+; Implementation: use a one-sample delay on modulator output as feedback input
+
+[delread~ $0-fb_buf 1/sr]   ; 1 sample delay for feedback
+|
+[*~ $fb_scaled]              ; scale by feedback amount
+→ added to modulator frequency
+
+[delwrite~ $0-fb_buf 1/sr]  ← modulator output
+</pre>
+
+<pre>
+; Complete VO SIN:
+
+; Modulator:
+[osc~ mod_freq + feedback]   ; sine modulator + self-feedback
+|
+[*~ idx_t]                   ; scale by ADSR-shaped index
+|
+[*~ mod_freq]                ; FM deviation = index × modulator_freq
+
+; Carrier:
+[+~ carrier_freq]            ; carrier freq + FM deviation
+|
+[osc~]                       ; carrier: sine (VO SIN)
+|
+[*~ amp_env]                 ; amplitude ADSR (driven by MNM global AMP envelope)
+|
+[*~ level]
+|
+[outlet~]
+</pre>
+
+<h3>VO TRP Modulator</h3>
+
+<p>
+The VO TRP variant uses a triangle-AND-pulse modulator. As noted in the SID article,
+the SID-style AND combination of triangle and pulse:
+</p>
+
+<pre>
+; TRP modulator waveform:
+[phasor~ mod_freq]
+|
+[t a a a]
+|         |         |
+triangle  pulse_0.5  feedback
+
+; Triangle wave (from phasor):
+phasor → *2 → abs~ → *2 → -1    ; -1 to +1 triangle
+
+; 50% pulse (from phasor):
+phasor → > 0.5 → *2 → -1        ; -1 to +1 square
+
+; AND approximation (see SID article):
+tri_01 = (tri + 1) × 0.5         ; 0 to 1
+sqr_01 = (sqr + 1) × 0.5
+[*~] → *2 → -1                  ; AND → back to -1:+1
+
+; This TRP waveform has a harder, buzzier character than a pure sine,
+; producing a richer sideband spectrum at the same index value
+</pre>
+
+<h3>VO EA: Sawtooth Carrier</h3>
+
+<p>
+VO EA uses a sawtooth carrier rather than sine. The FM modulation is applied to a
+sawtooth's phase — creating a phase-modulated sawtooth. In Pd, approximate by
+modulating the phase input of a <code>[phasor~]</code>-driven table:
+</p>
+
+<pre>
+; Phase-modulated sawtooth:
+[phasor~ carrier_freq + fm_deviation]  ; frequency-modulated phasor
+|
+[*~ 2]
+|
+[-~ 1]                                  ; → sawtooth output
+
+; OR: use direct phase addition on the phasor output:
+[phasor~ carrier_freq]
+|
+[+~ fm_phase]      ; fm_phase = idx_t × modulator_out / (2π)
+|
+[wrap~]            ; keep phase 0–1
+|
+[*~ 2][-~ 1]       ; → phase-modulated sawtooth
+</pre>
+
+<h3>Feedback FM</h3>
+
+<p>
+Feedback FM is the modulator modulating itself — feeding its own output back as its
+own frequency modulation input. At low feedback levels this adds rich harmonics (odd
+harmonics for sine carrier at feedback level π/4). At high feedback levels the
+modulator output becomes a square wave — pure odd harmonics. At very high feedback the
+modulator becomes noise. This is the mechanism behind the DX7's feedback operator.
+</p>
+
+<p>
+The 8 feedback levels on VO map to these effective values:
+</p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>FB level</th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7</th></tr>
+<tr><td>Effect</td><td>none</td><td>subtle warmth</td><td>mild harmonics</td><td>medium FM</td><td>sawtooth-like</td><td>near-square</td><td>buzzy</td><td>noisy</td></tr>
+</table>
+
+<h3>Musical Uses</h3>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Sound</th><th>Machine</th><th>ratio</th><th>idx</th><th>fb</th><th>Index ADSR</th></tr>
+<tr><td>Electric piano</td><td>VO SIN</td><td>1.0</td><td>3.0</td><td>0</td><td>A=0 D=200 S=0.3 R=100</td></tr>
+<tr><td>Bell</td><td>VO SIN</td><td>3.5</td><td>2.0</td><td>0</td><td>A=0 D=2000 S=0 R=200</td></tr>
+<tr><td>Bass</td><td>VO EA</td><td>1.0</td><td>4.0</td><td>2</td><td>A=0 D=80 S=0.5 R=50</td></tr>
+<tr><td>Organ</td><td>VO EB</td><td>2.0</td><td>1.5</td><td>0</td><td>A=0 D=0 S=1.0 R=20</td></tr>
+<tr><td>Metallic pad</td><td>VO TRP</td><td>1.41</td><td>6.0</td><td>3</td><td>A=100 D=500 S=0.4 R=300</td></tr>
+<tr><td>Aggressive lead</td><td>VO SIN</td><td>1.0</td><td>8.0</td><td>5</td><td>A=0 D=50 S=0.8 R=100</td></tr>
+</table>
+
+<h3>Summary</h3>
+
+<p>
+The Monomachine VO engine is 2-operator FM with a full ADSR on the modulation index,
+plus DX7-style feedback FM on the modulator. The four VO variants (SIN, TRP, EA, EB)
+provide sine/sine, triangle-pulse/sine, sawtooth/sine, and square/sine combinations.
+The index ADSR is the primary expressive control — high-attack index creates bright
+entry, fast decay from high index creates a plucky transient. Feedback adds harmonic
+richness, evolving from subtle warmth (fb=1) through square-like (fb=5) to noise (fb=7).
+</p>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="elektron-06-md-efm.htm">Machinedrum EFM Machines</a> - FM applied to drum synthesis with pitch sweep + index decay</li>
+<li><a href="elektron-11-mnm-fmplus.htm">Monomachine FM+ Engine</a> - extended multi-operator FM beyond the VO 2-op model</li>
+<li><a href="dsp-16-fm-synthesis.htm">FM Synthesis</a> - Bessel functions, harmonic/inharmonic C:M ratios, algorithms</li>
+<li><a href="algo-11-putting-it-together.htm">Putting It All Together</a> - this engine driven by a Brownian melody generator</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

@@ -1,0 +1,344 @@
+Drums - Part 3: Snare Drum Synthesis in Pure Data
+2026-12-12
+
+
+A snare drum has two acoustic components: the batter head (which produces a tonal
+thwack) and the snare wires (which produce the characteristic buzz and sizzle). This
+article builds both from scratch in Pure Data, adding the dual feedback delay rattle
+that makes a snare sound like it has wires rather than being a simple drum hit.
+
+
+What You Will Learn
+
+
+Two sine oscillators for the snare body tone with independent pitch sweeps
+SID-style noise: hard-clipped and sample-rate-reduced for a digital buzz character
+Dual filter paths on the noise: lowpass (body) and highpass (snap/sizzle)
+A resonant bandpass body filter for tonal shaping
+Dual short feedback delay lines for snare wire rattle simulation
+Two-stage distortion
+X/Y mapping: body tone vs snare tail
+
+
+The Snare Body — Two Sines
+
+
+A real snare head resonates at multiple modes. The dominant modes for a 14" snare are
+approximately 180 Hz (fundamental) and 280 Hz (second mode). Model these with two
+sine oscillators, each with its own pitch sweep and amplitude envelope:
+
+
+
+; Sine A — fundamental body tone (~150–250 Hz)
+[r $0-sineAFreq]   → [f]    ; base frequency
+[r $0-sineAEnv]    → [f]    ; pitch sweep amount
+[r $0-sineADecay]  → [f]    ; pitch sweep duration
+[r $0-sineAAmpDec] → [f]    ; amplitude decay
+
+; On trigger:
+; freq vline~: peakFreq 0, baseFreq $sineADecay
+; amp vline~: 1 2, 0 $sineAAmpDec 2
+
+[osc~]   ← freq vline~
+|
+[*~]     ← amp vline~
+|
+[*~ $sineAMix]
+
+; Sine B — second mode (~250–400 Hz, shorter decay)
+; Same structure, typically 1.5–2× SineA frequency, 40% shorter decay
+
+
+SID Noise
+
+
+"SID noise" refers to the lo-fi digital buzz of a noise source run through a
+bit-crusher or rate reducer — named after the Commodore 64's SID chip noise register.
+For a snare it provides gritty texture that distinguishes digital percussion from a
+pure sine body.
+
+
+
+In Pure Data, approximate it by hard-clipping white noise and optionally running it
+through a sample-and-hold at a reduced rate:
+
+
+
+; SID noise approximation:
+[noise~]
+|
+[clip~ -0.15 0.15]     ; hard saturation → buzzy square-wave texture
+|
+[*~ 6.67]              ; restore approximate amplitude (1/0.15)
+|
+[samphold~ $0-clockRate]  ; sample-and-hold: reduces effective sample rate
+                           ; $0-clockRate is a signal from [phasor~ f]:
+                           ; [phasor~ $clockFreq] → drives samphold reset
+
+
+
+Without [samphold~], the hard-clipped noise sounds like distorted white
+noise. With it (clock rate 0.3–0.5 × sample rate), it takes on a rougher, more digital
+character. For most snare patches, clock rates of 0.5–0.8 work well.
+
+
+
+Implementing sample-and-hold in Pd: there is no built-in [samphold~] in
+vanilla Pd, but it can be approximated with a [phasor~] driving a
+comparator that gates a [sig~] latch, or with the else
+library's [sh~]. Alternatively, simply apply a lowpass filter with a
+very low cutoff to approximate rate reduction:
+
+
+
+; Simple rate-reduction approximation via lowpass:
+[noise~]
+|
+[clip~ -0.15 0.15]
+|
+[lop~ $0-clockHz]      ; low cutoff (e.g. 4000 Hz) for lo-fi character
+
+
+Dual Noise Filter Paths
+
+
+The SID noise is split into two parallel filter paths, each with its own envelope:
+
+
+
+SID noise bus
+    |
+    ├── [lop~ $filterACutoff $filterAQ]    ; LPF path: warm, bassy noise
+    │       |
+    │   [vline~]  LPF decay envelope (snare body/tail)
+    │       |
+    │   [*~ $sidNoiseLPFMix]
+    │
+    └── [hip~ $filterBCutoff $filterBQ]   ; HPF path: bright snap/sizzle
+            |
+        [vline~]  HPF decay envelope (shorter = tighter snap)
+            |
+        [*~ $sidNoiseHPFMix]
+
+
+
+The LPF path (with a slow decay) provides the snare's body and tail. The HPF path
+(with a faster decay) provides the initial snap and sizzle. Adjusting the ratio of
+these two paths moves from a dead dry snare (mostly HPF, short) to a lush full snare
+(both paths, longer decays).
+
+
+Resonant Body Filter
+
+
+A bandpass filter applied to the mixed sine+noise signal adds resonance and tonal
+focus, simulating the frequency response of the drum shell:
+
+
+
+mixed sines bus
+    |
+[bp~ $bodyCutoff $bodyQ]   ; resonant bandpass
+    |
+[*~ $bodyMix]              ; mix level (0 = bypass, 1 = full body filter)
+
+
+
+Setting $bodyCutoff to 200–400 Hz and $bodyQ to 2–4 adds a
+warm, woody resonance. Higher Q values (8–12) produce a pitched, "rim-shot" quality.
+
+
+Dual Delay Rattle
+
+
+Real snare wires vibrate sympathetically for tens of milliseconds after the batter
+head is struck. Model this with two short, filtered feedback delay lines in parallel:
+
+
+
+; Delay line 1:
+[delwrite~ $0-d1 200]          ; 200 ms maximum delay buffer
+
+; Read with feedback:
+[delread~ $0-d1 $delayTime1]   ; $delayTime1: 15–60 ms
+    |
+[lop~ $delFeedFilter1]         ; lowpass in feedback path (rolls off high freq)
+    |
+[*~ $feedback1]                ; feedback level (0.3–0.6)
+→ back into delwrite input (add to dry signal going in)
+
+[delread~ $0-d1 $delayTime1]   ; take output separately for mix
+    |
+[*~ $delayLevel1]              ; output level
+
+; Delay line 2: identical structure, different time
+[delwrite~ $0-d2 200]
+...
+
+
+
+In Pd, implement with [$0-d1] to namespace the delay buffer per instance:
+
+
+
+[inlet~]
+|
+[+~]              ← feedback return
+|
+[delwrite~ $0-d1 200]
+
+[delread~ $0-d1 30]
+|
+[lop~ 8000]       ; damp highs in feedback
+|
+[*~ 0.45]         ; feedback coefficient
+|
+[+~] (back to inlet adder above)
+
+[delread~ $0-d1 30]
+|
+[*~ $delayLevel1] ; to output mix
+
+
+
+Two delay lines tuned to slightly different times (e.g. 28 ms and 41 ms) produce a
+richer, more random-feeling rattle than a single delay. Longer delay times (80–100 ms)
+make a very loose, sloppy snare; shorter times (15–25 ms) make a tight, crisp wire buzz.
+
+
+Distortion
+
+
+The snare model uses two distortion stages:
+
+
+
+mixed signal
+    |
+[clip~ -$dist1 $dist1]     ; first stage: hard clip (0.3–1.0 threshold)
+    |
+[clip~ -$dist2 $dist2]     ; second stage: softer clip
+
+
+
+Two cascaded clippers with different thresholds produce a more complex saturation
+character than a single stage. The first stage creates harmonics; the second round off
+the harshest edges. For most snare patches: first stage 0.4–0.7, second stage 0.6–1.0.
+
+
+Complete Signal Graph
+
+
+On $0-trigger:
+  → fire SineA pitch + amp vline~
+  → fire SineB pitch + amp vline~
+  → fire LPF noise decay vline~
+  → fire HPF noise decay vline~
+  → fire output envelope vline~
+
+Signal path:
+[sineA] *~ [ampA] *~ [sineAMix] ─┐
+[sineB] *~ [ampB] *~ [sineBMix] ─┤ sines bus
+                                  │
+    [bp~ bodyCutoff bodyQ] ← sines bus
+    [*~ bodyMix] ──────────────── ─┤
+
+[SID noise]
+   ├─ [lop~ filterA] *~ [LPF env] *~ [lpfMix] ─┤
+   └─ [hip~ filterB] *~ [HPF env] *~ [hpfMix] ─┤ mix bus
+
+[transient click noise] *~ [3ms env] *~ [clickMix] ─┤
+
+mix bus
+  │
+[clip~ dist1] [clip~ dist2]    ; two-stage distortion
+  │
+[+~ delay1 delay2]             ; add delay rattle
+  │
+[*~ outEnv]                    ; output envelope
+  │
+[*~ velocity]
+  │
+[outlet~]
+
+
+Key PD Receivers
+
+
+$0-trigger     $0-velocity
+$0-sineAFreq   $0-sineAEnv     $0-sineADecay   $0-sineAAmpDec   $0-sineAMix
+$0-sineBFreq   $0-sineBEnv     $0-sineBDecay   $0-sineBAmpDec   $0-sineBMix
+$0-clockRate   $0-filterACut   $0-filterBCut
+$0-lpfMix      $0-hpfMix
+$0-lpfDecay    $0-hpfDecay
+$0-bodyCut     $0-bodyQ        $0-bodyMix
+$0-dist1       $0-dist2
+$0-delTime1    $0-delFeed1     $0-delLevel1
+$0-delTime2    $0-delFeed2     $0-delLevel2
+$0-outDecay    $0-outLevel
+
+
+X/Y Mapping
+
+
+AxisDrivesRangeEffect
+XSineAFreq + FilterACutoff (proportional)100–500 HzLeft = dark thud; Right = bright crack
+YLPF + HPF noise decay (linked)50–2000 msBottom = dead tight; Top = long sizzling tail
+
+
+Factory Presets (Lua)
+
+
+local presets = {
+    snare0 = {  -- classic, balanced
+        sineAFreq=178, sineAMix=0.58,
+        lpfMix=0.63, hpfMix=0.61, lpfDecay=578,
+        dist1=0.0, delTime1=30, delLevel1=0.0, outLevel=0.73,
+    },
+    snareA = {  -- high-pitched, bright crack
+        sineAFreq=503, sineAMix=0.86,
+        lpfMix=0.46, hpfMix=0.93, lpfDecay=318,
+        dist1=0.77, delTime1=30, delLevel1=0.0, outLevel=0.49,
+    },
+    snare9 = {  -- room snare, heavy rattle
+        sineAFreq=170, sineAMix=0.6,
+        lpfMix=0.7, hpfMix=0.5, lpfDecay=900,
+        dist1=0.3, delTime1=35, delLevel1=0.6, outLevel=0.65,
+    },
+}
+
+
+Build Order
+
+
+Single [osc~] at 180 Hz with amplitude decay → verify the body thud.
+Add [noise~] through [lop~] with its own shorter decay → snare character begins.
+Add the HPF noise path → snap emerges.
+Add SID noise approximation (hard clip) → gritty texture.
+Add Sine B (250 Hz).
+Add bandpass body filter.
+Add one delay line (30 ms, 0.4 feedback) → rattle appears.
+Add second delay line.
+Add two-stage clip distortion.
+Wire output envelope and velocity.
+Wire all $0- receivers and test presets.
+
+
+Summary
+
+
+The snare combines two sine oscillators (body modes) with SID-style noise split
+into a warm LPF path (tail) and a bright HPF path (snap). A resonant bandpass filter
+shapes the body character. Two short filtered feedback delays simulate snare wire
+rattle. Two-stage distortion adds grit. X maps to body tone frequency (dark→bright);
+Y maps to noise decay (tight→sizzling). The same extend-decay envelope pattern from
+Part 1 drives both the sine amplitude and noise paths independently.
+
+
+See Also
+
+
+Architecture and Approach - extend-decay envelope and $0 namespacing
+Kick Drum Synthesis - the same sine + pitch sweep technique
+Hi-Hat Synthesis - noise-forward synthesis with multi-band filtering
+

@@ -1,0 +1,416 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 1: OpenAI API Basics</title>
+    <meta name="description" content="Make your first call to the OpenAI API in Go using only the standard library - no SDK required.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-01-openai-api-basics.txt">plain/text</a> | <i>2026-06-09</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 1: OpenAI API Basics</h2>
+        <p>
+The OpenAI API is an HTTP JSON service. Every request is a POST to an endpoint,
+every response is a JSON object. You do not need an SDK to use it - <code>net/http</code>
+and <code>encoding/json</code> are enough. This article strips away the abstraction and
+shows you exactly what is sent over the wire. Every article in this series builds on
+this foundation, so understanding it clearly matters.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The structure of the chat completions endpoint: authentication, request body, response format</li>
+<li>How to define the request and response types in Go using only the standard library</li>
+<li>How to make the HTTP request, decode the response, and print the model's reply</li>
+<li>How to select models and what the model name string controls</li>
+<li>How to handle API errors and rate-limit responses correctly</li>
+</ul>
+
+
+<h3>Authentication</h3>
+
+<p>
+You authenticate by sending your API key in the <code>Authorization</code> header:
+</p>
+
+<pre>
+Authorization: Bearer sk-...your-key-here...
+</pre>
+
+<p>
+Never hard-code the key. Read it from the environment:
+</p>
+
+<pre>
+apiKey := os.Getenv("OPENAI_API_KEY")
+if apiKey == "" {
+    fmt.Fprintln(os.Stderr, "OPENAI_API_KEY not set")
+    os.Exit(1)
+}
+</pre>
+
+<h3>The Chat Completions Endpoint</h3>
+
+<p>
+The primary endpoint for generating text is:
+</p>
+
+<pre>
+POST http://localhost:8001/v1/chat/completions
+Content-Type: application/json
+Authorization: Bearer &lt;key&gt;
+</pre>
+
+<p>
+The request body is a JSON object with at minimum a <code>model</code> field and a
+<code>messages</code> array. The model field names a specific OpenAI model: <code>gpt-4o</code>,
+<code>gpt-4o-mini</code>, <code>o1</code>, <code>o3-mini</code>, and so on. Model availability
+and pricing differ - for experimentation, <code>gpt-4o-mini</code> is fast and cheap.
+</p>
+
+<h3>Defining the Types</h3>
+
+<p>
+Go needs struct types to marshal and unmarshal JSON. Keep the request type minimal - only
+include fields you actually use:
+</p>
+
+<pre>
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+)
+
+const apiURL = "http://localhost:8001/v1/chat/completions"
+
+type Message struct {
+    Role    string `json:"role"`
+    Content string `json:"content"`
+}
+
+type ChatRequest struct {
+    Model    string    `json:"model"`
+    Messages []Message `json:"messages"`
+}
+
+type Choice struct {
+    Message      Message `json:"message"`
+    FinishReason string  `json:"finish_reason"`
+}
+
+type Usage struct {
+    PromptTokens     int `json:"prompt_tokens"`
+    CompletionTokens int `json:"completion_tokens"`
+    TotalTokens      int `json:"total_tokens"`
+}
+
+type ChatResponse struct {
+    ID      string   `json:"id"`
+    Choices []Choice `json:"choices"`
+    Usage   Usage    `json:"usage"`
+    Error   *struct {
+        Message string `json:"message"`
+        Type    string `json:"type"`
+    } `json:"error"`
+}
+</pre>
+
+<p>
+The <code>Error</code> field deserves attention. OpenAI returns HTTP 200 with an error body
+for some failures (particularly when the request is well-formed but the model refuses).
+For authentication failures and bad requests you get a non-200 status code instead.
+Always check both.
+</p>
+
+<h3>Making the Request</h3>
+
+<pre>
+func chat(apiKey, model string, messages []Message) (*ChatResponse, error) {
+    reqBody := ChatRequest{
+        Model:    model,
+        Messages: messages,
+    }
+
+    data, err := json.Marshal(reqBody)
+    if err != nil {
+        return nil, fmt.Errorf("marshal: %w", err)
+    }
+
+    req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(data))
+    if err != nil {
+        return nil, fmt.Errorf("new request: %w", err)
+    }
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+apiKey)
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf("do request: %w", err)
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, fmt.Errorf("read body: %w", err)
+    }
+
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, body)
+    }
+
+    var result ChatResponse
+    if err := json.Unmarshal(body, &amp;result); err != nil {
+        return nil, fmt.Errorf("unmarshal: %w", err)
+    }
+
+    if result.Error != nil {
+        return nil, fmt.Errorf("API error (%s): %s", result.Error.Type, result.Error.Message)
+    }
+
+    return &amp;result, nil
+}
+</pre>
+
+<p>
+A few things worth noting. We use <code>io.ReadAll</code> to buffer the full body before
+unmarshalling. This lets us log the raw response on error, which is invaluable during
+development. The alternative - <code>json.NewDecoder(resp.Body).Decode(&amp;result)</code> -
+is slightly more efficient for large bodies but loses the raw bytes if decoding fails.
+For debugging, the read-all approach wins.
+</p>
+
+<h3>Putting It Together</h3>
+
+<pre>
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    if apiKey == "" {
+        fmt.Fprintln(os.Stderr, "OPENAI_API_KEY not set")
+        os.Exit(1)
+    }
+
+    messages := []Message{
+        {Role: "system", Content: "You are a helpful assistant. Be concise."},
+        {Role: "user", Content: "What is the capital of France?"},
+    }
+
+    resp, err := chat(apiKey, "gpt-4o-mini", messages)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "error:", err)
+        os.Exit(1)
+    }
+
+    if len(resp.Choices) == 0 {
+        fmt.Fprintln(os.Stderr, "no choices returned")
+        os.Exit(1)
+    }
+
+    fmt.Println(resp.Choices[0].Message.Content)
+    fmt.Printf("tokens: %d prompt + %d completion = %d total\n",
+        resp.Usage.PromptTokens,
+        resp.Usage.CompletionTokens,
+        resp.Usage.TotalTokens,
+    )
+}
+</pre>
+
+<p>
+Run it:
+</p>
+
+<pre>
+export OPENAI_API_KEY=sk-...
+go run main.go
+</pre>
+
+<p>
+You should see something like:
+</p>
+
+<pre>
+Paris.
+tokens: 27 prompt + 4 completion = 31 total
+</pre>
+
+<h3>Model Selection</h3>
+
+<p>
+The model field is a string and OpenAI releases new models regularly. A few landmarks
+as of early 2026:
+</p>
+
+<ul>
+<li><b>gpt-4o</b> - the flagship multimodal model. Fast, capable, handles vision.</li>
+<li><b>gpt-4o-mini</b> - smaller, cheaper, still very capable for text tasks. Good default for development.</li>
+<li><b>o1</b> / <b>o3-mini</b> - reasoning models that "think" before answering. Slower and more expensive but significantly better at complex multi-step problems.</li>
+</ul>
+
+<p>
+For an agentic application where the model will be calling tools in a loop,
+<code>gpt-4o-mini</code> is a reasonable starting point. Upgrade to <code>gpt-4o</code>
+or a reasoning model when you hit capability limits, not before.
+</p>
+
+<h3>The Response Structure</h3>
+
+<p>
+The full response has more fields than the struct above captures. The ones that matter
+most for the rest of this series:
+</p>
+
+<ul>
+<li><b>choices[0].message.role</b> - always "assistant" for a chat completion.</li>
+<li><b>choices[0].message.content</b> - the generated text. May be null if the model called a tool instead (covered in article 03).</li>
+<li><b>choices[0].finish_reason</b> - why the model stopped. "stop" means it finished naturally. "tool_calls" means it wants to invoke a tool. "length" means it hit the token limit.</li>
+<li><b>usage</b> - token counts for cost tracking and context window management.</li>
+</ul>
+
+<h3>Error Handling in Production</h3>
+
+<p>
+The OpenAI API returns several classes of errors worth handling explicitly:
+</p>
+
+<ul>
+<li><b>401</b> - invalid API key.</li>
+<li><b>429</b> - rate limited. Back off and retry with exponential jitter.</li>
+<li><b>500 / 503</b> - server-side error. Retry after a short delay.</li>
+<li><b>400</b> - malformed request (wrong model name, bad JSON, context window exceeded).</li>
+</ul>
+
+<p>
+A minimal retry wrapper:
+</p>
+
+<pre>
+func chatWithRetry(apiKey, model string, messages []Message, maxRetries int) (*ChatResponse, error) {
+    var lastErr error
+    for i := 0; i &lt; maxRetries; i++ {
+        resp, err := chat(apiKey, model, messages)
+        if err == nil {
+            return resp, nil
+        }
+        lastErr = err
+        // Only retry on transient errors
+        if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "500") {
+            time.Sleep(time.Duration(1&lt;&lt;i) * time.Second)
+            continue
+        }
+        return nil, err // non-retryable
+    }
+    return nil, fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
+}
+</pre>
+
+<p>
+This series focuses on concepts rather than production hardening - the retry logic above
+is intentionally simple. Real production code should use a proper backoff library and
+respect the <code>Retry-After</code> header when it is present.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+The OpenAI API is a POST to <code>/v1/chat/completions</code> with a JSON body
+containing a model name and a messages array. The response is a JSON object with
+a <code>choices</code> array; the model's reply is in
+<code>choices[0].message.content</code>. No SDK is needed — <code>net/http</code>
+and <code>encoding/json</code> handle everything. Set the API key in the
+<code>Authorization: Bearer ...</code> header. This pattern is the same for
+every provider that implements the OpenAI-compatible API, including llama.cpp.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://platform.openai.com/docs/api-reference/chat">OpenAI API Reference: Chat Completions</a></li>
+<li><a href="https://platform.openai.com/docs/models">OpenAI Model Overview</a></li>
+<li><a href="https://pkg.go.dev/net/http">Go net/http package documentation</a></li>
+<li><a href="https://pkg.go.dev/encoding/json">Go encoding/json package documentation</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-02-chat-completions.htm">Chat Completions Deep Dive</a> - roles, temperature, context window management</li>
+<li><a href="llm-03-tool-calls.htm">Tool Calls (Function Calling)</a> - extending the model with executable functions</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

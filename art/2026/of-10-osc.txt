@@ -1,0 +1,347 @@
+openFrameworks - Part 10: OSC: OpenSoundControl
+2026-10-01
+
+
+Open Sound Control (OSC) is a lightweight network protocol designed for real-time communication
+between multimedia applications. Despite its name, it carries any kind of data - not just
+audio - and has become the lingua franca for connecting creative tools: Pure Data, Max/MSP,
+SuperCollider, TouchDesigner, and Ableton Live all speak OSC. openFrameworks ships with
+ofxOSC, a bundled addon that provides a sender and a receiver that handle the
+UDP networking and message serialisation for you. This article shows how to wire up both ends,
+what message types are supported, and how to build a bidirectional link to a Pure Data patch.
+
+
+What You Will Learn
+
+
+OSC message format: address pattern, type tag string, and argument list
+How to set up ofxOSCSender to send messages to another application
+How to set up ofxOSCReceiver and poll for incoming messages each frame
+Supported argument types: float, int, string, blob, and how to read each in C++
+Building a bidirectional link to a Pure Data patch: oF controls Pd parameters, Pd sends back DSP values
+UDP broadcast for sending one message to multiple receivers on a LAN
+
+
+What Is OSC?
+
+
+An OSC message has an address pattern (a URL-like string, e.g. /synth/freq)
+and zero or more typed arguments. Supported types include:
+
+
+
+  float (32-bit IEEE 754)
+  int32
+  string
+  blob (arbitrary byte array)
+  bool
+  double, int64
+
+
+
+Messages are sent over UDP, so delivery is not guaranteed and there is no connection
+handshake. For real-time data (control-rate parameter updates, gestures) this is fine.
+For critical one-shot messages, send twice or use TCP via ofxOSCTCP.
+
+
+Adding ofxOSC to Your Project
+
+
+ofxOSC ships with every oF download. Add it in the project generator or edit
+addons.make:
+
+
+
+ofxOSC
+
+
+
+// ofApp.h
+#include <ofMain.h>
+#include <ofxOSC.h>
+
+
+Sending Messages with ofxOscSender
+
+
+// ofApp.h
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void update();
+    void draw();
+private:
+    ofxOscSender sender;
+};
+
+
+
+void ofApp::setup() {
+    // Connect to Pure Data (or any OSC receiver) on localhost port 9000
+    sender.setup("127.0.0.1", 9000);
+}
+
+void ofApp::update() {
+    ofxOscMessage m;
+    m.setAddress("/mouse/position");
+    m.addFloatArg((float)ofGetMouseX() / ofGetWidth());   // normalised 0-1
+    m.addFloatArg((float)ofGetMouseY() / ofGetHeight());
+    sender.sendMessage(m, false);   // false = don't wrap in OSC bundle
+}
+
+
+
+// Sending different types
+void sendControls() {
+    {
+        ofxOscMessage m;
+        m.setAddress("/synth/freq");
+        m.addFloatArg(440.0f);
+        sender.sendMessage(m);
+    }
+    {
+        ofxOscMessage m;
+        m.setAddress("/synth/name");
+        m.addStringArg("sine");
+        sender.sendMessage(m);
+    }
+    {
+        ofxOscMessage m;
+        m.setAddress("/synth/active");
+        m.addBoolArg(true);
+        sender.sendMessage(m);
+    }
+}
+
+
+Sending an OSC Bundle
+
+
+A bundle groups multiple messages with a shared timestamp, ensuring they are processed
+atomically by the receiver:
+
+
+
+ofxOscBundle bundle;
+
+ofxOscMessage m1;
+m1.setAddress("/voice/freq");
+m1.addFloatArg(330.0f);
+bundle.addMessage(m1);
+
+ofxOscMessage m2;
+m2.setAddress("/voice/amp");
+m2.addFloatArg(0.7f);
+bundle.addMessage(m2);
+
+sender.sendBundle(bundle);
+
+
+Receiving Messages with ofxOscReceiver
+
+
+// ofApp.h
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void update();
+    void draw();
+private:
+    ofxOscReceiver receiver;
+    float          remoteFreq = 440.0f;
+    bool           remoteGate = false;
+};
+
+
+
+void ofApp::setup() {
+    receiver.setup(8000);    // listen on UDP port 8000
+}
+
+void ofApp::update() {
+    while (receiver.hasWaitingMessages()) {
+        ofxOscMessage m;
+        receiver.getNextMessage(m);
+        processMessage(m);
+    }
+}
+
+void ofApp::processMessage(ofxOscMessage &m) {
+    if (m.getAddress() == "/synth/freq") {
+        remoteFreq = m.getArgAsFloat(0);
+    }
+    else if (m.getAddress() == "/synth/gate") {
+        remoteGate = m.getArgAsInt32(0) != 0;
+    }
+    else if (m.getAddress() == "/log") {
+        ofLogNotice("OSC") << m.getArgAsString(0);
+    }
+    else {
+        // Log unhandled messages during development
+        ofLogVerbose("OSC") << "Unhandled: " << m.getAddress();
+    }
+}
+
+
+Bidirectional Link: Full Setup
+
+
+// ofApp.h
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void update();
+    void draw();
+    void mouseScrolled(int x, int y, float sx, float sy);
+private:
+    ofxOscSender   sender;
+    ofxOscReceiver receiver;
+
+    float brightness = 0.5f;   // driven by incoming OSC
+    float freq       = 220.0f; // sent to Pure Data
+};
+
+
+
+void ofApp::setup() {
+    sender.setup("127.0.0.1", 9000);   // to Pure Data
+    receiver.setup(8000);              // from Pure Data
+}
+
+void ofApp::update() {
+    while (receiver.hasWaitingMessages()) {
+        ofxOscMessage m;
+        receiver.getNextMessage(m);
+        if (m.getAddress() == "/vu") {
+            brightness = ofClamp(m.getArgAsFloat(0), 0.0f, 1.0f);
+        }
+    }
+}
+
+void ofApp::draw() {
+    ofBackground(0);
+    ofSetColor(ofColor::fromHsb(160, 200, (int)(brightness * 255)));
+    ofDrawCircle(ofGetWidth() / 2, ofGetHeight() / 2, 100 + brightness * 150);
+}
+
+void ofApp::mouseScrolled(int x, int y, float sx, float sy) {
+    freq = ofClamp(freq + sy * 10.0f, 80.0f, 2000.0f);
+    ofxOscMessage m;
+    m.setAddress("/synth/freq");
+    m.addFloatArg(freq);
+    sender.sendMessage(m);
+}
+
+
+Corresponding Pure Data Patch
+
+
+On the Pure Data side (using the mrpeach external for OSC, or the built-in
+oscparse object in Pd 0.53+):
+
+
+
+[udpreceive 9000]   -- listens on port 9000 (receives from oF)
+     |
+[oscparse]
+     |
+[route /synth/freq]
+     |
+[unpack f]
+     |
+[osc~ 440]          -- sine oscillator driven by frequency
+     |
+[*~ 0.3]
+     |
+[dac~]
+
+-- Sending VU back to oF:
+[env~]   -- RMS envelope
+  |
+[/ 100]  -- normalise
+  |
+[oscformat /vu]
+  |
+[udpsend 127.0.0.1 8000]
+
+
+Connecting to Other Software
+
+
+Max/MSP: Use [udpreceive] and [OSC-route] (from the CNMAT
+externals) or the built-in [o.route] in o.Max.
+
+
+
+TouchDesigner: The OSC CHOP and DAT nodes handle incoming messages; the OSC Out CHOP
+handles sending.
+
+
+
+SuperCollider: OSCdef(\handler, {|msg, time, addr, port| ...}, '/path')
+registers a callback.
+
+
+
+Ableton Live: Requires an M4L (Max for Live) device to bridge OSC to Ableton's API.
+
+
+Argument Type Accessors
+
+
+ofxOscMessage m;
+// ... received or constructed ...
+
+int   n  = m.getArgAsInt32(0);
+float f  = m.getArgAsFloat(0);
+string s = m.getArgAsString(0);
+bool  b  = m.getArgAsBool(0);
+
+// Type-check before access:
+if (m.getArgType(0) == OFXOSC_TYPE_FLOAT) {
+    float f = m.getArgAsFloat(0);
+}
+
+
+Network Addressing: Beyond Localhost
+
+
+To talk to a device on the local network, replace "127.0.0.1" with the remote
+IP. Use "255.255.255.255" to broadcast to all devices on the subnet (requires
+sender.setBroadcast(true)). This is a common pattern for multi-computer
+installations where a master controller sends to several display machines.
+
+
+
+sender.setup("192.168.1.255", 9000);
+sender.setBroadcast(true);
+
+
+Summary
+
+
+Create an ofxOSCSender with sender.setup(host, port) and build
+messages with ofxOSCMessage m; m.setAddress("/path"); m.addFloatArg(val); then
+sender.sendMessage(m). On the receiving end, receiver.setup(port)
+and poll in update() with receiver.getNextMessage(m) until it
+returns false. Check m.getAddress() to route messages and read arguments with
+m.getArgAsFloat(0). For LAN broadcast, call sender.setBroadcast(true)
+and send to the subnet broadcast address.
+
+
+Further Reading
+
+
+  OSC Specification at CNMAT
+  ofxOSC Documentation
+  Pure Data (Pd) Home Page
+  ofxOSC Example on GitHub
+
+
+See Also
+
+
+  Audio I/O with ofSoundStream
+  ofxGui: Built-in UI Controls
+  Putting It Together: Audio-Visual Sketch
+

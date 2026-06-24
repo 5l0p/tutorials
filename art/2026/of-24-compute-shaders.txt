@@ -1,0 +1,353 @@
+openFrameworks - Part 24: Compute Shaders
+2026-10-15
+
+
+Fragment shaders run once per pixel across a rectangular region, and vertex shaders run once
+per vertex in a mesh. Both are powerful, but they are tied to the graphics pipeline. Compute
+shaders break free of that constraint: they run arbitrary parallel programs on the GPU with
+no geometry, no rasteriser, no fixed output. The GPU becomes a massively parallel compute
+engine that you read from and write to with Shader Storage Buffer Objects. FFT magnitude
+accumulation across thousands of frames, particle physics on 10 million points, reaction-
+diffusion on a 2048×2048 grid at 60 fps - these are the problems where compute shaders win.
+
+
+What You Will Learn
+
+
+  How to compile and dispatch a compute shader with GL_COMPUTE_SHADER.
+  The layout(local_size_x, local_size_y, local_size_z) workgroup model and how to size dispatches.
+  How to create and bind Shader Storage Buffer Objects (SSBOs) for arbitrary read/write data.
+  How glDispatchCompute and glMemoryBarrier work.
+  A complete worked example: GPU spectral processing (magnitude integration over FFT frames).
+  A particle simulation running entirely on the GPU.
+  When GPU compute beats CPU and when it does not.
+
+
+Prerequisites
+
+
+Compute shaders require OpenGL 4.3. Request it in main.cpp:
+
+
+
+// main.cpp
+ofGLWindowSettings settings;
+settings.setSize(1280, 720);
+settings.setGLVersion(4, 3);
+auto window = ofCreateWindow(settings);
+
+
+
+Verify that the GPU and driver support 4.3 at runtime:
+
+
+
+void ofApp::setup() {
+    ofLogNotice() << "OpenGL: " << glGetString(GL_VERSION);
+    ofLogNotice() << "GLSL:   " << glGetString(GL_SHADING_LANGUAGE_VERSION);
+
+    GLint maxWorkGroupCount[3];
+    glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0, &maxWorkGroupCount[0]);
+    ofLogNotice() << "Max workgroups X: " << maxWorkGroupCount[0];
+}
+
+
+Anatomy of a Compute Shader
+
+
+A compute shader has no vertex inputs, no fragment outputs, and no rasteriser. It declares
+its local workgroup size, reads and writes to buffer objects, and communicates between
+invocations via shared memory.
+
+
+
+// data/shaders/integrate.comp
+#version 430
+
+// Workgroup size: 256 threads in X, 1 in Y and Z.
+// Each thread processes one FFT bin.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Input: current FFT magnitudes (written by CPU each frame)
+layout(std430, binding = 0) buffer CurrentMagnitudes {
+    float current[];
+};
+
+// Output: accumulated (integrated) magnitudes
+layout(std430, binding = 1) buffer Accumulated {
+    float accumulated[];
+};
+
+uniform float uDecay;   // 0.0 to 1.0; 0.9 = slow decay
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    float c = current[idx];
+    float a = accumulated[idx];
+
+    // Exponential moving average: fast attack, slow decay
+    if (c > a) {
+        accumulated[idx] = c;              // instant attack
+    } else {
+        accumulated[idx] = a * uDecay;     // slow decay
+    }
+}
+
+
+
+gl_GlobalInvocationID.x uniquely identifies this invocation: it equals
+gl_WorkGroupID.x * gl_WorkGroupSize.x + gl_LocalInvocationID.x. For a dispatch
+of N/256 workgroups (where N is the number of bins) and local size 256, each invocation
+processes exactly one bin.
+
+
+Shader Storage Buffer Objects (SSBOs)
+
+
+An SSBO is a GPU buffer that a shader can both read and write. Unlike a uniform buffer, its
+size can be larger than the uniform limit (typically 64 KB) and the shader can write arbitrary
+locations.
+
+
+
+// ofApp.h
+    GLuint currentSsbo    = 0;
+    GLuint accumulatedSsbo = 0;
+    int    numBins         = 1024;
+    ofShader computeShader;
+
+
+
+// setup()
+    computeShader.setupShaderFromFile(GL_COMPUTE_SHADER, "shaders/integrate.comp");
+    computeShader.linkProgram();
+
+    // Create SSBO for current FFT magnitudes
+    glGenBuffers(1, &currentSsbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, currentSsbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, numBins * sizeof(float),
+                 nullptr, GL_DYNAMIC_DRAW);  // GL_DYNAMIC_DRAW: updated every frame
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    // Create SSBO for accumulated magnitudes, initialised to 0
+    std::vector<float> zeros(numBins, 0.0f);
+    glGenBuffers(1, &accumulatedSsbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, accumulatedSsbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, numBins * sizeof(float),
+                 zeros.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+
+glDispatchCompute and glMemoryBarrier
+
+
+// update() - called after computing FFT on the CPU
+void ofApp::update() {
+    // Upload current frame's FFT magnitudes to the SSBO
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, currentSsbo);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                    numBins * sizeof(float), fftMagnitudes.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    // Bind SSBOs to binding points 0 and 1
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, currentSsbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, accumulatedSsbo);
+
+    // Dispatch the compute shader
+    computeShader.begin();
+        computeShader.setUniform1f("uDecay", 0.92f);
+        // Dispatch ceil(numBins / localSizeX) workgroups in X
+        glDispatchCompute((numBins + 255) / 256, 1, 1);
+    computeShader.end();
+
+    // Wait for the compute shader to finish before reading the result
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+}
+
+
+
+Why the barrier matters: GPU commands are asynchronous and may be reordered.
+glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT) tells the driver that all
+subsequent GL commands that read the SSBO must see the writes from the compute dispatch.
+Without it, the subsequent draw call might read stale data. Think of it as a GPU-side fence.
+
+
+Reading SSBO Results Back to the CPU
+
+
+If you need the computed results on the CPU (for audio or physics), map the buffer:
+
+
+
+glBindBuffer(GL_SHADER_STORAGE_BUFFER, accumulatedSsbo);
+const float* data = static_cast<const float*>(
+    glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY));
+
+if (data) {
+    for (int i = 0; i < numBins; i++) {
+        processedMagnitudes[i] = data[i];
+    }
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+}
+glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+
+
+Warning: glMapBuffer stalls the CPU until all pending GPU commands
+touching that buffer are complete. If the compute dispatch is still running, the CPU blocks.
+Use glFenceSync / glClientWaitSync to poll for completion without
+blocking, or restructure the pipeline to introduce a one-frame delay between compute and
+readback.
+
+
+Particle Simulation on the GPU
+
+
+The classic compute shader demo: update particle positions and velocities entirely on the
+GPU, then render them directly from the SSBO without reading back to the CPU.
+
+
+
+// data/shaders/particles.comp
+#version 430
+
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec2 position;
+    vec2 velocity;
+    float life;
+    float pad;   // std430 alignment: vec2 is 8 bytes, so 2 floats pad to 6 floats total
+};
+
+layout(std430, binding = 0) buffer Particles {
+    Particle particles[];
+};
+
+uniform float uDt;         // delta time in seconds
+uniform vec2  uAttractor;  // mouse position, normalised 0-1
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+
+    vec2 pos = particles[i].position;
+    vec2 vel = particles[i].velocity;
+    float life = particles[i].life;
+
+    // Attraction toward mouse
+    vec2 toAttr = uAttractor - pos;
+    float dist  = length(toAttr) + 0.01;
+    vec2  force = normalize(toAttr) * (0.005 / (dist * dist));
+
+    vel  += force;
+    vel  *= 0.98;          // drag
+    pos  += vel * uDt * 60.0;
+    life -= uDt;
+
+    // Wrap edges
+    pos  = mod(pos + 1.0, 1.0);
+
+    // Respawn dead particles
+    if (life <= 0.0) {
+        pos  = vec2(fract(float(i) * 0.618033), fract(float(i) * 0.381966));
+        vel  = vec2(0.0);
+        life = 1.0 + fract(float(i) * 0.141421) * 3.0;
+    }
+
+    particles[i].position = pos;
+    particles[i].velocity = vel;
+    particles[i].life     = life;
+}
+
+
+
+Draw the particles directly from the SSBO, using it as a vertex buffer. This avoids any
+CPU-GPU transfer:
+
+
+
+// Render shader reads position from the same SSBO used by compute:
+// vertex shader (particles.vert):
+// layout(std430, binding=0) buffer Particles { ... } - or use a VAO pointing at the same buffer
+
+// In practice, bind the SSBO as both a GL_SHADER_STORAGE_BUFFER for compute
+// and a GL_ARRAY_BUFFER for drawing. Create a VAO pointing at the position field:
+
+void ofApp::setup() {
+    // ... create particleSsbo with N particles ...
+    // Create VAO pointing at position field of each Particle struct
+    glGenVertexArrays(1, &particleVao);
+    glBindVertexArray(particleVao);
+    glBindBuffer(GL_ARRAY_BUFFER, particleSsbo);
+    // Particle: position (vec2 at offset 0), stride = sizeof(Particle) = 24 bytes
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 24, (void*)0);
+    glBindVertexArray(0);
+}
+
+void ofApp::draw() {
+    // After compute dispatch + barrier:
+    pointShader.begin();
+        glBindVertexArray(particleVao);
+        glDrawArrays(GL_POINTS, 0, numParticles);
+        glBindVertexArray(0);
+    pointShader.end();
+}
+
+
+When GPU Compute Beats CPU
+
+
+GPU compute wins when:
+
+
+
+  The data set is large. The GPU has thousands of execution units. Under about 10,000 independent elements, CPU SIMD is competitive.
+  The work is embarrassingly parallel. Each element can be processed independently (or with small neighbourhood dependencies addressable via shared memory).
+  The result stays on the GPU. If you compute on the GPU and render on the GPU without reading back to the CPU, the memory bus is never stressed.
+
+
+
+CPU is better when:
+
+
+
+  The algorithm is inherently serial (dependency chains longer than a workgroup).
+  The data set fits in CPU cache and the compute is branchy (GPU branch divergence is expensive).
+  You need the result immediately on the CPU (readback stall eliminates the throughput advantage).
+
+
+Summary
+
+
+Compute shaders bypass the vertex/fragment pipeline entirely, running arbitrary parallel
+programs on the GPU. You declare a local workgroup size with layout(local_size_x)
+and dispatch ceil(N / localSize) workgroups with glDispatchCompute.
+SSBOs provide large, arbitrary read-write storage; bind them with glBindBufferBase.
+Always insert a glMemoryBarrier before any subsequent pass that reads the result.
+Keeping data on the GPU (compute writes to SSBO; vertex shader reads from same SSBO) avoids
+the readback stall that can negate GPU compute's throughput advantage. Part 25 brings
+everything together in a capstone audio-visual sketch that combines FFT analysis, shader
+visuals, the 3D camera from Part 12, and live tweaking with ofxGui.
+
+
+Further Reading
+
+
+  Khronos: Compute Shader
+  LearnOpenGL: Introduction to Compute Shaders
+  Khronos: Shader Storage Buffer Objects
+  GPU Gems 3: Parallel Algorithms
+  Khronos: OpenGL Memory Model
+
+
+See Also
+
+
+  OpenGL Core Profile: VAO/VBO
+  Framebuffers & Post-Processing
+  Shaders & GLSL
+  DSP Part 11: FFT
+  Putting It Together: Audio-Visual Sketch
+

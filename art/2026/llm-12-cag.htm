@@ -1,0 +1,359 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 12: CAG: Cache-Augmented Generation</title>
+    <meta name="description" content="How OpenAI prompt caching works, when CAG is better than RAG, and how to structure prompts to maximise cache hit rates.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-12-cag.txt">plain/text</a> | <i>2026-06-21</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 12: CAG: Cache-Augmented Generation</h2>
+        <p>
+Cache-Augmented Generation (CAG) is a complementary strategy to RAG. Where RAG retrieves
+a slice of a large knowledge base for each query, CAG loads the <i>entire</i> relevant
+context into the prompt once, caches it on the server, and reuses the cached representation
+for subsequent queries. No embedding step, no retrieval, no approximation - the model sees
+all the context directly, and subsequent calls with the same prefix are faster and cheaper
+because the API provider does not need to reprocess the cached prefix.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How OpenAI prompt caching works: automatic prefix caching, token thresholds, and the cached_tokens field</li>
+<li>How to structure prompts for maximum cache hit rate: what goes first and why</li>
+<li>How to load a knowledge base into the system prompt and keep the cache warm between calls</li>
+<li>When CAG is better than RAG: static context, low-latency requirements, small-to-medium knowledge bases</li>
+<li>How to measure cache performance and calculate cost savings</li>
+</ul>
+
+<h3>How OpenAI Prompt Caching Works</h3>
+
+<p>
+OpenAI automatically caches prompt prefixes that are at least 1024 tokens long. When you
+send a request, the API checks whether the prompt's prefix (specifically, the first N tokens
+in multiples of 128) matches a recently cached entry. If it does, you pay a reduced rate
+for those cached tokens (50% off input token price for most models) and the latency is
+lower because the key-value cache in the transformer does not need to be recomputed.
+</p>
+
+<p>
+The cache entry for a given prefix expires after approximately 5–10 minutes of disuse.
+If you keep sending requests with the same prefix, the cache stays warm.
+</p>
+
+<p>
+The API response includes a <code>prompt_tokens_details</code> field that tells you how
+many tokens were served from cache:
+</p>
+
+<pre>
+type Usage struct {
+    PromptTokens     int `json:"prompt_tokens"`
+    CompletionTokens int `json:"completion_tokens"`
+    TotalTokens      int `json:"total_tokens"`
+    PromptTokensDetails struct {
+        CachedTokens int `json:"cached_tokens"`
+    } `json:"prompt_tokens_details"`
+}
+</pre>
+
+<p>
+Log <code>CachedTokens</code> during development to confirm your cache strategy is working.
+</p>
+
+<h3>Structuring Prompts for Maximum Cache Hit Rate</h3>
+
+<p>
+Caching is prefix-based. For cache hits to occur, the beginning of every prompt must be
+identical. This has a direct implication for prompt structure:
+</p>
+
+<ul>
+<li><b>Put static content first.</b> System prompt, knowledge base, tools, examples - anything that does not change between requests.</li>
+<li><b>Put dynamic content last.</b> The user's message, per-request variables, session state.</li>
+<li><b>Never modify the cached prefix.</b> Even a single character difference at the start of the prompt breaks the cache for the entire prefix.</li>
+</ul>
+
+<p>
+A CAG-optimised prompt structure:
+</p>
+
+<pre>
+[SYSTEM PROMPT]                     ← static, always first
+[STATIC KNOWLEDGE BASE DOCUMENTS]  ← static, same every request
+[TOOLS/SCHEMAS]                     ← static (tool definitions rarely change)
+[CONVERSATION HISTORY]              ← semi-static, grows each turn
+[CURRENT USER MESSAGE]              ← dynamic, changes every request
+</pre>
+
+<h3>Go Implementation: Cached Context Manager</h3>
+
+<pre>
+package cag
+
+import "strings"
+
+type CachedContext struct {
+    staticPrefix []string // system prompt + static docs
+    history      []string // conversation turns (appended each round)
+}
+
+func New(systemPrompt string) *CachedContext {
+    return &amp;CachedContext{
+        staticPrefix: []string{systemPrompt},
+    }
+}
+
+func (c *CachedContext) AddStaticDocument(doc string) {
+    c.staticPrefix = append(c.staticPrefix, doc)
+}
+
+func (c *CachedContext) BuildMessages(userMessage string) []Message {
+    var msgs []Message
+
+    // The combined static prefix - this part will be cached
+    staticContent := strings.Join(c.staticPrefix, "\n\n---\n\n")
+    msgs = append(msgs, Message{
+        Role:    "system",
+        Content: staticContent,
+    })
+
+    // Prior conversation history
+    for _, h := range c.history {
+        msgs = append(msgs, Message{Role: "user", Content: h})
+        // In real use, history would alternate user/assistant
+    }
+
+    // Current user message (always last)
+    msgs = append(msgs, Message{Role: "user", Content: userMessage})
+
+    return msgs
+}
+
+func (c *CachedContext) AddToHistory(userMsg, assistantReply string) {
+    c.history = append(c.history, userMsg, assistantReply)
+}
+</pre>
+
+<h3>CAG vs RAG: Decision Guide</h3>
+
+<p>
+Neither strategy is universally better. The choice depends on your knowledge base
+characteristics.
+</p>
+
+<p>Use <b>CAG</b> when:</p>
+
+<ul>
+<li>The knowledge base is small enough to fit in the context window (under ~100k tokens).</li>
+<li>It changes infrequently (daily or less). Frequent changes invalidate the cache.</li>
+<li>Precision matters - you need the model to reason over the full context, not just retrieved snippets.</li>
+<li>You make many queries against the same corpus - the cost savings from caching compound quickly.</li>
+<li>Examples: a company's internal documentation, a programming language spec, a legal document set.</li>
+</ul>
+
+<p>Use <b>RAG</b> when:</p>
+
+<ul>
+<li>The knowledge base is larger than the context window.</li>
+<li>It changes frequently (hourly or more).</li>
+<li>Each query only needs a small slice of the total knowledge.</li>
+<li>Examples: a product catalogue with thousands of items, a codebase with hundreds of files.</li>
+</ul>
+
+<p>
+A hybrid approach works for some use cases: use CAG for a core reference document that
+rarely changes, and RAG for a larger corpus of supporting documents.
+</p>
+
+<h3>Loading a Knowledge Base for CAG</h3>
+
+<p>
+A practical example: loading a set of markdown files into the static prefix at startup.
+</p>
+
+<pre>
+func loadKnowledgeBase(dir string) ([]string, error) {
+    entries, err := os.ReadDir(dir)
+    if err != nil {
+        return nil, err
+    }
+    var docs []string
+    for _, e := range entries {
+        if !strings.HasSuffix(e.Name(), ".md") {
+            continue
+        }
+        data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+        if err != nil {
+            return nil, err
+        }
+        docs = append(docs, fmt.Sprintf("## %s\n\n%s", e.Name(), data))
+    }
+    return docs, nil
+}
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    ctx := cag.New("You are a helpful assistant. The knowledge base below contains documentation you should use to answer questions.")
+
+    docs, _ := loadKnowledgeBase("./docs")
+    for _, d := range docs {
+        ctx.AddStaticDocument(d)
+    }
+
+    // All subsequent calls share the same static prefix - cache hit after first call
+    for _, q := range []string{
+        "What is a goroutine?",
+        "How do channels work?",
+        "When should I use a mutex instead of a channel?",
+    } {
+        msgs := ctx.BuildMessages(q)
+        resp, err := chat(apiKey, "gpt-4o-mini", msgs)
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Printf("Q: %s\nA: %s\n\n", q,
+            resp.Choices[0].Message.Content)
+        fmt.Printf("  cached tokens: %d / %d\n",
+            resp.Usage.PromptTokensDetails.CachedTokens,
+            resp.Usage.PromptTokens)
+    }
+}
+</pre>
+
+<p>
+The first call will show 0 cached tokens. By the second or third call, the static prefix
+will be cached and <code>CachedTokens</code> will equal the length of your combined
+system prompt and documents.
+</p>
+
+<h3>Anthropic's Explicit Cache Control</h3>
+
+<p>
+Anthropic's API for Claude models takes an explicit approach: you mark specific message
+parts with <code>"cache_control": {"type": "ephemeral"}</code> to tell the API exactly
+what to cache. This gives you more control than OpenAI's automatic prefix caching but
+requires explicit annotation. If you are building a multi-model agent (covered in article
+13), design your context manager to support both approaches.
+</p>
+
+<h3>Cost Analysis</h3>
+
+<p>
+Assume <code>gpt-4o-mini</code> at $0.15 per million input tokens. A 10,000-token knowledge
+base loaded in every request, over 100 queries:
+</p>
+
+<ul>
+<li>Without caching: 100 × 10,000 = 1,000,000 tokens = $0.15</li>
+<li>With caching (50% discount after first call): ~$0.075 + $0.0075 ≈ $0.08</li>
+</ul>
+
+<p>
+The savings scale with request volume. For a high-traffic application making thousands of
+queries per hour against a shared knowledge base, prompt caching can cut input token costs
+by 40–50%.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+CAG loads the entire knowledge base into the system prompt once and relies on the API
+provider's prefix cache to avoid reprocessing it on subsequent calls. Structure your
+prompt so the static knowledge block comes first, immediately after the system message,
+followed by the user turn. OpenAI caches prefixes of at least 1024 tokens and returns
+cached_tokens in the usage object so you can verify hit rate. Choose CAG over RAG when
+the knowledge base fits in the context window and queries do not require fine-grained
+retrieval — the model sees everything directly with no approximation.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://platform.openai.com/docs/guides/prompt-caching">OpenAI: Prompt Caching Guide</a></li>
+<li><a href="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching">Anthropic: Prompt Caching</a></li>
+<li><a href="https://arxiv.org/abs/2412.12574">CAG: Cache-Augmented Generation (2024)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-11-rag.htm">RAG: Retrieval-Augmented Generation</a> - retrieval-based approach for large knowledge bases</li>
+<li><a href="llm-10-memory.htm">Adding Memory to Agents</a> - session-level memory management</li>
+<li><a href="llm-14-full-agent.htm">Putting It Together: A Full Agent</a> - where CAG and RAG fit in a complete system</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

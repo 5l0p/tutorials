@@ -1,0 +1,332 @@
+LLM - Part 3: Tool Calls (Function Calling)
+2026-06-12
+
+
+Tool calling - also called function calling - is the mechanism that transforms a language
+model from a text generator into an agent. Instead of (or in addition to) writing prose,
+the model can request that your code execute a function and return the result. The model
+decides which tool to call and with what arguments; your code runs the function; the result
+goes back into the conversation. This loop is the foundation of every agent in this series.
+
+
+What You Will Learn
+
+
+How tool calling works at the protocol level: the model replies with a tool_call instead of text
+How to define tools as JSON schemas in the request body
+How to detect a tool_call response, extract the function name and arguments, and execute the function
+How to return the tool result as a message with role "tool" and the corresponding tool_call_id
+A complete Go implementation of a two-tool weather + calculator agent
+
+
+
+How Tool Calling Works
+
+
+You provide a list of tools in the API request. Each tool is a JSON schema describing a
+function: its name, description, and parameters. The model reads these descriptions and
+decides - based on the conversation - whether to call one. If it does, the response has
+finish_reason: "tool_calls" and the content field of the assistant
+message may be null or empty. Instead, tool_calls contains an array of call
+requests, each with a generated ID, the tool name, and the arguments as a JSON string.
+
+
+
+Your code must:
+
+
+
+Detect finish_reason == "tool_calls"
+Parse the arguments JSON string for each call
+Execute the corresponding function
+Add the tool call request to the message history (as an assistant message)
+Add the result(s) to the message history (as tool messages)
+Send the updated history back to the API
+
+
+
+The model then generates a response that incorporates the tool results.
+
+
+Updated Type Definitions
+
+
+The message type needs to carry tool call data. Add the extra fields:
+
+
+
+type ToolCall struct {
+    ID       string `json:"id"`
+    Type     string `json:"type"` // always "function"
+    Function struct {
+        Name      string `json:"name"`
+        Arguments string `json:"arguments"` // JSON string, not parsed
+    } `json:"function"`
+}
+
+type Message struct {
+    Role       string     `json:"role"`
+    Content    string     `json:"content,omitempty"`
+    ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+    ToolCallID string     `json:"tool_call_id,omitempty"` // for role:"tool" messages
+}
+
+
+
+Tool result messages use role: "tool" and reference the call ID so the model
+can match results to requests when multiple tools are called at once.
+
+
+Defining Tools
+
+
+A tool definition in Go:
+
+
+
+type ToolParam struct {
+    Type        string            `json:"type"`
+    Description string            `json:"description,omitempty"`
+    Enum        []string          `json:"enum,omitempty"`
+}
+
+type ToolParameters struct {
+    Type       string                `json:"type"` // always "object"
+    Properties map[string]ToolParam  `json:"properties"`
+    Required   []string              `json:"required,omitempty"`
+}
+
+type ToolFunction struct {
+    Name        string         `json:"name"`
+    Description string         `json:"description"`
+    Parameters  ToolParameters `json:"parameters"`
+}
+
+type Tool struct {
+    Type     string       `json:"type"` // always "function"
+    Function ToolFunction `json:"function"`
+}
+
+
+
+A concrete tool definition - a weather lookup stub:
+
+
+
+var getWeatherTool = Tool{
+    Type: "function",
+    Function: ToolFunction{
+        Name:        "get_weather",
+        Description: "Get the current weather for a city. Returns temperature in Celsius and conditions.",
+        Parameters: ToolParameters{
+            Type: "object",
+            Properties: map[string]ToolParam{
+                "city": {
+                    Type:        "string",
+                    Description: "The city name, e.g. 'London' or 'Tokyo'",
+                },
+                "units": {
+                    Type:        "string",
+                    Description: "Temperature units: 'celsius' or 'fahrenheit'",
+                    Enum:        []string{"celsius", "fahrenheit"},
+                },
+            },
+            Required: []string{"city"},
+        },
+    },
+}
+
+
+
+The Description fields are not cosmetic. The model uses them to decide when
+and how to call the tool. Write clear, specific descriptions. Vague descriptions lead to
+incorrect or missed calls.
+
+
+Updating the Request
+
+
+type ChatRequest struct {
+    Model    string    `json:"model"`
+    Messages []Message `json:"messages"`
+    Tools    []Tool    `json:"tools,omitempty"`
+}
+
+
+Executing Tools
+
+
+Implement the actual function. In production this would call a real weather API; here
+we return a hardcoded stub so the example runs without external dependencies:
+
+
+
+func executeGetWeather(argsJSON string) string {
+    var args struct {
+        City  string `json:"city"`
+        Units string `json:"units"`
+    }
+    if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+        return `{"error": "invalid arguments"}`
+    }
+    if args.Units == "" {
+        args.Units = "celsius"
+    }
+    // Stub: return fake data
+    return fmt.Sprintf(`{"city": "%s", "temperature": 12, "units": "%s", "conditions": "overcast"}`,
+        args.City, args.Units)
+}
+
+
+The Tool Call Loop
+
+
+The complete request-execute-return cycle:
+
+
+
+func runWithTools(apiKey string, history []Message, tools []Tool) ([]Message, string, error) {
+    req := ChatRequest{
+        Model:    "gpt-4o-mini",
+        Messages: history,
+        Tools:    tools,
+    }
+
+    data, _ := json.Marshal(req)
+    r, _ := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(data))
+    r.Header.Set("Content-Type", "application/json")
+    r.Header.Set("Authorization", "Bearer "+apiKey)
+
+    resp, err := http.DefaultClient.Do(r)
+    if err != nil {
+        return history, "", err
+    }
+    defer resp.Body.Close()
+    body, _ := io.ReadAll(resp.Body)
+
+    if resp.StatusCode != http.StatusOK {
+        return history, "", fmt.Errorf("API %d: %s", resp.StatusCode, body)
+    }
+
+    var result ChatResponse // includes ToolCalls in Choices[0].Message
+    json.Unmarshal(body, &result)
+
+    if len(result.Choices) == 0 {
+        return history, "", fmt.Errorf("no choices")
+    }
+
+    choice := result.Choices[0]
+
+    // Add the assistant message (which may contain tool_calls) to history
+    history = append(history, choice.Message)
+
+    if choice.FinishReason != "tool_calls" {
+        // No tool call - return the text response
+        return history, choice.Message.Content, nil
+    }
+
+    // Execute each tool call and append results
+    for _, tc := range choice.Message.ToolCalls {
+        var result string
+        switch tc.Function.Name {
+        case "get_weather":
+            result = executeGetWeather(tc.Function.Arguments)
+        default:
+            result = `{"error": "unknown tool"}`
+        }
+
+        history = append(history, Message{
+            Role:       "tool",
+            Content:    result,
+            ToolCallID: tc.ID,
+        })
+    }
+
+    // Recurse: send history with tool results back to the model
+    return runWithTools(apiKey, history, tools)
+}
+
+
+
+The recursion handles the case where the model calls another tool after seeing the first
+result. In practice you should add a depth limit to prevent infinite loops - article 04
+covers this in the context of the full agent loop.
+
+
+A Complete Example
+
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    history := []Message{
+        {Role: "system", Content: "You are a helpful weather assistant."},
+        {Role: "user", Content: "What's the weather like in Paris and Tokyo right now?"},
+    }
+
+    tools := []Tool{getWeatherTool}
+
+    history, reply, err := runWithTools(apiKey, history, tools)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+
+    fmt.Println(reply)
+    fmt.Printf("(%d messages in history)\n", len(history))
+}
+
+
+
+When the model asks for weather in two cities, it will issue two tool calls in one
+response (models will often batch calls when they need multiple pieces of data). Both
+results go back in the same request, and the model synthesises a response covering both.
+
+
+Tool Choice
+
+
+By default the model decides whether to call a tool. You can override this by adding
+tool_choice to the request:
+
+
+
+"auto" - model decides (the default).
+"none" - never call a tool; always produce text.
+{"type": "function", "function": {"name": "get_weather"}} - always call this specific tool.
+
+
+
+Forced tool calls ("required" or a specific name) are useful when you want
+structured JSON output from the model - define a tool with the shape you want, force the
+call, and parse the arguments. This is more reliable than asking the model to return JSON
+in its text response.
+
+
+Summary
+
+
+When the model wants to call a tool, it returns a response with
+finish_reason: "tool_calls" and a tool_calls array.
+Each entry has an id, a function.name, and
+function.arguments as a JSON string. Execute the function, add the
+tool_call message to history, then add a tool result message with role "tool"
+and the matching tool_call_id. Re-send the updated history so the
+model can produce its final answer.
+
+
+Further Reading
+
+
+OpenAI: Function Calling Guide
+API Reference: tools parameter
+Understanding JSON Schema
+
+
+See Also
+
+
+Chat Completions Deep Dive - message history and the conversation model
+Building a Simple Agent Loop - wrapping tool calls into a full think→act→observe cycle
+Skills & Structured Tool Libraries - organising tools as composable, reusable components
+

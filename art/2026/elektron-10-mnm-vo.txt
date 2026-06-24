@@ -1,0 +1,204 @@
+Elektron Synthesis - Part 10: Monomachine VO — Virtual Operator FM
+2026-01-01
+
+
+The Monomachine's VO (Virtual Operator) engine is 2-operator FM synthesis — a carrier
+oscillator whose frequency is modulated by a modulator oscillator. Where the EFM
+machines (Part 6) apply FM specifically to drum synthesis, the VO engine is designed
+for melodic and harmonic sounds: bass, lead, organ, metallic pads, and bell tones.
+The VO variants (VO SIN, VO TRP, VO EA, VO EB) provide different waveform combinations
+for the carrier and modulator operators.
+
+
+VO Engine Parameters
+
+
+KnobNameFunctionRange
+1RATIO (rto)C:M frequency ratio0.25–16
+2INDEX (idx)Modulation index (timbre)0–12
+3FEEDBACK (fb)Modulator self-feedback amount0–7
+4LEVEL (lvl)Carrier output level0–1
+5ATTACK (atk)Index envelope attack time0–8000 ms
+6DECAY (dcy)Index envelope decay time0–8000 ms
+7SUSTAIN (sus)Index sustain level0–1
+8RELEASE (rel)Index envelope release time0–8000 ms
+
+
+
+The INDEX and its ADSR envelope control how the timbre evolves over the note lifetime.
+A high attack means the sound starts clean (low index) and becomes brighter as it
+ramps up. A fast decay from high index to low sustain produces a bright attack that
+settles into a smooth body.
+
+
+VO Machine Variants
+
+
+MachineCarrier waveModulator waveCharacter
+VO SINSineSineClassic DX-style: clean, bell-like
+VO TRPSineTriangle + Pulse ANDMore harmonically rich, buzzy attack
+VO EASawtoothSineWarm, rich, analogue-like
+VO EBSquareSineHollow, nasal, woodwind-like
+
+
+2-Operator FM in Pd
+
+
+; VO engine Pd implementation:
+
+[r $0-note_hz]     → $carrier_freq
+[r $0-rto]         → $ratio
+[r $0-idx]         → $index_peak
+[r $0-fb]          → $feedback
+
+; Modulator frequency:
+$carrier_freq × $ratio = $mod_freq
+
+; INDEX ADSR envelope (4 vline~ segments):
+; attack: 0 → idx_peak over atk ms
+; decay: idx_peak → idx_peak × sus over dcy ms
+; sustain: hold at idx_peak × sus while key held
+; release: idx_peak×sus → 0 over rel ms after key release
+
+[vline~]    ; index envelope → $idx_t
+
+; Feedback FM: modulator feeds back on itself
+; VO feedback level maps to ~0, π/8, π/4, π/2, π, 2π, 4π, 8π (like DX7 levels 0-7)
+; Implementation: use a one-sample delay on modulator output as feedback input
+
+[delread~ $0-fb_buf 1/sr]   ; 1 sample delay for feedback
+|
+[*~ $fb_scaled]              ; scale by feedback amount
+→ added to modulator frequency
+
+[delwrite~ $0-fb_buf 1/sr]  ← modulator output
+
+
+
+; Complete VO SIN:
+
+; Modulator:
+[osc~ mod_freq + feedback]   ; sine modulator + self-feedback
+|
+[*~ idx_t]                   ; scale by ADSR-shaped index
+|
+[*~ mod_freq]                ; FM deviation = index × modulator_freq
+
+; Carrier:
+[+~ carrier_freq]            ; carrier freq + FM deviation
+|
+[osc~]                       ; carrier: sine (VO SIN)
+|
+[*~ amp_env]                 ; amplitude ADSR (driven by MNM global AMP envelope)
+|
+[*~ level]
+|
+[outlet~]
+
+
+VO TRP Modulator
+
+
+The VO TRP variant uses a triangle-AND-pulse modulator. As noted in the SID article,
+the SID-style AND combination of triangle and pulse:
+
+
+
+; TRP modulator waveform:
+[phasor~ mod_freq]
+|
+[t a a a]
+|         |         |
+triangle  pulse_0.5  feedback
+
+; Triangle wave (from phasor):
+phasor → *2 → abs~ → *2 → -1    ; -1 to +1 triangle
+
+; 50% pulse (from phasor):
+phasor →  0.5 → *2 → -1        ; -1 to +1 square
+
+; AND approximation (see SID article):
+tri_01 = (tri + 1) × 0.5         ; 0 to 1
+sqr_01 = (sqr + 1) × 0.5
+[*~] → *2 → -1                  ; AND → back to -1:+1
+
+; This TRP waveform has a harder, buzzier character than a pure sine,
+; producing a richer sideband spectrum at the same index value
+
+
+VO EA: Sawtooth Carrier
+
+
+VO EA uses a sawtooth carrier rather than sine. The FM modulation is applied to a
+sawtooth's phase — creating a phase-modulated sawtooth. In Pd, approximate by
+modulating the phase input of a [phasor~]-driven table:
+
+
+
+; Phase-modulated sawtooth:
+[phasor~ carrier_freq + fm_deviation]  ; frequency-modulated phasor
+|
+[*~ 2]
+|
+[-~ 1]                                  ; → sawtooth output
+
+; OR: use direct phase addition on the phasor output:
+[phasor~ carrier_freq]
+|
+[+~ fm_phase]      ; fm_phase = idx_t × modulator_out / (2π)
+|
+[wrap~]            ; keep phase 0–1
+|
+[*~ 2][-~ 1]       ; → phase-modulated sawtooth
+
+
+Feedback FM
+
+
+Feedback FM is the modulator modulating itself — feeding its own output back as its
+own frequency modulation input. At low feedback levels this adds rich harmonics (odd
+harmonics for sine carrier at feedback level π/4). At high feedback levels the
+modulator output becomes a square wave — pure odd harmonics. At very high feedback the
+modulator becomes noise. This is the mechanism behind the DX7's feedback operator.
+
+
+
+The 8 feedback levels on VO map to these effective values:
+
+
+
+FB level01234567
+Effectnonesubtle warmthmild harmonicsmedium FMsawtooth-likenear-squarebuzzynoisy
+
+
+Musical Uses
+
+
+SoundMachineratioidxfbIndex ADSR
+Electric pianoVO SIN1.03.00A=0 D=200 S=0.3 R=100
+BellVO SIN3.52.00A=0 D=2000 S=0 R=200
+BassVO EA1.04.02A=0 D=80 S=0.5 R=50
+OrganVO EB2.01.50A=0 D=0 S=1.0 R=20
+Metallic padVO TRP1.416.03A=100 D=500 S=0.4 R=300
+Aggressive leadVO SIN1.08.05A=0 D=50 S=0.8 R=100
+
+
+Summary
+
+
+The Monomachine VO engine is 2-operator FM with a full ADSR on the modulation index,
+plus DX7-style feedback FM on the modulator. The four VO variants (SIN, TRP, EA, EB)
+provide sine/sine, triangle-pulse/sine, sawtooth/sine, and square/sine combinations.
+The index ADSR is the primary expressive control — high-attack index creates bright
+entry, fast decay from high index creates a plucky transient. Feedback adds harmonic
+richness, evolving from subtle warmth (fb=1) through square-like (fb=5) to noise (fb=7).
+
+
+See Also
+
+
+Machinedrum EFM Machines - FM applied to drum synthesis with pitch sweep + index decay
+Monomachine FM+ Engine - extended multi-operator FM beyond the VO 2-op model
+FM Synthesis - Bessel functions, harmonic/inharmonic C:M ratios, algorithms
+Putting It All Together - this engine driven by a Brownian melody generator
+

@@ -1,0 +1,301 @@
+openFrameworks - Part 6: Typography
+2026-09-27
+
+
+Text is indispensable in creative coding: labels, data readouts, live scores, generative
+poetry, UI overlays. openFrameworks provides two mechanisms for rendering text.
+ofDrawBitmapString is a zero-setup debug tool. ofTrueTypeFont is the
+production path: it loads a TrueType or OpenType font, rasterises glyphs at a fixed size using
+FreeType2, packs them into a GPU texture atlas, and gives you per-character metrics for layout.
+This article covers both, with attention to UTF-8 support and precise bounding-box measurement.
+
+
+What You Will Learn
+
+
+When to use ofDrawBitmapString (debugging) vs ofTrueTypeFont (production)
+Loading a font with ofTrueTypeFont::load() and the size and antialias parameters
+Drawing strings and measuring text bounds with getStringBoundingBox()
+UTF-8 support: loading fonts with extended character sets for non-ASCII text
+Using per-character glyph metrics for custom text layout and animation
+
+
+
+ofDrawBitmapString: Quick Debug Output
+
+
+ofDrawBitmapString draws text using an OpenGL bitmap font (Courier-style, fixed
+pixel size). It requires no setup, respects the current colour, and always renders at a
+readable size regardless of transforms. It is perfect for live diagnostics:
+
+
+
+void ofApp::draw() {
+    ofSetColor(255, 255, 0);
+    ofDrawBitmapString("FPS: " + ofToString(ofGetFrameRate(), 1), 10, 20);
+    ofDrawBitmapString("Mouse: " + ofToString(ofGetMouseX()) + ", " +
+                       ofToString(ofGetMouseY()), 10, 36);
+    ofDrawBitmapString("Frame: " + ofToString(ofGetFrameNum()), 10, 52);
+}
+
+
+
+The coordinate (x, y) is the baseline of the first line of text. Because the font
+is a fixed bitmap it ignores the current matrix transform - if you need transformed debug
+text, use ofTrueTypeFont instead.
+
+
+Loading a TrueType Font
+
+
+Place your font files in bin/data/fonts/. Load them in setup():
+
+
+
+// ofApp.h
+#include <ofMain.h>
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void draw();
+private:
+    ofTrueTypeFont heading;
+    ofTrueTypeFont body;
+    ofTrueTypeFont mono;
+};
+
+
+
+void ofApp::setup() {
+    // load(path, size, antiAlias, fullCharset, contours, simplifyAmt, dpi)
+    heading.load("fonts/IBMPlexSans-Bold.ttf", 48);
+    body.load("fonts/IBMPlexSans-Regular.ttf", 18);
+    mono.load("fonts/IBMPlexMono-Regular.ttf", 14);
+}
+
+
+
+The size is in pixels at screen resolution. If you need resolution-independent sizing,
+pass the target DPI as the last argument:
+
+
+
+heading.load("fonts/IBMPlexSans-Bold.ttf", 36, true, true, false, 0.3f, 96);
+
+
+
+Fonts are free to use under their respective licences. IBM Plex is a good choice for creative
+coding because it is open-source (SIL OFL 1.1), has Latin, Cyrillic, and Greek coverage, and
+includes matching serif, sans-serif, and mono variants.
+
+
+Drawing Strings
+
+
+void ofApp::draw() {
+    ofBackground(10, 10, 20);
+
+    ofSetColor(255);
+    heading.drawString("openFrameworks", 50, 100);
+
+    ofSetColor(200, 200, 200);
+    body.drawString("Creative coding in C++", 50, 160);
+
+    ofSetColor(100, 220, 120);
+    mono.drawString("frame: " + ofToString(ofGetFrameNum()), 50, 200);
+}
+
+
+
+The (x, y) coordinate is the baseline of the text, not the top-left corner
+of the bounding box. The ascender (the part of capitals and tall lowercase letters above the
+baseline) rises above y, so the visual top of your text is at approximately
+y - font.getAscenderHeight().
+
+
+Measuring Text: getStringBoundingBox
+
+
+To position text precisely or draw a background box behind it, measure it first:
+
+
+
+std::string label = "Score: 42";
+ofRectangle bbox = heading.getStringBoundingBox(label, 0, 0);
+
+// bbox.x, bbox.y, bbox.width, bbox.height
+
+// Centre the string horizontally
+float x = (ofGetWidth() - bbox.width) / 2.0f;
+float y = ofGetHeight() / 2.0f + bbox.height / 2.0f;   // baseline adjusted
+
+// Draw background pill
+float pad = 8;
+ofSetColor(0, 0, 0, 160);
+ofDrawRoundedRectangle(x + bbox.x - pad, y + bbox.y - pad,
+                       bbox.width + pad * 2, bbox.height + pad * 2, 6);
+
+// Draw text
+ofSetColor(255);
+heading.drawString(label, x, y);
+
+
+
+Note that getStringBoundingBox takes a position argument (0, 0 here)
+but returns a rectangle relative to that position. The bbox.x and
+bbox.y can be negative because glyphs may have bearings that extend left or above
+the baseline origin.
+
+
+Per-Character Metrics
+
+
+For layouts where you need to know the advance width of each character - for example, an
+animated typewriter effect or a code editor:
+
+
+
+std::string text = "Hello";
+float x = 100;
+float y = 300;
+
+for (char ch : text) {
+    ofSetColor(ofRandom(150, 255), ofRandom(50, 200), 100);
+    mono.drawString(std::string(1, ch), x, y);
+    x += mono.getLetterSpacing() * mono.getCharWidth('A');   // advance
+}
+
+
+
+For precise per-glyph advance, use getCharacterAsPoints(ch), which returns
+an ofPath containing the glyph outline. You can scale, distort, and animate
+glyph outlines as geometry:
+
+
+
+float t = ofGetElapsedTimef();
+float x = 100;
+for (char ch : std::string("WAVE")) {
+    ofPath glyph = heading.getCharacterAsPoints(ch, true, false);
+    ofPushMatrix();
+        ofTranslate(x, 200 + sin(t * 3 + x * 0.05f) * 20);
+        ofSetColor(80, 180, 255);
+        glyph.draw();
+    ofPopMatrix();
+    x += heading.getStringBoundingBox(std::string(1, ch), 0, 0).width + 4;
+}
+
+
+UTF-8 and Unicode
+
+
+ofTrueTypeFont::load() takes a fifth boolean parameter: whether to rasterise the
+full Unicode character set rather than just the ASCII range. For anything beyond ASCII, pass
+true:
+
+
+
+body.load("fonts/NotoSans-Regular.ttf", 18, true, true);
+
+
+
+Then you can pass UTF-8 encoded strings directly to drawString():
+
+
+
+body.drawString("日本語テキスト", 50, 200);
+body.drawString("Ελληνικά", 50, 230);
+body.drawString("Привет мир", 50, 260);
+body.drawString("مرحبا بالعالم", 50, 290);
+
+
+
+Note that enabling the full character set significantly increases loading time and GPU memory
+usage, because all glyphs are rasterised into the atlas at once. For large character sets
+(Chinese, Japanese, Korean) load time can be several seconds at large font sizes. Load fonts
+in setup() so the delay happens before the first frame.
+
+
+Font Atlases and GPU Memory
+
+
+Internally, ofTrueTypeFont packs all rasterised glyph bitmaps into a single GPU
+texture atlas. You can inspect the atlas:
+
+
+
+ofTexture &atlas = mono.getFontTexture();
+ofSetColor(255);
+atlas.draw(0, 0);    // display the atlas for debugging
+
+
+
+Each unique combination of (font file, size, antiAlias, fullCharset) produces its own atlas.
+If you load the same font at ten different sizes you get ten atlases. For memory-constrained
+environments (Android, embedded GL), be conservative with the number of distinct fonts you
+load.
+
+
+Multi-Line Text
+
+
+drawString respects embedded newline characters:
+
+
+
+std::string poem = "In the beginning\nwas the vertex\nand the vertex was light.";
+body.drawString(poem, 50, 200);
+
+
+
+For word-wrapped text you need to implement the wrapping yourself. A simple approach: split the
+string into words, accumulate words until the line width exceeds the target, then insert a
+newline. Use getStringBoundingBox to measure each word.
+
+
+Combining Font and 2D Drawing
+
+
+void ofApp::draw() {
+    float t = ofGetElapsedTimef();
+    ofBackground(10, 10, 20);
+
+    int numWords = 20;
+    for (int i = 0; i < numWords; i++) {
+        float x = ofNoise(i * 10.0f, t * 0.2f) * ofGetWidth();
+        float y = ofNoise(i * 10.0f + 100, t * 0.2f) * ofGetHeight();
+        float brightness = ofNoise(i * 10.0f + 200, t * 0.4f);
+        ofSetColor(ofColor::fromHsb(i * 13, 200, (int)(brightness * 255)));
+        body.drawString(ofToString(i), x, y);
+    }
+}
+
+
+Summary
+
+
+Use ofDrawBitmapString(msg, x, y) for quick debug overlays — it requires no
+setup but the font is fixed-size and aliased. For production, load a TrueType font with
+font.load("Roboto-Regular.ttf", size, true, true) in setup(),
+then call font.drawString(str, x, y) in draw(). Measure layout
+with font.getStringBoundingBox(str, 0, 0). For UTF-8 support, load the font
+with loadFromMemory or ensure the font file contains the required Unicode ranges.
+
+
+Further Reading
+
+
+  ofTrueTypeFont API Reference
+  Google Noto Fonts (broad Unicode coverage)
+  IBM Plex Mono on Google Fonts
+  FreeType2 Documentation
+
+
+See Also
+
+
+  2D Drawing Primitives
+  Mouse, Keyboard & Touch Input
+  ofxGui: Built-in UI Controls
+

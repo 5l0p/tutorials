@@ -1,0 +1,360 @@
+DSP - Part 16: FM Synthesis
+2026-09-09
+
+
+Frequency modulation synthesis makes a few sine waves sound like a piano, an electric
+bass, a bell, or a brass section. The idea sounds unremarkable: route one oscillator's
+output into the frequency input of another. The results are not. The mathematics of FM
+are well-understood — Bessel functions, sideband ratios — but the practical power of FM
+comes from the interaction between modulation index, carrier-to-modulator frequency
+ratios, and envelope shapes. This article builds from a single modulator-carrier pair up
+to a six-operator engine that reproduces the classic DX7 timbres.
+
+
+What You Will Learn
+
+
+The FM operator model: how a modulator drives the instantaneous phase of a carrier.
+What modulation index controls and how it determines the number and amplitude of sidebands.
+How to implement a two-operator FM pair in C.
+How DX7-style series and parallel algorithms connect six operators.
+How to build a six-operator FM engine with per-operator envelopes.
+The parameter recipes for FM bass, bell, and electric piano timbres.
+
+
+The Operator
+
+
+An FM operator is a sine oscillator with a frequency, an amplitude envelope, and
+a phase accumulator. What distinguishes FM from simple additive synthesis is that
+operators can be connected so that one operator's output is added directly to the
+instantaneous phase of another — not its frequency input (which would be FM in the
+loose sense) but its phase. Phase modulation (PM) and FM sound identical for
+steady-state tones; Yamaha DX7 actually implements PM but calls it FM. This article
+does the same.
+
+
+
+#include <math.h>
+#include <string.h>
+
+#define SAMPLE_RATE 48000
+#define TWO_PI (2.0f * 3.14159265358979f)
+
+typedef struct {
+    float phase;       /* current phase [0, 2*pi) */
+    float increment;   /* phase advance per sample */
+    float amplitude;   /* current output amplitude (set by envelope) */
+} Operator;
+
+void op_init(Operator *op, float freq, float amp) {
+    op->phase     = 0.0f;
+    op->increment = TWO_PI * freq / SAMPLE_RATE;
+    op->amplitude = amp;
+}
+
+/* Produce one sample.  mod_phase is added to the internal phase before
+   computing the sine.  Pass 0.0f for an unmodulated carrier. */
+static inline float op_next(Operator *op, float mod_phase) {
+    float out     = op->amplitude * sinf(op->phase + mod_phase);
+    op->phase    += op->increment;
+    if (op->phase >= TWO_PI) op->phase -= TWO_PI;
+    return out;
+}
+
+
+Modulation Index and Sidebands
+
+
+When a carrier at frequency fc is phase-modulated by a modulator at frequency fm with
+peak phase deviation I (the modulation index), the output spectrum contains the
+carrier plus sidebands at fc ± n*fm for n = 1, 2, 3, ... The amplitude of the nth
+sideband is proportional to Bessel function Jn(I).
+
+
+
+At I=0 only the carrier is audible — a pure sine. As I increases, energy spreads into
+the sidebands. At I=1.0 the first sideband pair is about half the carrier amplitude; at
+I=3.0 the spectrum resembles a bright, buzzy tone; at I=10 the carrier bin actually dips
+in level while the sidebands dominate.
+
+
+
+In practice you control I by scaling the modulator's amplitude. If the modulator
+contributes a maximum phase deviation of I radians, then:
+
+
+
+/* Two-operator FM: modulator M drives carrier C.
+   The modulator frequency ratio determines the harmonic content type:
+     ratio 1:1  - rich harmonic series (same base frequency)
+     ratio 2:1  - even harmonics of C (bright)
+     ratio N:M where N/M is not a simple integer - inharmonic (bell-like)
+*/
+
+typedef struct {
+    Operator carrier;
+    Operator modulator;
+    float    index;    /* modulation index I (peak phase deviation in radians) */
+} TwoOpFM;
+
+void fm2_init(TwoOpFM *fm, float carrier_freq, float mod_ratio, float index) {
+    op_init(&fm->carrier,   carrier_freq,               1.0f);
+    op_init(&fm->modulator, carrier_freq * mod_ratio,   index);
+    fm->index = index;
+}
+
+float fm2_next(TwoOpFM *fm) {
+    /* Modulator output is a phase offset for the carrier */
+    float mod_out = op_next(&fm->modulator, 0.0f);
+    return op_next(&fm->carrier, mod_out);
+}
+
+
+
+The modulator's amplitude field is set to index directly. The output
+of op_next(&modulator) already has peak value equal to
+index radians, which is added to the carrier's instantaneous phase.
+
+
+Per-Operator Envelopes
+
+
+FM gets most of its expressive power from envelopes on the modulator: a decaying index
+produces a bright attack that fades to mellow sustain — the characteristic DX7 electric
+piano and bell shapes. A simple ADSR on amplitude, applied per operator, is enough.
+
+
+
+typedef struct {
+    float att_coeff;   /* attack coefficient (from time_to_coeff) */
+    float dec_coeff;   /* decay */
+    float sus_level;   /* sustain level [0..1] */
+    float rel_coeff;   /* release */
+    float env;         /* current envelope value */
+    enum { ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_IDLE } state;
+} ADSR;
+
+static float time_to_coeff(float ms) {
+    if (ms <= 0.0f) return 0.0f;
+    return expf(-1.0f / ((ms / 1000.0f) * SAMPLE_RATE));
+}
+
+void adsr_init(ADSR *e, float att_ms, float dec_ms,
+               float sus, float rel_ms) {
+    e->att_coeff = time_to_coeff(att_ms);
+    e->dec_coeff = time_to_coeff(dec_ms);
+    e->sus_level = sus;
+    e->rel_coeff = time_to_coeff(rel_ms);
+    e->env   = 0.0f;
+    e->state = ENV_IDLE;
+}
+
+void adsr_note_on(ADSR *e)  { e->state = ENV_ATTACK; }
+void adsr_note_off(ADSR *e) { e->state = ENV_RELEASE; }
+
+float adsr_next(ADSR *e) {
+    switch (e->state) {
+    case ENV_ATTACK:
+        e->env = e->att_coeff * e->env + (1.0f - e->att_coeff) * 1.1f;
+        if (e->env >= 1.0f) { e->env = 1.0f; e->state = ENV_DECAY; }
+        break;
+    case ENV_DECAY:
+        e->env = e->dec_coeff * e->env + (1.0f - e->dec_coeff) * e->sus_level;
+        break;
+    case ENV_SUSTAIN:
+        e->env = e->sus_level;
+        break;
+    case ENV_RELEASE:
+        e->env = e->rel_coeff * e->env;
+        if (e->env < 1e-5f) { e->env = 0.0f; e->state = ENV_IDLE; }
+        break;
+    case ENV_IDLE:
+    default:
+        e->env = 0.0f;
+        break;
+    }
+    return e->env;
+}
+
+
+DX7-Style Algorithms
+
+
+The Yamaha DX7 has six operators and 32 fixed connection patterns called
+algorithms. The two fundamental archetypes are:
+
+
+
+Series (stack): op6 modulates op5, which modulates op4, which modulates op3,
+    and so on down to op1 (the output). Maximum spectral complexity from a single chain.
+Parallel (additive branches): multiple carrier operators are summed at the
+    output. Each branch can have its own modulator chain. This gives more independent
+    timbral control but less complexity per carrier.
+
+
+
+/* Six-operator engine with a hard-coded 3-series + 3-parallel layout.
+   This approximates DX7 algorithm 5: three independent carrier-modulator pairs
+   summed at the output. */
+
+typedef struct {
+    Operator op[6];    /* op[0..1]: pair A  op[2..3]: pair B  op[4..5]: pair C */
+    ADSR     env[6];   /* one ADSR per operator */
+    float    index[3]; /* peak modulation index for each modulator (ops 1,3,5) */
+} SixOpFM;
+
+void sixop_init(SixOpFM *fm,
+                float freq_a, float ratio_a, float index_a,
+                float freq_b, float ratio_b, float index_b,
+                float freq_c, float ratio_c, float index_c,
+                float att, float dec, float sus, float rel) {
+    /* Pair A: op[0]=carrier, op[1]=modulator */
+    op_init(&fm->op[0], freq_a,             1.0f);
+    op_init(&fm->op[1], freq_a * ratio_a,   index_a);
+    fm->index[0] = index_a;
+
+    /* Pair B */
+    op_init(&fm->op[2], freq_b,             1.0f);
+    op_init(&fm->op[3], freq_b * ratio_b,   index_b);
+    fm->index[1] = index_b;
+
+    /* Pair C */
+    op_init(&fm->op[4], freq_c,             1.0f);
+    op_init(&fm->op[5], freq_c * ratio_c,   index_c);
+    fm->index[2] = index_c;
+
+    for (int i = 0; i < 6; i++)
+        adsr_init(&fm->env[i], att, dec, sus, rel);
+}
+
+void sixop_note_on(SixOpFM *fm) {
+    for (int i = 0; i < 6; i++) adsr_note_on(&fm->env[i]);
+}
+
+void sixop_note_off(SixOpFM *fm) {
+    for (int i = 0; i < 6; i++) adsr_note_off(&fm->env[i]);
+}
+
+float sixop_next(SixOpFM *fm) {
+    float out = 0.0f;
+    for (int p = 0; p < 3; p++) {
+        int ci = p * 2;     /* carrier index */
+        int mi = p * 2 + 1; /* modulator index */
+
+        float env_c = adsr_next(&fm->env[ci]);
+        float env_m = adsr_next(&fm->env[mi]);
+
+        /* Scale modulator amplitude by its envelope */
+        fm->op[mi].amplitude = fm->index[p] * env_m;
+        fm->op[ci].amplitude = env_c;
+
+        float mod = op_next(&fm->op[mi], 0.0f);
+        out += op_next(&fm->op[ci], mod);
+    }
+    return out / 3.0f;   /* normalise sum of three carriers */
+}
+
+
+Worked Timbres
+
+
+The following parameter sets produce recognisable FM voices. All use a single two-
+operator pair (TwoOpFM) with per-operator ADSR applied by scaling operator
+amplitudes each sample.
+
+
+
+/* --- FM BASS ---
+   Carrier 110 Hz (A2), modulator ratio 1.0 (same frequency),
+   high initial index decaying to low: punchy attack, warm sustain. */
+/* carrier_freq=110, mod_ratio=1.0, initial_index=3.5
+   carrier ADSR: att=2ms, dec=80ms, sus=0.7, rel=200ms
+   modulator ADSR: att=1ms, dec=40ms, sus=0.1, rel=100ms  */
+
+/* --- FM BELL ---
+   Carrier 440 Hz, modulator ratio 1.4 (inharmonic ratio),
+   long decay on both operators. */
+/* carrier_freq=440, mod_ratio=1.4, initial_index=2.0
+   carrier ADSR: att=5ms, dec=2000ms, sus=0.0, rel=500ms
+   modulator ADSR: att=1ms, dec=1500ms, sus=0.0, rel=300ms  */
+
+/* --- ELECTRIC PIANO (Rhodes-like) ---
+   Carrier 220 Hz, modulator ratio 14.0 (produces bright harmonics),
+   fast attack, medium decay, moderate index. */
+/* carrier_freq=220, mod_ratio=14.0, initial_index=1.8
+   carrier ADSR: att=3ms, dec=500ms, sus=0.2, rel=300ms
+   modulator ADSR: att=1ms, dec=300ms, sus=0.0, rel=150ms  */
+
+
+
+The electric piano ratio of 14.0 is the most counter-intuitive: it is not a simple
+integer multiple of the carrier, yet it produces exactly the bright metallic tines
+of the DX7 E. Piano because the sidebands it generates happen to fall at intervals
+that reinforce the harmonic series. FM timbre design is part science, part exploration.
+
+
+Feedback FM
+
+
+Some DX7 algorithms include an operator feeding back into itself. Self-modulation with
+a small index produces a waveshaping effect that ranges from a slightly fatter sine to
+a full square wave.
+
+
+
+/* Self-feedback operator */
+typedef struct {
+    float phase;
+    float increment;
+    float amplitude;
+    float feedback;    /* feedback amount [0..1], scale by pi for DX7 range */
+    float prev_out;
+} FeedbackOp;
+
+float feedback_op_next(FeedbackOp *op) {
+    float mod   = op->feedback * op->prev_out;
+    float out   = op->amplitude * sinf(op->phase + mod);
+    op->phase  += op->increment;
+    if (op->phase >= TWO_PI) op->phase -= TWO_PI;
+    op->prev_out = out;
+    return out;
+}
+
+
+Summary
+
+
+FM synthesis produces complex spectra from simple oscillators by routing one operator's
+output into another's phase accumulator. The modulation index controls spectral
+brightness; the carrier-to-modulator frequency ratio controls harmonic vs inharmonic
+content; ADSR envelopes on the modulator shape the timbre over time. A two-operator
+pair covers bass, bells, and electric piano. The six-operator layout in real DX7
+instruments provides 32 algorithm variants that together cover almost the full range of
+FM timbre space.
+
+
+
+Part 17 leaves pitched synthesis for texture synthesis: granular processing, where
+audio is broken into tiny overlapping grains with independent pitch, position, and
+density controls.
+
+
+Further Reading
+
+
+FM Synthesis - Julius O. Smith III (CCRMA)
+FM Synthesis Introduction - musicdsp.org
+Introduction to FM Synthesis - Sound On Sound
+DX7 Algorithm Reference and Parameter Guide
+FM instrument design notes - CCRMA
+
+
+See Also
+
+
+Wavetable Synthesis
+Oscillators
+Envelope Follower & Parameter Smoothing
+Granular Synthesis
+

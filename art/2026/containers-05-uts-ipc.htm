@@ -1,0 +1,423 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Containers - Part 5: UTS & IPC Namespaces</title>
+    <meta name="description" content="How UTS namespaces isolate hostnames and how IPC namespaces separate System V shared memory, semaphores, and POSIX message queues.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="linux, containers">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="containers-05-uts-ipc.txt">plain/text</a> | <i>2026-08-03</i> | <i><a href="../../linux.htm">linux</a>, <a href="../../containers.htm">containers</a></i>
+        <h2>Containers - Part 5: UTS & IPC Namespaces</h2>
+        <p>
+UTS and IPC are among the simpler namespace types, but understanding them
+concretely is useful. UTS isolates the strings returned by <code>uname()</code> -
+primarily the hostname - so that a container can advertise a different identity
+to any software that calls <code>gethostname()</code>. IPC isolates the kernel
+objects used for inter-process communication: System V shared memory segments,
+semaphores, and message queues, plus POSIX message queues. Without IPC
+namespaces, two containers on the same host could accidentally (or maliciously)
+share memory.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What UTS namespaces isolate and how to set a container hostname with <code>sethostname()</code> and Go's <code>SysProcAttr.Hostname</code></li>
+<li>What System V IPC objects are and why IPC namespace isolation matters for security</li>
+<li>How to demonstrate IPC isolation in C: creating a shared memory segment on the host and verifying a child in a new IPC namespace cannot see it</li>
+<li>How to inspect IPC objects with <code>ipcs</code> and delete them with <code>ipcrm</code></li>
+<li>How POSIX message queues are also isolated and why containers should mount a fresh <code>/dev/mqueue</code></li>
+<li>A Go runtime skeleton combining UTS, IPC, PID, and mount namespace flags</li>
+</ul>
+
+<h3>UTS Namespaces</h3>
+
+<p>
+UTS stands for "UNIX Time-sharing System" - a legacy name from the original
+<code>uname</code> structure. The fields isolated by a UTS namespace are
+<code>nodename</code> (hostname) and <code>domainname</code> (NIS domain), both modifiable
+with syscalls:
+</p>
+
+<ul>
+<li><code>sethostname(const char *name, size_t len)</code></li>
+<li><code>setdomainname(const char *name, size_t len)</code></li>
+</ul>
+
+<p>
+Both require <code>CAP_SYS_ADMIN</code> in the UTS namespace you want to modify (or
+<code>CAP_SYS_ADMIN</code> in the initial namespace if you have not entered a new one).
+</p>
+
+<h3>C: Before and After a UTS Namespace</h3>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;sched.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;sys/utsname.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;unistd.h&gt;
+
+#define STACK_SIZE (512 * 1024)
+
+static void print_uts(const char *label) {
+    struct utsname u;
+    uname(&amp;u);
+    printf("[%s] nodename=%s domainname=%s\n",
+           label, u.nodename, u.domainname);
+}
+
+static int child_main(void *arg) {
+    (void)arg;
+    /* We are now in a new UTS namespace */
+    print_uts("before sethostname");
+
+    sethostname("my-container", 12);
+    setdomainname("localdomain", 11);
+
+    print_uts("after sethostname");
+
+    pause(); /* Stay alive for inspection */
+    return 0;
+}
+
+int main(void) {
+    print_uts("host before clone");
+
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) { perror("malloc"); return 1; }
+
+    pid_t pid = clone(child_main, stack + STACK_SIZE,
+                      CLONE_NEWUTS | SIGCHLD, NULL);
+    if (pid == -1) { perror("clone"); return 1; }
+
+    /* Host namespace unchanged */
+    print_uts("host after clone");
+
+    waitpid(pid, NULL, 0);
+    free(stack);
+    return 0;
+}
+</pre>
+
+<p>
+The host's hostname is unaffected by the child's <code>sethostname()</code> call
+because each side has its own UTS namespace object. Run with <code>sudo ./uts</code>
+and confirm by running <code>hostname</code> in another terminal while the child is
+paused.
+</p>
+
+<h3>Go: UTS Namespace</h3>
+
+<pre>
+package main
+
+import (
+    "fmt"
+    "os"
+    "os/exec"
+    "syscall"
+)
+
+func main() {
+    cmd := exec.Command("/bin/sh")
+    cmd.Stdin  = os.Stdin
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.SysProcAttr = &amp;syscall.SysProcAttr{
+        Cloneflags: syscall.CLONE_NEWUTS,
+    }
+
+    if err := cmd.Start(); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+
+    /* Set the child's hostname via /proc/&lt;pid&gt;/ns/uts
+       Actually the child needs to call sethostname itself.
+       We demonstrate the namespace is separate. */
+    fmt.Printf("child PID on host: %d\n", cmd.Process.Pid)
+
+    cmd.Wait()
+}
+</pre>
+
+<p>
+To call <code>sethostname</code> before the child exec runs you can use
+<code>cmd.SysProcAttr.Hostname</code> - Go's <code>syscall</code> package on Linux sets
+the hostname inside the new UTS namespace automatically when this field is set:
+</p>
+
+<pre>
+cmd.SysProcAttr = &amp;syscall.SysProcAttr{
+    Cloneflags: syscall.CLONE_NEWUTS,
+    Hostname:   "my-go-container",
+}
+</pre>
+
+<h3>IPC Namespaces</h3>
+
+<p>
+System V IPC provides three object types:
+</p>
+
+<ul>
+<li><b>Shared memory</b> - <code>shmget()</code>, <code>shmat()</code>, <code>shmdt()</code>, <code>shmctl()</code></li>
+<li><b>Semaphores</b> - <code>semget()</code>, <code>semop()</code>, <code>semctl()</code></li>
+<li><b>Message queues</b> - <code>msgget()</code>, <code>msgsnd()</code>, <code>msgrcv()</code>, <code>msgctl()</code></li>
+</ul>
+
+<p>
+All three are identified by integer keys and live in the kernel globally. Without
+an IPC namespace, any process on the host can attach to a shared memory segment
+if it knows (or guesses) the key. With IPC namespaces, each namespace has its
+own independent set of objects.
+</p>
+
+<h3>C: Shared Memory Before and After IPC Namespace</h3>
+
+<p>
+This example creates a shared memory segment in the host namespace, then shows
+that a child in a new IPC namespace cannot see it:
+</p>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;sched.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;sys/ipc.h&gt;
+#include &lt;sys/shm.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;unistd.h&gt;
+
+#define STACK_SIZE (512 * 1024)
+#define SHM_KEY    0x1234
+
+static int child_main(void *arg) {
+    (void)arg;
+    /* Try to attach to the segment created in the host namespace */
+    int shmid = shmget(SHM_KEY, 0, 0);
+    if (shmid == -1) {
+        printf("[child] shmget failed - segment not visible (correct!)\n");
+    } else {
+        printf("[child] shmget succeeded with id=%d (WRONG - leaked!)\n",
+               shmid);
+    }
+    return 0;
+}
+
+int main(void) {
+    /* Create a shared memory segment in the host namespace */
+    int shmid = shmget(SHM_KEY, 4096, IPC_CREAT | 0600);
+    if (shmid == -1) { perror("shmget"); return 1; }
+    printf("[host] created shm id=%d\n", shmid);
+
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) { perror("malloc"); return 1; }
+
+    pid_t pid = clone(child_main, stack + STACK_SIZE,
+                      CLONE_NEWIPC | SIGCHLD, NULL);
+    if (pid == -1) { perror("clone"); return 1; }
+
+    waitpid(pid, NULL, 0);
+
+    /* Clean up host segment */
+    shmctl(shmid, IPC_RMID, NULL);
+    free(stack);
+    return 0;
+}
+</pre>
+
+<p>
+Without <code>CLONE_NEWIPC</code> the child would successfully find the segment.
+With it, the child's IPC namespace starts empty and the <code>shmget()</code> call
+returns <code>EINVAL</code> (no such segment).
+</p>
+
+<h3>Inspecting IPC Objects</h3>
+
+<pre>
+# List all shared memory segments
+ipcs -m
+
+# List all semaphores
+ipcs -s
+
+# List all message queues
+ipcs -q
+
+# Delete a specific segment by ID
+ipcrm -m &lt;id&gt;
+
+# Show IPC namespace of a process
+readlink /proc/self/ns/ipc
+</pre>
+
+<h3>POSIX Message Queues</h3>
+
+<p>
+POSIX message queues (<code>mq_open()</code>, <code>mq_send()</code>, <code>mq_receive()</code>)
+are also isolated by IPC namespaces. They appear under <code>/dev/mqueue</code> when
+that filesystem is mounted. Inside a container with a new IPC namespace, mount
+the POSIX MQ filesystem to get a clean view:
+</p>
+
+<pre>
+mount -t mqueue none /dev/mqueue
+</pre>
+
+<p>
+Any queues created by host processes will not be visible. This matters for
+applications like databases and message brokers that use POSIX queues for
+internal IPC - without namespace isolation two instances on the same host could
+interfere.
+</p>
+
+<h3>Combining UTS and IPC with a Go Runtime Skeleton</h3>
+
+<pre>
+package main
+
+import (
+    "fmt"
+    "os"
+    "os/exec"
+    "syscall"
+)
+
+func run() error {
+    args := os.Args[1:]
+    if len(args) == 0 {
+        args = []string{"/bin/sh"}
+    }
+
+    cmd := exec.Command(args[0], args[1:]...)
+    cmd.Stdin  = os.Stdin
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.SysProcAttr = &amp;syscall.SysProcAttr{
+        Cloneflags: syscall.CLONE_NEWUTS |
+                    syscall.CLONE_NEWIPC |
+                    syscall.CLONE_NEWPID |
+                    syscall.CLONE_NEWNS,
+        Hostname: "container",
+    }
+    return cmd.Run()
+}
+
+func main() {
+    if err := run(); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+}
+</pre>
+
+<p>
+This skeleton will be expanded in later articles to add rootfs isolation,
+cgroups, and security policies.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+UTS namespaces isolate the hostname and NIS domain name so each container can
+advertise its own identity without affecting the host. IPC namespaces give each
+container a private set of System V shared memory segments, semaphores, message
+queues, and POSIX message queues — preventing accidental or malicious sharing
+between containers on the same host. Both are straightforward to add as flags
+to <code>clone()</code> or <code>SysProcAttr.Cloneflags</code> in Go.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://man7.org/linux/man-pages/man7/uts_namespaces.7.html">uts_namespaces(7) - Linux man page</a></li>
+<li><a href="https://man7.org/linux/man-pages/man7/ipc_namespaces.7.html">ipc_namespaces(7) - Linux man page</a></li>
+<li><a href="https://man7.org/linux/man-pages/man2/shmget.2.html">shmget(2) - Linux man page</a></li>
+<li><a href="https://lwn.net/Articles/531114/">Namespaces in operation, part 1 (LWN)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="containers-03-clone-unshare.htm">The clone() and unshare() Syscalls</a></li>
+<li><a href="containers-04-pid-namespaces.htm">PID Namespaces</a></li>
+<li><a href="containers-13-network-namespaces.htm">Network Namespaces</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

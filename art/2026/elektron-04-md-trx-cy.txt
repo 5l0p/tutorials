@@ -1,0 +1,263 @@
+Elektron Synthesis - Part 4: Machinedrum TRX-CY Cymbal and TRX-CB Cowbell
+2026-01-01
+
+
+The TRX-CY and TRX-CB are the Machinedrum's analog-modeled cymbal and cowbell. The
+TRX-CY uses a dense inharmonic oscillator bank with ring-modulated partials and a
+very long multi-stage decay envelope. The TRX-CB is a direct descendant of the Roland
+TR-808 cowbell — two square wave oscillators through a resonant bandpass filter and
+a gated amplitude envelope. Both are illuminating targets for Pd recreation because
+they expose how a small number of techniques produce very recognisable sounds.
+
+
+TRX-CY: Cymbal Synthesis
+
+TRX-CY Parameters
+
+
+KnobNameFunctionRange
+1FREQ (frq)Oscillator bank base frequency offset0–400 Hz
+2DECAY (dcy)Amplitude decay time50–30000 ms
+3HDECAY (hdcy)High frequency band decay20–5000 ms
+4TONE (tn)High/low frequency balance0–1
+5METAL (met)Ring modulation depth between oscillators0–1
+6NOISE (nse)Noise blend level0–1
+7DIST (dst)Waveshaper drive0–1
+8SWEEP (swp)Initial frequency sweep depth0–1
+
+
+TRX-CY Synthesis Architecture
+
+
+A real cymbal produces a very dense, irregular partial spectrum from the complex
+vibration modes of a metal disc. The synthesis model approximates this with:
+
+
+
+Six or more oscillators at inharmonic frequencies
+Ring modulation between pairs of oscillators (produces sum/difference frequencies, further densifying the spectrum)
+Highpass filter to remove sub-bass content
+Dual-band decay (low frequencies decay faster than high — opposite of hi-hat)
+
+
+
+; Oscillator bank frequencies (base values, Hz):
+; These produce the MD-style cymbal spectrum:
+203, 308, 411, 607, 893, 1214, 1823, 2431
+
+; With FREQ offset: each + frq
+
+; Plus ring-modulated pairs:
+; RM1: osc[0] * osc[2] → produces sums/diffs at 203±411 Hz = 208, 614
+; RM2: osc[1] * osc[3] → produces sums/diffs at 308±607 Hz = 299, 915
+; RM3: osc[4] * osc[5] → produces sums/diffs at 893±1214 Hz = 321, 2107
+; controlled by METAL parameter
+
+
+
+; Ring modulation in Pd:
+[osc~ 203+frq]   → $oscA
+[osc~ 411+frq]   → $oscC
+
+$oscA
+|
+[*~]   ← $oscC           ; multiply = ring modulator (both -1 to +1)
+|
+[*~ $metal]              ; blend: 0 = no ring mod, 1 = full ring mod
+
+; Mix ring-modulated pairs with direct oscillators:
+[+~] direct_osc_sum
+[+~] ring_mod_sum × metal
+→ oscillator_bus
+
+
+Dual-Band Decay
+
+
+On a real cymbal, high-frequency content decays faster than low frequency — the
+opposite of a hi-hat, where the bright sizzle sustains. Split the oscillator bus into
+a low band and a high band with independent envelopes:
+
+
+
+oscillator_bus
+    │
+    ├── LOW band: [lop~ 2000] → [vline~] dcy envelope → [*~ tn]
+    │
+    └── HIGH band: [hip~ 2000] → [vline~] hdcy envelope → [*~ 1-tn]
+
+
+
+With TONE at 0.5, both bands get equal weight. Moving toward 1.0 emphasises the
+low band (darker, bell-like cymbal); moving toward 0.0 emphasises high frequencies
+(brighter, sizzlier cymbal).
+
+
+
+Plus the noise component, highpass filtered and decaying at a rate between dcy and hdcy:
+
+
+
+[noise~]
+→ [hip~ 3000]              ; remove low rumble
+→ [vline~] decay at (dcy + hdcy) / 2
+→ [*~ nse]
+
+
+Frequency Sweep
+
+
+The SWEEP parameter adds a brief upward pitch excursion at the moment of attack — the
+physical analogy is the initial high-frequency impact of a stick on the cymbal edge
+before the resonant body takes over:
+
+
+
+; On trigger: all oscillator frequencies momentarily offset upward
+; then return to base over 10–30 ms
+
+; Apply to all oscillators via a shared pitch offset signal:
+[vline~]    ; freq offset: swp*100 0, 0 30 0    (30 ms sweep down)
+|
+[sig~ 0]   ; bias
+|
+[+~]       ; = offset bus
+
+; Each oscillator receives: baseFreq + freqOffset
+; In Pd, message-rate frequencies don't support signal addition directly;
+; use [expr~] or [sig~] to add the sweep offset to each oscillator's freq:
+[osc~]  ← [+~ baseFreq offset]   ; where baseFreq is a [sig~] from stored float
+
+
+TRX-CB: Cowbell Synthesis
+
+TRX-CB Parameters
+
+
+KnobNameFunctionRange
+1TUNE (tun)Base oscillator frequency300–1200 Hz
+2DECAY (dcy)Amplitude decay time20–5000 ms
+3FILTER (flt)Bandpass filter cutoff500–8000 Hz
+4RES (res)Bandpass filter resonance0–1
+5TONE (tn)Square/sine crossfade0–1
+6DIST (dst)Waveshaper drive0–1
+7BEAT (bt)Secondary oscillator frequency ratio0.8–2.0
+8LEVEL (lvl)Output level0–1
+
+
+TRX-CB Synthesis Architecture
+
+
+The TR-808 cowbell is the classic reference for synthesised cowbell. It uses two square
+wave oscillators — one at the fundamental and one at a fixed interval — mixed and fed
+through a resonant bandpass filter. The resonant filter is what gives the cowbell its
+metallic, pinging quality. The TRX-CB follows this architecture:
+
+
+
+; Two square wave oscillators:
+[phasor~ $tune]
+|
+[*~ 2][-~ 1]          ; phasor → sawtooth → sign comparison → square
+|
+(clip~ -1 1 after *200 overdrive)
+|
+[*~ 0.5]   → oscA
+
+[phasor~ $tune * $beat]   ; Osc B at beat × tune (default ≈1.47 for 808-style)
+|
+(same square conversion)
+|
+[*~ 0.5]   → oscB
+
+; Tone crossfade: 0 = full square, 1 = sine blend
+; At tn=0: hard square wave (buzzy)
+; At tn=1: blend with a sine at same frequency (softer, bell-like)
+[osc~ $tune]     ; sine version of OscA
+|
+[*~ tn]
+→ sineBlend
+
+[+~ oscA * (1-tn), sineBlend]   → oscAMixed
+[+~ oscB * (1-tn), oscBSine]    → oscBMixed
+
+oscAMixed + oscBMixed → oscillator_sum
+
+
+
+The two oscillators are summed (not ring-modulated — that would produce sums/differences,
+whereas cowbell sounds are the direct mix of the two pitches):
+
+
+
+oscillator_sum
+|
+[bp~ $flt $res]         ; resonant bandpass — the key cowbell shaper
+|
+[tanh waveshaper dst]
+|
+[*~]  ← [vline~] amplitude: 1 2, 0 $dcy 2    ; decay envelope
+|
+[*~ level * vel]
+|
+[outlet~]
+
+
+The Bandpass Filter as Identity
+
+
+The resonant bandpass filter is what makes a cowbell recognisable. Without it (flat
+frequency response), the two oscillators just sound like a harsh buzzing tone. With
+the bandpass applied, the filter's resonance selects a narrow frequency band and
+rings it, producing the characteristic "ting" quality.
+
+
+
+The filter cutoff (FLT) and resonance (RES) parameters define the cowbell's identity:
+
+
+
+Low cutoff (500–800 Hz), high resonance (0.8–1.0): deep, metallic cowbell
+Mid cutoff (1000–2000 Hz), medium resonance (0.5–0.7): classic 808 cowbell
+High cutoff (3000–6000 Hz), medium resonance (0.5): bright, bell-like
+
+
+
+In Pd, the [bp~] object takes two arguments: center frequency and Q.
+The MD's resonance parameter maps approximately as: Q = res * 15 + 1 (range 1–16).
+
+
+BEAT Parameter
+
+
+The BEAT parameter controls the frequency ratio between the two oscillators. The
+TR-808 cowbell uses a ratio of approximately 1:1.47 (the second oscillator is 1.47×
+the fundamental). This produces an inharmonic beating that gives the cowbell its
+unstable, metallic shimmer. The TRX-CB exposes this ratio as a parameter:
+
+
+
+; BEAT range 0.8–2.0:
+; 0.8: near-unison (close beating, almost chorus)
+; 1.47: classic 808-style cowbell
+; 2.0: octave (more bell-like, less cowbell)
+
+
+Summary
+
+
+The TRX-CY uses a dense inharmonic oscillator bank with ring modulation between pairs
+(controlled by METAL), dual-band independent decay envelopes (low/high via TONE), and
+a frequency sweep on attack. The TRX-CB follows the TR-808 cowbell architecture: two
+square-wave oscillators at an inharmonic interval, summed and run through a resonant
+bandpass filter. The bandpass filter is the key identity element — it rings the selected
+frequency band, producing the characteristic metallic cowbell ping.
+
+
+See Also
+
+
+TRX-SD and TRX-HH - the inharmonic oscillator bank used in hi-hat synthesis
+TRX-CP, TRX-RS, TRX-MA - clap, rimshot, and metallic percussion
+Biquad Filters - implementing a proper resonant BP filter for the cowbell
+

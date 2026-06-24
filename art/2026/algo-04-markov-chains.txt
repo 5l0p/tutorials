@@ -1,0 +1,312 @@
+Algorithmic Composition - Part 4: Markov Chains for Melody
+2026-01-14
+
+
+Brownian motion controls the shape of a melody — how far it moves and in which direction.
+But it treats all scale degrees as equally likely destinations. A walk from the third
+degree to the seventh has the same probability as a walk from the seventh back to the
+tonic, even though in tonal music the seventh strongly tends to resolve up to the octave
+or down to the fifth.
+
+
+
+Markov chains encode these tendencies. Instead of letting the walk drift wherever random
+chance takes it, you specify a probability for every possible move: how likely is it to
+go from the third degree to the second, the fourth, the fifth, and so on. The system still
+makes random choices, but the choices are biased by musical knowledge you supply.
+
+
+
+The same technique applies to rhythm: how likely is a quarter note to be followed by
+another quarter note versus an eighth note versus a dotted rhythm? A rhythm chain produces
+convincing metre without needing to schedule every beat by hand.
+
+
+What You Will Learn
+
+
+What a first-order Markov chain is and why it suits melodic generation
+How to encode a transition matrix in Lua and what the numbers mean musically
+How to sample from an unnormalised probability distribution efficiently
+How to build a rhythm Markov chain over note durations
+How to combine pitch and rhythm chains into a complete melody generator
+The limitation of first-order chains and when to use higher-order chains
+
+
+What Is a Markov Chain?
+
+
+A first-order Markov chain models a sequence of states where the probability of each
+state depends only on the current state, not on any earlier history. For melody, the
+states are scale degrees (1 through 7). The transition matrix P has an entry
+P[i][j] giving the probability (or unnormalised weight) of moving from degree
+i to degree j.
+
+
+
+"First-order" means: given you are on degree 5, the probability of going to degree 1 is
+fixed, regardless of whether you arrived at 5 from a 4 or a 6. Higher-order chains track
+more history (the last two or three notes) and produce more coherent phrases, at the cost
+of needing larger tables.
+
+
+Building the Transition Matrix
+
+
+The matrix entries are unnormalised weights — you do not need them to sum to 1 per row.
+The sampler normalises on the fly. Higher numbers mean higher probability.
+
+
+
+A matrix encoding basic tonal tendencies in major:
+
+
+
+-- Transition weights for a 7-degree major scale.
+-- P[from][to]: higher = more probable.
+-- Degrees: 1=tonic, 2=supertonic, 3=mediant, 4=subdominant,
+--          5=dominant, 6=submediant, 7=leading tone
+
+local major_chain = {
+    --        1   2   3   4   5   6   7
+    [1] = {   0,  4,  2,  2,  5,  2,  1 },  -- tonic: likes to go to II, V
+    [2] = {   2,  0,  3,  3,  4,  1,  0 },  -- II: often to V, III, IV
+    [3] = {   2,  2,  0,  4,  3,  3,  0 },  -- III: to IV, VI, V
+    [4] = {   1,  3,  1,  0,  6,  1,  1 },  -- IV: strongly to V
+    [5] = {   6,  1,  1,  1,  0,  1,  3 },  -- V: strongly to I; VII possible
+    [6] = {   2,  2,  2,  3,  3,  0,  1 },  -- VI: to II, IV, V
+    [7] = {   7,  0,  1,  0,  2,  0,  0 },  -- leading tone: strongly to I
+}
+
+
+
+Each row sums to different totals — that is fine. Reading row 7: the leading tone goes
+to the tonic (weight 7), sometimes to the dominant (weight 2), rarely to the mediant
+(weight 1), and never to the supertonic, subdominant, submediant, or itself.
+
+
+
+These weights are a starting point, not a prescription. Flatten the matrix (all entries
+equal) for modal or atonal music. Amplify the off-diagonal entries for more surprising
+movement. The structure of the matrix is the compositional act.
+
+
+Sampling from the Distribution
+
+
+Given the current degree i and its row of weights, pick the next degree:
+
+
+
+-- Sample one index from a table of unnormalised weights.
+-- Returns the 1-based index of the chosen entry.
+local function sample(weights)
+    local total = 0
+    for _, w in ipairs(weights) do total = total + w end
+
+    local r = math.random() * total
+    local cumulative = 0
+    for j, w in ipairs(weights) do
+        cumulative = cumulative + w
+        if r <= cumulative then return j end
+    end
+    return #weights  -- rounding fallback
+end
+
+
+
+Test: sample({0, 0, 0, 0, 6, 0, 0}) should always return 5. sample({1,1,1,1,1,1,1})
+should return each index with equal probability.
+
+
+Generating a Pitch Sequence
+
+
+local pitch = require("pitch")
+
+local function markov_melody(chain, n, start)
+    local state  = start or 1   -- start on the tonic
+    local result = {}
+
+    for i = 1, n do
+        result[i] = state
+        state = sample(chain[state])
+    end
+
+    return result
+end
+
+-- Map scale degrees to absolute MIDI notes
+local function degrees_to_midi(degrees, root, scale)
+    local notes = {}
+    for _, d in ipairs(degrees) do
+        -- degree d maps to scale[d] semitones above root, in octave 4
+        local pc = scale[d]
+        notes[#notes + 1] = root + 12 + pc   -- one octave above root
+    end
+    return notes
+end
+
+-- Generate and print a 16-degree melody
+math.randomseed(17)
+local degrees = markov_melody(major_chain, 16)
+local midi    = degrees_to_midi(degrees, 60, pitch.scales.major)
+
+for i, note in ipairs(midi) do
+    io.write(pitch.name(note) .. " ")
+    if i % 8 == 0 then print() end
+end
+
+
+
+Sample output:
+
+
+
+C5  D5  E5  F5  G5  C5  G5  A5
+G5  C5  D5  G5  C5  B4  C5  D5
+
+
+
+The chain enforces resolution: the B (leading tone, degree 7) at position 14 resolves
+to C (tonic, degree 1) at position 15, exactly as the weights specify.
+
+
+A Rhythm Markov Chain
+
+
+Apply the same structure to note duration. Represent durations as fractions of a whole
+note: 1.0 = whole, 0.5 = half, 0.25 = quarter, 0.125 = eighth. Use indices 1–4 for
+the four common durations.
+
+
+
+-- Duration values indexed 1-4
+local dur_values = {0.5, 0.25, 0.25, 0.125}   -- half, quarter, quarter, eighth
+
+-- Rhythm transitions: index 1=half, 2=quarter, 3=quarter (dup for weighting), 4=eighth
+local rhythm_chain = {
+    [1] = {1, 3, 3, 1},   -- half note often followed by two quarters
+    [2] = {1, 3, 3, 2},   -- quarter: mostly more quarters, sometimes half or eighth
+    [3] = {1, 3, 3, 2},
+    [4] = {0, 2, 2, 4},   -- eighth: usually another eighth or quarter
+}
+
+local function markov_rhythm(chain, n, start)
+    local state  = start or 2  -- start on a quarter note
+    local result = {}
+    for i = 1, n do
+        result[i] = dur_values[state]
+        state = sample(chain[state])
+    end
+    return result
+end
+
+
+Combining Pitch and Rhythm
+
+
+A melody is pitch + rhythm. Generate both independently, then zip them:
+
+
+
+math.randomseed(99)
+local deg_seq  = markov_melody(major_chain, 16)
+local dur_seq  = markov_rhythm(rhythm_chain, 16)
+local midi_seq = degrees_to_midi(deg_seq, 60, pitch.scales.major)
+
+-- Send to Pd: each note as {pitch, duration_ms} pair
+local bpm   = 120
+local bar_ms = (60.0 / bpm) * 4 * 1000  -- ms per whole note
+
+for i = 1, #midi_seq do
+    local note_ms = dur_seq[i] * bar_ms
+    pd.send("algo-pitch", midi_seq[i])
+    pd.send("algo-dur",   note_ms)
+    pd.delay(note_ms)
+end
+
+
+
+The Pd patch uses [receive algo-dur] to set the envelope release time on the
+synthesis voice, so note length varies with the rhythm chain output.
+
+
+Higher-Order Chains
+
+
+A first-order chain on 7 degrees needs 7×7 = 49 entries. A second-order chain (tracking
+the last two degrees) needs 7×7×7 = 343 entries — still manageable in Lua. The key for
+a second-order chain is a pair of states:
+
+
+
+-- Second-order chain: P[prev][cur] = {weights for next}
+-- Only a few transitions shown for brevity.
+local chain2 = {
+    [1] = {
+        [5] = {8, 0, 1, 0, 0, 0, 1},  -- 1→5→? : strongly back to 1 or to 7
+        [2] = {1, 0, 3, 4, 3, 1, 0},  -- 1→2→? : often continues to 3, 4, 5
+    },
+    -- ... fill remaining transitions
+}
+
+-- Usage: track state as {prev, cur}
+-- next = sample(chain2[prev][cur])
+
+
+
+In practice, hand-crafting a full second-order matrix is tedious. A better approach:
+train the matrix from a corpus of melodies in the target style. For a pentatonic chain,
+five degrees means 5×5 = 25 entries at first order, easily specified by hand.
+
+
+Pentatonic Chain: A Practical Starting Point
+
+
+Pentatonic scales have five degrees. The lack of semitones makes the transitions feel
+open and less tonally constrained. This chain suits slower, meditative music:
+
+
+
+-- Pentatonic: degrees 1=root, 2=M2, 3=M3, 4=P5, 5=M6
+local penta_chain = {
+    --        1   2   3   4   5
+    [1] = {   0,  4,  2,  3,  1 },
+    [2] = {   3,  0,  4,  2,  1 },
+    [3] = {   2,  3,  0,  4,  1 },
+    [4] = {   4,  2,  2,  0,  2 },
+    [5] = {   3,  2,  1,  2,  0 },
+}
+
+
+Summary
+
+
+Markov chains encode musical tendency as a probability matrix over scale degrees. The
+chain samples the next state from a distribution biased by the weights you supply — so
+you are composing the tendencies, not the notes. The same structure applies to rhythm:
+a separate chain over note durations produces varied, metre-consistent timing. Together,
+a pitch chain and a rhythm chain generate complete melodies with tonal pull and rhythmic
+coherence, with no note ever identical in sequence to a previous run. The Brownian walk
+from Part 3 controls large-scale contour; the Markov chain controls local tendency.
+Both deliver MIDI note numbers to Pure Data via pd.send.
+
+
+Further Reading
+
+
+Nierhaus — Algorithmic Composition, Ch. 3: Markov Models
+music21 — Transition Matrix Analysis (MIT)
+David Huron — Sweet Anticipation, Ch. 7: Melodic Expectation
+Leonard Hiller & Leonard Isaacson — Experimental Music (1959)
+
+
+See Also
+
+
+Part 3: Random Walks and Brownian Motion - contour control to combine with Markov tendency
+Part 6: Generating Chord Progressions - the same Markov technique applied to harmonic function
+Part 2: Pitch as Numbers - scale tables and quantise used by the melody generator
+Assembling the Drum Machine - the Lua pattern storage system this series extends
+

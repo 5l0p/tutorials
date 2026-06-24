@@ -1,0 +1,486 @@
+Containers - Part 18: seccomp - Syscall Filtering
+2026-08-16
+
+
+Even after dropping capabilities, a container process can still make hundreds of
+different syscalls. Many of them are dangerous in ways that capabilities do not
+cover: ptrace can introspect and manipulate other processes;
+keyctl can access kernel key storage; unshare can create new namespaces
+from inside the container; perf_event_open can be used to exploit CPU
+microarchitecture side channels. seccomp (Secure Computing Mode) is the kernel
+mechanism that intercepts syscalls before they execute and applies a policy to
+decide whether to allow or deny them. Container runtimes load a BPF program
+that acts as the policy. Docker's default seccomp profile blocks about 40
+syscalls, cutting off entire classes of kernel attack surface.
+
+
+What You Will Learn
+
+
+How seccomp works at the kernel level: the BPF program and the filter hook
+The two seccomp modes: SECCOMP_MODE_STRICT and SECCOMP_MODE_FILTER
+How to write a libseccomp whitelist policy in C
+How to apply a filter with prctl(PR_SET_SECCOMP)
+What Docker's default seccomp profile blocks and why
+How to load a seccomp filter from Go without libseccomp
+
+
+How seccomp Works
+
+
+When a process makes a syscall, the CPU transitions to kernel mode and the
+kernel begins processing the syscall. seccomp adds a hook right at the start of
+that processing, before any kernel code specific to the syscall runs. The hook
+evaluates a BPF (Berkeley Packet Filter) program that receives a structure
+containing the syscall number, the arguments, and some process metadata. The BPF
+program returns a verdict: ALLOW, KILL_PROCESS, KILL_THREAD, TRAP, TRACE, LOG,
+or ERRNO(n).
+
+
+
+seccomp filters are loaded with prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
+&prog) or equivalently with the seccomp() syscall (Linux 3.17+). Once
+loaded, a filter cannot be unloaded. Filters are inherited across fork and
+exec and can only be made stricter, not relaxed. New filters are prepended
+to the existing filter chain; the first filter to return a non-ALLOW verdict wins.
+
+
+
+There are two modes:
+
+
+
+SECCOMP_MODE_STRICT (mode 1) - the original mode. Only allows read, write, exit, and sigreturn. Very restrictive; used by some cryptographic processes.
+SECCOMP_MODE_FILTER (mode 2) - BPF filter mode. The filter program decides per-syscall. This is what container runtimes use.
+
+
+
+Loading a filter requires either CAP_SYS_ADMIN, or having called
+prctl(PR_SET_NO_NEW_PRIVS, 1, ...) first. Container runtimes set
+NO_NEW_PRIVS before dropping CAP_SYS_ADMIN, so filters can be loaded
+without root in the final container process.
+
+
+The seccomp_data Structure
+
+
+The BPF program receives a pointer to a struct seccomp_data. This is what
+the BPF instructions load from and branch on:
+
+
+
+struct seccomp_data {
+    int   nr;                   /* syscall number */
+    __u32 arch;                 /* AUDIT_ARCH_* constant for the CPU arch */
+    __u64 instruction_pointer;  /* %rip at time of syscall */
+    __u64 args[6];              /* syscall arguments */
+};
+
+
+
+The arch field is critical. A 64-bit process can be compiled to invoke
+32-bit syscalls via the int 0x80 interface on x86. The syscall numbers are
+completely different between architectures. A filter that blocks syscall number
+N on x86-64 does not block the same-numbered syscall on x86. Container runtimes
+always check the arch field first and kill the process if it does not match
+the expected architecture, preventing this bypass.
+
+
+Writing a Filter with libseccomp in C
+
+
+Writing raw BPF bytecode for seccomp is error-prone. The libseccomp library
+provides a high-level API that compiles down to a BPF program automatically.
+
+
+
+#include <errno.h>
+#include <seccomp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+/*
+ * install_filter: load a whitelist seccomp filter.
+ * Any syscall not listed causes EPERM to be returned.
+ */
+int install_filter(void) {
+    scmp_filter_ctx ctx;
+
+    /* Start with a default action of SCMP_ACT_ERRNO(EPERM):
+     * any unlisted syscall returns -1 with errno=EPERM. */
+    ctx = seccomp_init(SCMP_ACT_ERRNO(EPERM));
+    if (!ctx) {
+        fprintf(stderr, "seccomp_init failed\n");
+        return -1;
+    }
+
+    /* Allow the syscalls a typical container workload needs */
+    int allowed[] = {
+        SCMP_SYS(read),
+        SCMP_SYS(write),
+        SCMP_SYS(open),
+        SCMP_SYS(openat),
+        SCMP_SYS(close),
+        SCMP_SYS(stat),
+        SCMP_SYS(fstat),
+        SCMP_SYS(lstat),
+        SCMP_SYS(poll),
+        SCMP_SYS(lseek),
+        SCMP_SYS(mmap),
+        SCMP_SYS(mprotect),
+        SCMP_SYS(munmap),
+        SCMP_SYS(brk),
+        SCMP_SYS(rt_sigaction),
+        SCMP_SYS(rt_sigprocmask),
+        SCMP_SYS(rt_sigreturn),
+        SCMP_SYS(ioctl),
+        SCMP_SYS(pread64),
+        SCMP_SYS(pwrite64),
+        SCMP_SYS(access),
+        SCMP_SYS(pipe),
+        SCMP_SYS(select),
+        SCMP_SYS(sched_yield),
+        SCMP_SYS(dup),
+        SCMP_SYS(dup2),
+        SCMP_SYS(nanosleep),
+        SCMP_SYS(getpid),
+        SCMP_SYS(socket),
+        SCMP_SYS(connect),
+        SCMP_SYS(accept),
+        SCMP_SYS(sendto),
+        SCMP_SYS(recvfrom),
+        SCMP_SYS(sendmsg),
+        SCMP_SYS(recvmsg),
+        SCMP_SYS(bind),
+        SCMP_SYS(listen),
+        SCMP_SYS(getsockname),
+        SCMP_SYS(getpeername),
+        SCMP_SYS(fork),
+        SCMP_SYS(execve),
+        SCMP_SYS(exit),
+        SCMP_SYS(exit_group),
+        SCMP_SYS(wait4),
+        SCMP_SYS(kill),
+        SCMP_SYS(getcwd),
+        SCMP_SYS(chdir),
+        SCMP_SYS(getuid),
+        SCMP_SYS(getgid),
+        SCMP_SYS(geteuid),
+        SCMP_SYS(getegid),
+        SCMP_SYS(setuid),
+        SCMP_SYS(setgid),
+        SCMP_SYS(uname),
+        SCMP_SYS(arch_prctl),
+        SCMP_SYS(futex),
+        SCMP_SYS(set_tid_address),
+        SCMP_SYS(clock_gettime),
+        SCMP_SYS(clock_nanosleep),
+        SCMP_SYS(set_robust_list),
+        SCMP_SYS(get_robust_list),
+        SCMP_SYS(madvise),
+        SCMP_SYS(tgkill),
+        -1   /* sentinel */
+    };
+
+    for (int i = 0; allowed[i] != -1; i++) {
+        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, allowed[i], 0) != 0) {
+            fprintf(stderr, "seccomp_rule_add failed for %d\n", allowed[i]);
+            seccomp_release(ctx);
+            return -1;
+        }
+    }
+
+    /* Load the filter into the kernel */
+    if (seccomp_load(ctx) != 0) {
+        perror("seccomp_load");
+        seccomp_release(ctx);
+        return -1;
+    }
+
+    seccomp_release(ctx);
+    return 0;
+}
+
+int main(void) {
+    /* NO_NEW_PRIVS must be set before loading without CAP_SYS_ADMIN */
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1) {
+        perror("PR_SET_NO_NEW_PRIVS");
+        return 1;
+    }
+
+    printf("installing seccomp filter...\n");
+
+    if (install_filter() != 0) {
+        fprintf(stderr, "failed to install filter\n");
+        return 1;
+    }
+
+    printf("filter active. testing: getpid() = %d\n", getpid());
+
+    /* This will now fail - ptrace is not in our whitelist */
+    /*
+    long r = syscall(SYS_ptrace, PTRACE_TRACEME, 0, 0, 0);
+    printf("ptrace result: %ld (errno %d)\n", r, errno);
+    */
+
+    printf("done\n");
+    return 0;
+}
+
+
+
+Compile: gcc -o seccomp_demo seccomp_demo.c -lseccomp && ./seccomp_demo.
+Install libseccomp with apt install libseccomp-dev first. This does not
+require root because NO_NEW_PRIVS is set before loading the filter.
+
+
+What Docker's Default Profile Blocks
+
+
+Docker's default seccomp profile is a JSON file loaded by the daemon. It uses a
+blacklist approach: all syscalls are allowed by default, and specific ones
+are blocked. The key blocked syscalls and the rationale:
+
+
+
+keyctl, add_key, request_key - access to the kernel keyring. Containers should not be able to read host keys or exhaust the keyring quota.
+ptrace - not needed by most workloads; allows inspecting and modifying any process visible to the container.
+perf_event_open - used to exploit hardware performance counters for side-channel attacks (Spectre-class). Blocked unconditionally.
+process_vm_readv, process_vm_writev - direct memory access to other processes. ptrace-like capabilities without ptrace.
+reboot - obvious.
+kexec_load, kexec_file_load - load a new kernel. Immediate full compromise.
+mount - mounting filesystems. Requires CAP_SYS_ADMIN anyway, but defence in depth.
+unshare - creating new namespaces. Could be used to escape user namespace restrictions.
+sysfs, pivot_root - filesystem manipulation that is not needed at runtime.
+nfsservctl, _sysctl - obsolete syscalls with large attack surface.
+mbind, migrate_pages, move_pages - NUMA memory management; rarely needed, some exploit surface.
+userfaultfd - exploited in several local privilege escalation vulnerabilities; blocked since Docker 19.03.
+
+
+
+# Inspect Docker's default seccomp profile
+docker info --format '{{.SecurityOptions}}'
+# name=seccomp,profile=default
+
+# Run a container without any seccomp restriction
+docker run --security-opt seccomp=unconfined alpine sh
+
+# Apply a custom seccomp profile
+docker run --security-opt seccomp=/path/to/my-policy.json alpine sh
+
+
+Loading a seccomp Filter from Go
+
+
+Go can load a seccomp filter directly using golang.org/x/sys/unix without
+needing libseccomp. You construct the BPF bytecode manually and pass it to
+the kernel. The following example builds a minimal filter that kills the process
+if it calls ptrace.
+
+
+
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+    "unsafe"
+
+    "golang.org/x/sys/unix"
+)
+
+// BPF instruction constants
+const (
+    BPF_LD   = 0x00
+    BPF_W    = 0x00
+    BPF_ABS  = 0x20
+    BPF_JMP  = 0x05
+    BPF_JEQ  = 0x10
+    BPF_K    = 0x00
+    BPF_RET  = 0x06
+    BPF_STMT = 0
+    BPF_JUMP = 1
+)
+
+// seccomp return values
+const (
+    SECCOMP_RET_KILL_PROCESS = 0x80000000
+    SECCOMP_RET_ALLOW        = 0x7fff0000
+    SECCOMP_RET_ERRNO        = 0x00050000
+)
+
+// AUDIT_ARCH_X86_64 - must match the process architecture
+const AUDIT_ARCH_X86_64 = 0xc000003e
+
+// offsetof(struct seccomp_data, arch) = 4
+// offsetof(struct seccomp_data, nr)   = 0
+const (
+    seccompDataOffNr   = 0
+    seccompDataOffArch = 4
+)
+
+type bpfInsn struct {
+    code uint16
+    jt   uint8
+    jf   uint8
+    k    uint32
+}
+
+func stmt(code uint16, k uint32) bpfInsn {
+    return bpfInsn{code: code, k: k}
+}
+
+func jump(code uint16, k uint32, jt, jf uint8) bpfInsn {
+    return bpfInsn{code: code, jt: jt, jf: jf, k: k}
+}
+
+// buildFilter returns a BPF program that:
+//   - validates the architecture (kills process if wrong arch)
+//   - kills the process on SYS_ptrace (syscall 101 on x86-64)
+//   - allows everything else
+func buildFilter() []bpfInsn {
+    const sysPtrace = 101 // x86-64 syscall number for ptrace
+
+    return []bpfInsn{
+        // Load arch field and compare with AUDIT_ARCH_X86_64
+        stmt(BPF_LD|BPF_W|BPF_ABS, seccompDataOffArch),
+        jump(BPF_JMP|BPF_JEQ|BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        stmt(BPF_RET|BPF_K, SECCOMP_RET_KILL_PROCESS),
+
+        // Load syscall number
+        stmt(BPF_LD|BPF_W|BPF_ABS, seccompDataOffNr),
+
+        // If nr == SYS_ptrace: kill
+        jump(BPF_JMP|BPF_JEQ|BPF_K, sysPtrace, 0, 1),
+        stmt(BPF_RET|BPF_K, SECCOMP_RET_KILL_PROCESS),
+
+        // Default: allow
+        stmt(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+    }
+}
+
+type sockFprog struct {
+    len    uint16
+    _      [6]byte // padding
+    filter *bpfInsn
+}
+
+func installSeccompFilter() error {
+    // NO_NEW_PRIVS required before loading filter without CAP_SYS_ADMIN
+    if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+        return fmt.Errorf("PR_SET_NO_NEW_PRIVS: %w", err)
+    }
+
+    prog := buildFilter()
+    fprog := sockFprog{
+        len:    uint16(len(prog)),
+        filter: &prog[0],
+    }
+
+    _, _, errno := unix.Syscall(unix.SYS_PRCTL,
+        unix.PR_SET_SECCOMP,
+        unix.SECCOMP_MODE_FILTER,
+        uintptr(unsafe.Pointer(&fprog)))
+    if errno != 0 {
+        return fmt.Errorf("prctl PR_SET_SECCOMP: %w", errno)
+    }
+    return nil
+}
+
+func main() {
+    fmt.Println("installing seccomp filter (blocks ptrace)...")
+
+    if err := installSeccompFilter(); err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("filter active. pid=%d\n", os.Getpid())
+
+    // Demonstrate: ptrace(PTRACE_TRACEME) will now kill the process
+    // Uncomment to test:
+    // unix.PtraceMeWithFlags(0) // this would trigger SECCOMP_RET_KILL_PROCESS
+    fmt.Println("ptrace is now blocked; all other syscalls allowed")
+}
+
+
+
+Build and run: go build -o seccomp_go . && ./seccomp_go. This does not
+require root because NO_NEW_PRIVS is set first. In production, use a library
+like github.com/seccomp/libseccomp-golang which wraps libseccomp and
+handles the BPF construction for you.
+
+
+Using SCMP_ACT_ERRNO vs SCMP_ACT_KILL
+
+
+The choice of action on policy violation matters:
+
+
+
+SCMP_ACT_KILL_PROCESS - sends SIGSYS to the entire process group and kills it. Immediate, harsh. Good for security boundaries.
+SCMP_ACT_ERRNO(EPERM) - returns an error to the calling process. The process can catch it and continue. Good for compatibility: some applications try syscalls and fall back gracefully. Docker's profile uses ERRNO(EPERM) for most blocked syscalls.
+SCMP_ACT_TRAP - sends SIGSYS and allows a debugger to examine the violation. Useful during policy development.
+SCMP_ACT_LOG - logs the violation to the audit subsystem and allows it. Useful for profiling what syscalls an application actually uses before writing a policy.
+
+
+Profiling Syscall Usage
+
+
+Before writing a restrictive policy, find out what syscalls your application
+actually uses. Two tools:
+
+
+
+# strace: logs every syscall with arguments
+strace -f -o /tmp/syscalls.txt your-program
+
+# Extract unique syscall names
+awk '{print $1}' /tmp/syscalls.txt | sort -u
+
+# With seccomp in log mode: audit log (requires audit daemon)
+# Or use Docker's --security-opt seccomp=unconfined with a custom
+# seccomp profile that logs rather than blocks.
+
+# oci-seccomp-bpf-hook can generate profiles automatically by
+# running the container and recording all syscalls.
+
+
+Summary
+
+
+seccomp is a syscall-level firewall. A BPF program runs before every syscall and
+decides whether to allow or deny it. Container runtimes load their filter after
+setting NO_NEW_PRIVS, which allows loading without root. Docker's default profile
+blocks about 40 syscalls that are either dangerous (ptrace, keyctl, kexec) or
+exploit-prone (userfaultfd, perf_event_open). The libseccomp library makes
+it practical to write policies without hand-coding BPF. From Go, filters can be
+loaded via raw syscalls or with github.com/seccomp/libseccomp-golang.
+
+
+
+The next article assembles everything from the series - namespaces, pivot_root,
+cgroups, capabilities, and seccomp - into a working mini container runtime
+written in Go.
+
+
+Further Reading
+
+
+seccomp(2) - Linux man page
+seccomp_init(3) - libseccomp man page
+A seccomp overview (LWN)
+Docker's default seccomp profile (GitHub)
+Seccomp BPF - kernel documentation
+libseccomp - userspace API library (GitHub)
+
+
+See Also
+
+
+What Is a Container?
+Linux Capabilities
+Building a Mini Container Runtime in Go
+The OCI Runtime Spec & runc
+

@@ -1,0 +1,434 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 10: Adding Memory to Agents</title>
+    <meta name="description" content="Implement short-term message history, a file-backed long-term key-value store, and a summarisation strategy for context window management.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-10-memory.txt">plain/text</a> | <i>2026-06-19</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 10: Adding Memory to Agents</h2>
+        <p>
+The agent loop from article 04 is stateless between runs - restart the binary and the
+model has no memory of previous conversations. This article adds two kinds of memory:
+short-term (the in-session message history managed carefully to avoid hitting the context
+window) and long-term (a persistent key-value store that survives restarts). It also
+implements a summarisation strategy for compressing history when it grows too large.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Short-term memory: managing the in-session message history to stay within the context window</li>
+<li>How to detect when the context window is near capacity and trigger summarisation</li>
+<li>Summarisation strategy: asking the model to compress old history into a single summary message</li>
+<li>Long-term memory: a file-backed key-value store that persists across agent restarts</li>
+<li>Exposing memory operations as agent tools: remember, recall, and forget</li>
+</ul>
+
+<h3>Two Kinds of Memory</h3>
+
+<p>
+<b>Short-term memory</b> is the message history sent in every API request. The model has
+full access to it but it costs tokens on every call. It disappears when the program exits.
+The challenge is managing its size.
+</p>
+
+<p>
+<b>Long-term memory</b> is persistent storage outside the model's context window. The agent
+can write facts to it (using a tool) and retrieve them (using another tool) in future
+sessions. The model does not see this memory unless it explicitly fetches it.
+</p>
+
+<h3>Short-Term Memory: The History Manager</h3>
+
+<p>
+Wrap the message slice in a type that tracks token usage and trims when needed:
+</p>
+
+<pre>
+package memory
+
+import (
+    "encoding/json"
+    "fmt"
+    "strings"
+)
+
+const defaultContextLimit = 128000
+const defaultTargetUsage  = 0.80
+
+type HistoryManager struct {
+    System       string
+    Messages     []Message
+    ContextLimit int
+    TargetUsage  float64
+}
+
+type Message struct {
+    Role       string     `json:"role"`
+    Content    string     `json:"content,omitempty"`
+    ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+    ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+func New(systemPrompt string) *HistoryManager {
+    return &amp;HistoryManager{
+        System:       systemPrompt,
+        ContextLimit: defaultContextLimit,
+        TargetUsage:  defaultTargetUsage,
+    }
+}
+
+// All returns the complete history for an API request
+func (h *HistoryManager) All() []Message {
+    full := []Message{{Role: "system", Content: h.System}}
+    return append(full, h.Messages...)
+}
+
+func (h *HistoryManager) Add(m Message) {
+    h.Messages = append(h.Messages, m)
+}
+
+// TrimIfNeeded removes old messages when total tokens approach the limit.
+// totalTokens is the value from the last API response's usage field.
+func (h *HistoryManager) TrimIfNeeded(totalTokens int) {
+    threshold := int(float64(h.ContextLimit) * h.TargetUsage)
+    if totalTokens &lt; threshold {
+        return
+    }
+    // Drop oldest user+assistant pair (indices 0 and 1 of Messages)
+    if len(h.Messages) &gt;= 2 {
+        h.Messages = h.Messages[2:]
+    }
+}
+</pre>
+
+<h3>Summarisation Strategy</h3>
+
+<p>
+Trimming drops context. A better strategy: when history grows large, ask the model to
+summarise what has happened so far, then replace the history with a single "assistant"
+message containing the summary. Future turns continue from the compressed state.
+</p>
+
+<pre>
+func (h *HistoryManager) Summarise(callAPI func([]Message) (string, error)) error {
+    if len(h.Messages) &lt; 6 {
+        return nil // nothing worth summarising
+    }
+
+    // Ask the model to summarise the conversation so far
+    summaryPrompt := []Message{
+        {Role: "system", Content: "You are a summarisation assistant. Be concise."},
+        {
+            Role: "user",
+            Content: "Summarise the following conversation in 3-5 bullet points. " +
+                "Keep all important facts, decisions, and outcomes:\n\n" +
+                formatHistory(h.Messages),
+        },
+    }
+
+    summary, err := callAPI(summaryPrompt)
+    if err != nil {
+        return fmt.Errorf("summarise: %w", err)
+    }
+
+    // Replace history with a single context message
+    h.Messages = []Message{
+        {
+            Role:    "assistant",
+            Content: "[Summary of previous conversation]\n" + summary,
+        },
+    }
+    return nil
+}
+
+func formatHistory(msgs []Message) string {
+    var sb strings.Builder
+    for _, m := range msgs {
+        if m.Content != "" {
+            sb.WriteString(m.Role)
+            sb.WriteString(": ")
+            sb.WriteString(m.Content)
+            sb.WriteString("\n")
+        }
+    }
+    return sb.String()
+}
+</pre>
+
+<h3>Long-Term Memory: File-Backed Key-Value Store</h3>
+
+<p>
+A simple JSON file stores the agent's persistent memory. The agent can write facts and
+retrieve them across sessions.
+</p>
+
+<pre>
+package memory
+
+import (
+    "encoding/json"
+    "os"
+    "sync"
+)
+
+type Store struct {
+    path string
+    mu   sync.Mutex
+    data map[string]string
+}
+
+func NewStore(path string) (*Store, error) {
+    s := &amp;Store{path: path, data: make(map[string]string)}
+    data, err := os.ReadFile(path)
+    if err == nil {
+        json.Unmarshal(data, &amp;s.data)
+    }
+    return s, nil
+}
+
+func (s *Store) Set(key, value string) error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.data[key] = value
+    return s.save()
+}
+
+func (s *Store) Get(key string) (string, bool) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    v, ok := s.data[key]
+    return v, ok
+}
+
+func (s *Store) All() map[string]string {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    copy := make(map[string]string, len(s.data))
+    for k, v := range s.data {
+        copy[k] = v
+    }
+    return copy
+}
+
+func (s *Store) save() error {
+    data, err := json.MarshalIndent(s.data, "", "  ")
+    if err != nil {
+        return err
+    }
+    return os.WriteFile(s.path, data, 0644)
+}
+</pre>
+
+<h3>Memory as Tools</h3>
+
+<p>
+Expose the store to the agent as two tools: <code>remember</code> (write a fact) and
+<code>recall</code> (read facts). The model calls these when it wants to persist or
+retrieve information.
+</p>
+
+<pre>
+type RememberSkill struct{ Store *Store }
+
+func (s *RememberSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name: "remember",
+            Description: "Store a piece of information for later retrieval. " +
+                "Use this to save important facts, user preferences, or decisions " +
+                "that should persist across sessions.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "key":   {Type: "string", Description: "A short identifier for this memory"},
+                    "value": {Type: "string", Description: "The information to store"},
+                },
+                Required: []string{"key", "value"},
+            },
+        },
+    }
+}
+
+func (s *RememberSkill) Execute(argsJSON string) (string, error) {
+    var args struct {
+        Key   string `json:"key"`
+        Value string `json:"value"`
+    }
+    json.Unmarshal([]byte(argsJSON), &amp;args)
+    if err := s.Store.Set(args.Key, args.Value); err != nil {
+        return "", err
+    }
+    return fmt.Sprintf(`{"stored": "%s"}`, args.Key), nil
+}
+
+type RecallSkill struct{ Store *Store }
+
+func (s *RecallSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name: "recall",
+            Description: "Retrieve stored memories. Pass a key to get a specific value, " +
+                "or omit the key to list all stored memories.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "key": {Type: "string", Description: "Key to retrieve (optional - omit to list all)"},
+                },
+            },
+        },
+    }
+}
+
+func (s *RecallSkill) Execute(argsJSON string) (string, error) {
+    var args struct{ Key string `json:"key"` }
+    json.Unmarshal([]byte(argsJSON), &amp;args)
+
+    if args.Key != "" {
+        v, ok := s.Store.Get(args.Key)
+        if !ok {
+            return `{"found": false}`, nil
+        }
+        data, _ := json.Marshal(map[string]string{"key": args.Key, "value": v})
+        return string(data), nil
+    }
+
+    all := s.Store.All()
+    data, _ := json.Marshal(all)
+    return string(data), nil
+}
+</pre>
+
+<h3>Injecting Memory into the System Prompt</h3>
+
+<p>
+A complementary approach: load all stored memories at startup and inject them into the
+system prompt. The model then has the memories in context without needing to explicitly
+call <code>recall</code>. This works well when memories are few and small.
+</p>
+
+<pre>
+func buildSystemPrompt(base string, store *Store) string {
+    memories := store.All()
+    if len(memories) == 0 {
+        return base
+    }
+    var sb strings.Builder
+    sb.WriteString(base)
+    sb.WriteString("\n\nPreviously stored memories:\n")
+    for k, v := range memories {
+        fmt.Fprintf(&amp;sb, "- %s: %s\n", k, v)
+    }
+    return sb.String()
+}
+</pre>
+
+<p>
+Use one approach or the other, not both. Injecting all memories into the system prompt
+is simpler but does not scale to hundreds of memories. Tool-based retrieval scales but
+requires the model to know it should call <code>recall</code> proactively.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Short-term memory is the messages array; manage it by tracking total tokens
+and summarising when you approach the context limit. Ask the model to compress
+the oldest N messages into a single summary message, then replace them. Long-
+term memory is a JSON file on disk mapping string keys to string values;
+protect concurrent access with a mutex. Expose both as tools so the agent can
+decide what to store and retrieve without explicit hardcoding.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://platform.openai.com/docs/guides/context-caching">OpenAI: Prompt Caching</a></li>
+<li><a href="https://arxiv.org/abs/2304.01373">MemGPT: Towards LLMs as Operating Systems (2023)</a></li>
+<li><a href="https://pkg.go.dev/sync#Mutex">Go sync.Mutex - protecting concurrent access to the store</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-02-chat-completions.htm">Chat Completions Deep Dive</a> - context window and token management fundamentals</li>
+<li><a href="llm-11-rag.htm">RAG: Retrieval-Augmented Generation</a> - semantic memory retrieval for larger knowledge bases</li>
+<li><a href="llm-12-cag.htm">CAG: Cache-Augmented Generation</a> - prompt caching as an alternative memory strategy</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

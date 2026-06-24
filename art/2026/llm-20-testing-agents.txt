@@ -1,0 +1,569 @@
+LLM - Part 20: Testing Agent Code
+2026-06-29
+
+
+Agent code is hard to test: it calls an external HTTP API, its outputs depend on a
+language model's non-deterministic responses, and its logic is spread across a loop
+that interleaves model calls with tool execution. This article shows how to make
+that code testable without sacrificing confidence in the result.
+
+
+What You Will Learn
+
+
+How to write an HTTP stub server that replaces the OpenAI/llama.cpp API in tests
+How to record real API responses as fixtures and replay them deterministically
+Table-driven tests for the agent loop in Go
+Golden-output comparison for responses that should remain stable
+How to test tool dispatch logic in isolation, without invoking a model
+
+
+The Testing Problem
+
+
+The agent loop you built in Part 4 calls http.Post to
+https://api.openai.com/v1/chat/completions. In tests you want to:
+
+
+
+Avoid paying for API calls in CI.
+Avoid flaky tests caused by model non-determinism.
+Run tests offline.
+Assert on specific tool calls and response handling without waiting for a real model.
+
+
+
+The standard Go approach is to make the HTTP client replaceable and point it at a
+local httptest.Server.
+
+
+Making the Agent Testable
+
+
+If your agent takes a base URL as a parameter (you already did this in Part 13 for
+llama.cpp), you can point it at any server. Add the parameter if you have not already:
+
+
+
+type Agent struct {
+    BaseURL    string // "https://api.openai.com" or a test stub
+    APIKey     string
+    Model      string
+    Tools      []Tool
+    SystemPrompt string
+}
+
+func (a *Agent) chatURL() string {
+    return a.BaseURL + "/v1/chat/completions"
+}
+
+
+
+In production code, set BaseURL to "https://api.openai.com".
+In tests, set it to server.URL from httptest.NewServer.
+
+
+Writing an HTTP Stub Server
+
+
+A stub server responds to /v1/chat/completions with a pre-scripted
+sequence of responses. Each call to the endpoint pops the next response from the
+queue:
+
+
+
+package agenttest
+
+import (
+    "encoding/json"
+    "net/http"
+    "net/http/httptest"
+    "sync"
+    "testing"
+)
+
+// StubServer returns a pre-scripted sequence of chat completion responses.
+type StubServer struct {
+    mu        sync.Mutex
+    responses []ChatResponse
+    calls     []ChatRequest
+    server    *httptest.Server
+}
+
+func NewStubServer(t *testing.T, responses []ChatResponse) *StubServer {
+    t.Helper()
+    s := &StubServer{responses: responses}
+    s.server = httptest.NewServer(http.HandlerFunc(s.handle))
+    t.Cleanup(s.server.Close)
+    return s
+}
+
+func (s *StubServer) URL() string { return s.server.URL }
+
+func (s *StubServer) Calls() []ChatRequest {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    return s.calls
+}
+
+func (s *StubServer) handle(w http.ResponseWriter, r *http.Request) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    var req ChatRequest
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+    s.calls = append(s.calls, req)
+
+    if len(s.responses) == 0 {
+        http.Error(w, "stub: no more responses", http.StatusInternalServerError)
+        return
+    }
+    resp := s.responses[0]
+    s.responses = s.responses[1:]
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(resp)
+}
+
+
+A Simple Stub Test
+
+
+Wire the stub into an agent test. The stub returns a single assistant message — no
+tool calls — and the test asserts on the output:
+
+
+
+func TestAgentSingleTurn(t *testing.T) {
+    stub := NewStubServer(t, []ChatResponse{
+        {
+            Choices: []Choice{{
+                Message: Message{
+                    Role:    "assistant",
+                    Content: "The answer is 42.",
+                },
+                FinishReason: "stop",
+            }},
+        },
+    })
+
+    agent := &Agent{
+        BaseURL:      stub.URL(),
+        APIKey:       "test-key",
+        Model:        "gpt-4o-mini",
+        SystemPrompt: "You are a helpful assistant.",
+    }
+
+    got, err := agent.Run(context.Background(), "What is the answer?")
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    if got != "The answer is 42." {
+        t.Errorf("got %q, want %q", got, "The answer is 42.")
+    }
+    if len(stub.Calls()) != 1 {
+        t.Errorf("expected 1 API call, got %d", len(stub.Calls()))
+    }
+}
+
+
+Testing Tool Dispatch
+
+
+The agent loop calls a tool when the model returns a tool_calls finish
+reason, then sends the result back and calls the model again. Test this path by
+scripting two stub responses: one with a tool call, one with the final answer.
+
+
+
+func TestAgentCallsTool(t *testing.T) {
+    toolCallResp := ChatResponse{
+        Choices: []Choice{{
+            Message: Message{
+                Role: "assistant",
+                ToolCalls: []ToolCall{{
+                    ID:   "call_1",
+                    Type: "function",
+                    Function: ToolCallFunction{
+                        Name:      "get_weather",
+                        Arguments: `{"city":"London"}`,
+                    },
+                }},
+            },
+            FinishReason: "tool_calls",
+        }},
+    }
+    finalResp := ChatResponse{
+        Choices: []Choice{{
+            Message: Message{
+                Role:    "assistant",
+                Content: "It is raining in London.",
+            },
+            FinishReason: "stop",
+        }},
+    }
+
+    stub := NewStubServer(t, []ChatResponse{toolCallResp, finalResp})
+
+    // A simple tool that returns a canned result.
+    weatherTool := Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name:        "get_weather",
+            Description: "Get the current weather for a city.",
+            Parameters: ToolParameters{
+                Type:       "object",
+                Properties: map[string]ToolParam{"city": {Type: "string"}},
+                Required:   []string{"city"},
+            },
+        },
+    }
+    dispatcher := map[string]ToolHandlerFunc{
+        "get_weather": func(args json.RawMessage) (string, error) {
+            return `{"condition":"rain","temp_c":12}`, nil
+        },
+    }
+
+    agent := &Agent{
+        BaseURL:    stub.URL(),
+        APIKey:     "test-key",
+        Model:      "gpt-4o-mini",
+        Tools:      []Tool{weatherTool},
+        Dispatcher: dispatcher,
+    }
+
+    got, err := agent.Run(context.Background(), "What is the weather in London?")
+    if err != nil {
+        t.Fatal(err)
+    }
+    if got != "It is raining in London." {
+        t.Errorf("got %q", got)
+    }
+
+    calls := stub.Calls()
+    if len(calls) != 2 {
+        t.Fatalf("expected 2 API calls, got %d", len(calls))
+    }
+    // Second call should include the tool result in the message history.
+    msgs := calls[1].Messages
+    found := false
+    for _, m := range msgs {
+        if m.Role == "tool" && m.ToolCallID == "call_1" {
+            found = true
+        }
+    }
+    if !found {
+        t.Error("second request did not include tool result message")
+    }
+}
+
+
+Testing Tool Handlers in Isolation
+
+
+Tool handler functions are plain Go functions. Test them directly, without any agent
+or HTTP machinery:
+
+
+
+func TestGetWeatherHandler(t *testing.T) {
+    tests := []struct {
+        name    string
+        args    string
+        wantErr bool
+        want    string
+    }{
+        {
+            name: "valid city",
+            args: `{"city":"London"}`,
+            want: "rain",
+        },
+        {
+            name:    "missing city field",
+            args:    `{}`,
+            wantErr: true,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := getWeatherHandler(json.RawMessage(tt.args))
+            if (err != nil) != tt.wantErr {
+                t.Fatalf("err=%v, wantErr=%v", err, tt.wantErr)
+            }
+            if !tt.wantErr && !strings.Contains(got, tt.want) {
+                t.Errorf("got %q, want substring %q", got, tt.want)
+            }
+        })
+    }
+}
+
+
+Recording and Replaying Fixtures
+
+
+Instead of hand-writing stub responses, record real API responses once and replay
+them. The pattern is a cassette: the first run hits the real API and saves the
+exchange to a JSON file; subsequent runs load the file and replay it.
+
+
+
+// Cassette holds a sequence of recorded request/response pairs.
+type Cassette struct {
+    Interactions []Interaction `json:"interactions"`
+}
+
+type Interaction struct {
+    Request  ChatRequest  `json:"request"`
+    Response ChatResponse `json:"response"`
+}
+
+func LoadOrRecord(t *testing.T, path string, realURL string) *StubServer {
+    t.Helper()
+
+    if data, err := os.ReadFile(path); err == nil {
+        // Replay from file.
+        var c Cassette
+        if err := json.Unmarshal(data, &c); err != nil {
+            t.Fatalf("bad cassette %s: %v", path, err)
+        }
+        var resps []ChatResponse
+        for _, i := range c.Interactions {
+            resps = append(resps, i.Response)
+        }
+        return NewStubServer(t, resps)
+    }
+
+    // Record: proxy to real URL and save.
+    var c Cassette
+    s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        body, _ := io.ReadAll(r.Body)
+        var req ChatRequest
+        json.Unmarshal(body, &req)
+
+        // Forward to real API.
+        proxyReq, _ := http.NewRequest(r.Method, realURL+r.URL.Path, bytes.NewReader(body))
+        proxyReq.Header = r.Header
+        resp, _ := http.DefaultClient.Do(proxyReq)
+        respBody, _ := io.ReadAll(resp.Body)
+
+        var chatResp ChatResponse
+        json.Unmarshal(respBody, &chatResp)
+
+        c.Interactions = append(c.Interactions, Interaction{Request: req, Response: chatResp})
+
+        w.Header().Set("Content-Type", "application/json")
+        w.Write(respBody)
+    }))
+    t.Cleanup(func() {
+        s.Close()
+        data, _ := json.MarshalIndent(c, "", "  ")
+        os.MkdirAll(filepath.Dir(path), 0755)
+        os.WriteFile(path, data, 0644)
+    })
+    // Wrap as a StubServer-like type for a uniform interface.
+    // Simpler: just return the server URL directly for the recording case.
+    return &StubServer{server: s}
+}
+
+
+
+Commit the cassette files to version control alongside the tests. CI always runs in
+replay mode; to refresh fixtures, delete the cassette file and run with real
+credentials.
+
+
+Golden-Output Comparison
+
+
+For end-to-end agent tests where the output should remain stable, use golden files.
+Store the expected output in testdata/ and compare at test time:
+
+
+
+func TestAgentGolden(t *testing.T) {
+    stub := NewStubServer(t, loadCassette(t, "testdata/research_agent.json"))
+    agent := buildTestAgent(stub.URL())
+
+    got, err := agent.Run(context.Background(), "Summarise the Go memory model in three bullet points.")
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    goldenPath := "testdata/research_agent_output.golden"
+    if *update { // go test -update flag
+        os.WriteFile(goldenPath, []byte(got), 0644)
+        return
+    }
+
+    want, err := os.ReadFile(goldenPath)
+    if err != nil {
+        t.Fatalf("missing golden file %s — run with -update to create it", goldenPath)
+    }
+    if got != strings.TrimRight(string(want), "\n") {
+        t.Errorf("output does not match golden file\ngot:\n%s\nwant:\n%s", got, want)
+    }
+}
+
+var update = flag.Bool("update", false, "update golden files")
+
+
+
+Run go test -update once to create or refresh the golden files, then
+commit them. The flag pattern avoids accidentally updating goldens on a normal test run.
+
+
+Table-Driven Agent Tests
+
+
+Combine the stub and table-driven patterns to cover the agent loop across multiple
+scenarios with minimal boilerplate:
+
+
+
+func TestAgentLoop(t *testing.T) {
+    tests := []struct {
+        name      string
+        prompt    string
+        responses []ChatResponse
+        wantOut   string
+        wantCalls int
+    }{
+        {
+            name:   "direct answer",
+            prompt: "What is 2+2?",
+            responses: []ChatResponse{
+                assistantMsg("4"),
+            },
+            wantOut:   "4",
+            wantCalls: 1,
+        },
+        {
+            name:   "one tool call then answer",
+            prompt: "What files are in /tmp?",
+            responses: []ChatResponse{
+                toolCallMsg("list_dir", `{"path":"/tmp"}`),
+                assistantMsg("The /tmp directory is empty."),
+            },
+            wantOut:   "The /tmp directory is empty.",
+            wantCalls: 2,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            stub := NewStubServer(t, tt.responses)
+            agent := buildTestAgent(stub.URL())
+
+            got, err := agent.Run(context.Background(), tt.prompt)
+            if err != nil {
+                t.Fatal(err)
+            }
+            if got != tt.wantOut {
+                t.Errorf("got %q, want %q", got, tt.wantOut)
+            }
+            if len(stub.Calls()) != tt.wantCalls {
+                t.Errorf("got %d API calls, want %d", len(stub.Calls()), tt.wantCalls)
+            }
+        })
+    }
+}
+
+func assistantMsg(content string) ChatResponse {
+    return ChatResponse{Choices: []Choice{{
+        Message:      Message{Role: "assistant", Content: content},
+        FinishReason: "stop",
+    }}}
+}
+
+func toolCallMsg(name, args string) ChatResponse {
+    return ChatResponse{Choices: []Choice{{
+        Message: Message{
+            Role: "assistant",
+            ToolCalls: []ToolCall{{
+                ID:   "call_1",
+                Type: "function",
+                Function: ToolCallFunction{Name: name, Arguments: args},
+            }},
+        },
+        FinishReason: "tool_calls",
+    }}}
+}
+
+
+Testing the Skills Registry
+
+
+The skills registry from Part 5 maps tool names to handler functions. Test the
+routing logic independently of the agent and the HTTP layer:
+
+
+
+func TestSkillsRegistry(t *testing.T) {
+    reg := NewRegistry()
+    reg.Register("echo", echoSkill)
+
+    result, err := reg.Dispatch("echo", json.RawMessage(`{"text":"hello"}`))
+    if err != nil {
+        t.Fatal(err)
+    }
+    if result != "hello" {
+        t.Errorf("got %q, want %q", result, "hello")
+    }
+
+    _, err = reg.Dispatch("unknown", nil)
+    if err == nil {
+        t.Error("expected error for unknown skill")
+    }
+}
+
+func echoSkill(args json.RawMessage) (string, error) {
+    var p struct{ Text string }
+    if err := json.Unmarshal(args, &p); err != nil {
+        return "", err
+    }
+    return p.Text, nil
+}
+
+
+What to Assert On
+
+
+For agent tests, the most valuable assertions are:
+
+
+
+Number of API calls — verifies the loop terminates correctly and does not over-call the model.
+Message history shape — verifies the second request includes tool results, system prompt, and prior turns in the right order.
+Tool name and arguments — verifies the agent calls the right tool with the expected arguments when the stub models a specific tool call scenario.
+Final output — verifies the agent returns the model's last content field unchanged.
+
+
+
+Avoid asserting on the exact prompt text unless it is a golden test — prompts change.
+Assert on structure (roles, tool call IDs, message count) rather than content.
+
+
+Summary
+
+
+Make your agent testable by accepting a BaseURL parameter and building
+a lightweight httptest.Server stub that returns pre-scripted responses.
+Test tool handlers as plain functions, independent of the agent loop. Use the cassette
+pattern to record real API exchanges once and replay them deterministically in CI.
+Use golden files for end-to-end output that should remain stable. Assert on the shape
+of the HTTP conversation — number of calls, message roles, tool IDs — rather than on
+natural-language content.
+
+
+See Also
+
+
+Building a Simple Agent Loop - the loop this article tests
+Skills & Structured Tool Libraries - the registry tested in isolation above
+Putting It Together: A Full Agent - integration point for all skills and tools
+

@@ -1,0 +1,415 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>DSP - Part 7: Filter Cookbook: Bandpass, Notch & Shelves</title>
+    <meta name="description" content="Biquad coefficients for bandpass, notch, peaking EQ, low shelf, and high shelf filters, plus cascading sections for a parametric EQ.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="dsp-07-filter-cookbook-2.txt">plain/text</a> | <i>2026-08-31</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a></i>
+        <h2>DSP - Part 7: Filter Cookbook: Bandpass, Notch & Shelves</h2>
+        <p>
+The previous article covered lowpass and highpass filters - the most common starting
+points. This article completes the Audio EQ Cookbook family: bandpass filters, notch
+filters, peaking EQ, and shelving filters. Together these cover every band shape you
+need for a parametric equaliser or a synthesis signal chain.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Biquad coefficients for bandpass, notch, peaking EQ, low shelf, and high shelf filters</li>
+<li>The shared intermediate values (w0, alpha, A) that appear across all cookbook formulas</li>
+<li>How to cascade biquad sections to build a multi-band parametric EQ in C</li>
+<li>How to measure the frequency response of a filter numerically to verify your implementation</li>
+</ul>
+
+<h3>Shared Intermediate Values</h3>
+
+<p>
+Every formula below uses the same pre-computation from the previous article. We factor
+it into a helper to avoid repeating it:
+</p>
+
+<pre>
+#include &lt;math.h&gt;
+
+#define M_PI 3.14159265358979323846f
+
+typedef struct {
+    float b0, b1, b2, a1, a2;
+} BiquadCoeffs;
+
+typedef struct {
+    float w0, cos_w, sin_w, alpha;
+} FilterIntermed;
+
+static FilterIntermed filter_intermed(float fc, float q, float fs) {
+    FilterIntermed v;
+    v.w0    = 2.0f * M_PI * fc / fs;
+    v.cos_w = cosf(v.w0);
+    v.sin_w = sinf(v.w0);
+    v.alpha = v.sin_w / (2.0f * q);
+    return v;
+}
+</pre>
+
+<h3>Bandpass Filter (BPF)</h3>
+
+<p>
+A bandpass filter passes a band of frequencies centred on Fc and attenuates everything
+above and below. The Audio EQ Cookbook provides two variants:
+</p>
+
+<ul>
+<li><b>Constant skirt gain</b>: peak gain is Q - louder at higher Q.</li>
+<li><b>Constant 0 dB peak gain</b>: peak is always 0 dBFS regardless of Q.</li>
+</ul>
+
+<p>
+The constant 0 dB version is generally more useful in EQ contexts:
+</p>
+
+<pre>
+/*
+  Bandpass, constant 0 dB peak gain.
+  b0 =   sin_w / 2  =  sin_w / (2*Q) * Q  = alpha * Q
+  b1 =   0
+  b2 =  -sin_w / 2
+  a0 =   1 + alpha
+  a1 =  -2 * cos_w
+  a2 =   1 - alpha
+*/
+void biquad_bpf(BiquadCoeffs *c, float fc, float q, float fs) {
+    FilterIntermed v = filter_intermed(fc, q, fs);
+    float a0 = 1.0f + v.alpha;
+
+    c-&gt;b0 =  (v.sin_w / 2.0f)  / a0;
+    c-&gt;b1 =   0.0f;
+    c-&gt;b2 = -(v.sin_w / 2.0f)  / a0;
+    c-&gt;a1 = -2.0f * v.cos_w    / a0;
+    c-&gt;a2 = (1.0f - v.alpha)   / a0;
+}
+</pre>
+
+<p>
+The bandwidth of the bandpass filter in octaves is related to Q by:
+</p>
+
+<pre>
+BW_octaves ≈ 1 / Q   (at moderate Q values)
+
+Q = 0.7071  →  ~1.4 octaves bandwidth
+Q = 1.0     →  ~1 octave
+Q = 2.0     →  ~0.5 octave
+Q = 10.0    →  ~0.1 octave (very narrow)
+</pre>
+
+<h3>Notch Filter (Band-Reject)</h3>
+
+<p>
+A notch filter is the complement of a bandpass: it <i>removes</i> a band of frequencies
+and passes everything else. Q controls the width of the notch in the same way as the
+bandpass. The Cookbook coefficients:
+</p>
+
+<pre>
+void biquad_notch(BiquadCoeffs *c, float fc, float q, float fs) {
+    FilterIntermed v = filter_intermed(fc, q, fs);
+    float a0 = 1.0f + v.alpha;
+
+    c-&gt;b0 =  1.0f           / a0;
+    c-&gt;b1 = -2.0f * v.cos_w / a0;
+    c-&gt;b2 =  1.0f           / a0;
+    c-&gt;a1 = -2.0f * v.cos_w / a0;
+    c-&gt;a2 = (1.0f - v.alpha)/ a0;
+}
+</pre>
+
+<p>
+Note that b0 = b2 = 1/a0 and b1 = a1. This makes sense: a notch passes all frequencies
+except the centre frequency, where it produces complete cancellation.
+</p>
+
+<h3>Peaking EQ Filter</h3>
+
+<p>
+A peaking EQ (or peak/dip filter) boosts or cuts a band of frequencies by dBgain dB at
+the centre frequency Fc, with Q controlling the width. It is the workhorse of a
+parametric EQ. The Cookbook uses an auxiliary amplitude factor A:
+</p>
+
+<pre>
+A = 10^(dBgain / 40)     /* sqrt of the linear amplitude */
+</pre>
+
+<p>
+Then:
+</p>
+
+<pre>
+void biquad_peak(BiquadCoeffs *c, float fc, float q,
+                 float db_gain, float fs) {
+    FilterIntermed v = filter_intermed(fc, q, fs);
+    float A  = powf(10.0f, db_gain / 40.0f);
+    float a0 = 1.0f + v.alpha / A;
+
+    c-&gt;b0 = (1.0f + v.alpha * A)  / a0;
+    c-&gt;b1 = -2.0f * v.cos_w       / a0;
+    c-&gt;b2 = (1.0f - v.alpha * A)  / a0;
+    c-&gt;a1 = -2.0f * v.cos_w       / a0;
+    c-&gt;a2 = (1.0f - v.alpha / A)  / a0;
+}
+</pre>
+
+<p>
+Setting <code>db_gain = 0</code> gives a flat response (an all-pass with gain = 1). Positive
+values boost; negative values cut. The same Q is used for both boost and cut.
+</p>
+
+<h3>Low Shelf Filter</h3>
+
+<p>
+A low shelf boosts or cuts all frequencies below Fc by dBgain dB, with a smooth
+transition centred at Fc. It is used for bass enhancement or bass reduction in mastering
+and mixing.
+</p>
+
+<pre>
+void biquad_low_shelf(BiquadCoeffs *c, float fc, float q,
+                      float db_gain, float fs) {
+    float A  = powf(10.0f, db_gain / 40.0f);
+    float w0 = 2.0f * M_PI * fc / fs;
+    float cw = cosf(w0), sw = sinf(w0);
+    float al = sw / 2.0f * sqrtf((A + 1.0f/A) * (1.0f/q - 1.0f) + 2.0f);
+    float sq = 2.0f * sqrtf(A) * al;
+
+    float a0 = (A+1.0f) + (A-1.0f)*cw + sq;
+
+    c-&gt;b0 =  A * ((A+1.0f) - (A-1.0f)*cw + sq)   / a0;
+    c-&gt;b1 =  2.0f*A * ((A-1.0f) - (A+1.0f)*cw)   / a0;
+    c-&gt;b2 =  A * ((A+1.0f) - (A-1.0f)*cw - sq)   / a0;
+    c-&gt;a1 = -2.0f * ((A-1.0f) + (A+1.0f)*cw)     / a0;
+    c-&gt;a2 =  ((A+1.0f) + (A-1.0f)*cw - sq)        / a0;
+}
+</pre>
+
+<h3>High Shelf Filter</h3>
+
+<p>
+A high shelf boosts or cuts all frequencies above Fc. Its formula mirrors the low shelf
+with sign changes on the cos_w terms:
+</p>
+
+<pre>
+void biquad_high_shelf(BiquadCoeffs *c, float fc, float q,
+                       float db_gain, float fs) {
+    float A  = powf(10.0f, db_gain / 40.0f);
+    float w0 = 2.0f * M_PI * fc / fs;
+    float cw = cosf(w0), sw = sinf(w0);
+    float al = sw / 2.0f * sqrtf((A + 1.0f/A) * (1.0f/q - 1.0f) + 2.0f);
+    float sq = 2.0f * sqrtf(A) * al;
+
+    float a0 = (A+1.0f) - (A-1.0f)*cw + sq;
+
+    c-&gt;b0 =  A * ((A+1.0f) + (A-1.0f)*cw + sq)   / a0;
+    c-&gt;b1 = -2.0f*A * ((A-1.0f) + (A+1.0f)*cw)   / a0;
+    c-&gt;b2 =  A * ((A+1.0f) + (A-1.0f)*cw - sq)   / a0;
+    c-&gt;a1 =  2.0f * ((A-1.0f) - (A+1.0f)*cw)     / a0;
+    c-&gt;a2 =  ((A+1.0f) - (A-1.0f)*cw - sq)        / a0;
+}
+</pre>
+
+<h3>A Parametric EQ in C</h3>
+
+<p>
+With these formulas in hand, building a multi-band parametric EQ is straightforward.
+Here is a 5-band EQ (low shelf, three peaking bands, high shelf):
+</p>
+
+<pre>
+typedef struct {
+    float b0, b1, b2, a1, a2;
+    float s1, s2;
+} BiquadTDF2;
+
+void biquad_set(BiquadTDF2 *f, const BiquadCoeffs *c) {
+    f-&gt;b0=c-&gt;b0; f-&gt;b1=c-&gt;b1; f-&gt;b2=c-&gt;b2;
+    f-&gt;a1=c-&gt;a1; f-&gt;a2=c-&gt;a2;
+}
+
+float biquad_process(BiquadTDF2 *f, float x) {
+    float y = f-&gt;b0*x + f-&gt;s1;
+    f-&gt;s1   = f-&gt;b1*x - f-&gt;a1*y + f-&gt;s2;
+    f-&gt;s2   = f-&gt;b2*x - f-&gt;a2*y;
+    return y;
+}
+
+#define SAMPLE_RATE 48000
+
+typedef struct {
+    BiquadTDF2 lo_shelf;
+    BiquadTDF2 peak[3];
+    BiquadTDF2 hi_shelf;
+} ParamEQ5;
+
+void param_eq5_init(ParamEQ5 *eq) {
+    BiquadCoeffs c;
+
+    biquad_low_shelf (&amp;c, 100.0f, 0.7071f, 0.0f, SAMPLE_RATE);
+    biquad_set(&amp;eq-&gt;lo_shelf, &amp;c);
+
+    biquad_peak(&amp;c,  400.0f, 1.5f,  0.0f, SAMPLE_RATE);
+    biquad_set(&amp;eq-&gt;peak[0], &amp;c);
+    biquad_peak(&amp;c, 1000.0f, 1.5f,  0.0f, SAMPLE_RATE);
+    biquad_set(&amp;eq-&gt;peak[1], &amp;c);
+    biquad_peak(&amp;c, 5000.0f, 1.5f,  0.0f, SAMPLE_RATE);
+    biquad_set(&amp;eq-&gt;peak[2], &amp;c);
+
+    biquad_high_shelf(&amp;c, 8000.0f, 0.7071f, 0.0f, SAMPLE_RATE);
+    biquad_set(&amp;eq-&gt;hi_shelf, &amp;c);
+}
+
+float param_eq5_process(ParamEQ5 *eq, float x) {
+    x = biquad_process(&amp;eq-&gt;lo_shelf, x);
+    for (int i = 0; i &lt; 3; i++)
+        x = biquad_process(&amp;eq-&gt;peak[i], x);
+    x = biquad_process(&amp;eq-&gt;hi_shelf, x);
+    return x;
+}
+</pre>
+
+<h3>Testing: Frequency Response Measurement</h3>
+
+<p>
+To verify a filter's frequency response offline, feed it an impulse (1.0 at sample 0,
+0.0 thereafter) and examine the output. The magnitude of the DFT of the impulse response
+is the filter's magnitude response.
+</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+
+void measure_response(BiquadTDF2 *f, float fs) {
+    /* Impulse response */
+    float ir[4096] = {0.0f};
+    ir[0] = 1.0f;
+    for (int i = 1; i &lt; 4096; i++)
+        ir[i] = biquad_process(f, ir[i]);
+    ir[0] = biquad_process(f, ir[0]);
+
+    /* Print magnitude at a few spot frequencies using DFT */
+    float test_hz[] = {100, 500, 1000, 5000, 10000};
+    for (int fi = 0; fi &lt; 5; fi++) {
+        float w = 2.0f * M_PI * test_hz[fi] / fs;
+        float re = 0.0f, im = 0.0f;
+        for (int i = 0; i &lt; 4096; i++) {
+            re += ir[i] * cosf(w * i);
+            im += ir[i] * sinf(w * i);
+        }
+        float mag = sqrtf(re*re + im*im);
+        printf("%.0f Hz: %.2f dB\n",
+               test_hz[fi], 20.0f * log10f(mag + 1e-30f));
+    }
+}
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+Bandpass filters pass a frequency band and reject the rest. Notch filters do the
+opposite. Peaking EQ boosts or cuts around a centre frequency while leaving the
+rest flat. Low and high shelf filters apply gain below or above a transition
+frequency. All share the same w0/alpha/A intermediates derived in the previous
+article. Cascade them in series — each biquad independently processes the
+output of the previous — to build a full parametric equaliser.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://webaudio.github.io/Audio-EQ-Cookbook/audio-eq-cookbook.html">Audio EQ Cookbook - Robert Bristow-Johnson</a></li>
+<li><a href="https://ccrma.stanford.edu/~jos/filters/Peaking_Equalizers.html">Peaking Equalizers - Julius O. Smith III</a></li>
+<li><a href="https://www.musicdsp.org/en/latest/Filters/index.html">musicdsp.org: Filter recipes</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="dsp-05-biquad.htm">Biquad Filters</a></li>
+<li><a href="dsp-06-filter-cookbook-1.htm">Filter Cookbook: Lowpass, Highpass &amp; Resonance</a></li>
+<li><a href="dsp-09-compressor.htm">Dynamics: Compressor</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

@@ -1,0 +1,307 @@
+LLM - Part 8: MCP over HTTP
+2026-06-17
+
+
+The stdio transport from article 07 is great for local tools but it is process-bound:
+the server starts when the client starts and dies when the client exits. HTTP transport
+breaks that coupling. The server runs independently, can be shared by multiple agents,
+and survives client restarts. This article builds an HTTP MCP server in Go using the
+mcp-go library and a matching client.
+
+
+What You Will Learn
+
+
+How HTTP+SSE transport works: POST for requests, SSE stream for responses
+Building an HTTP MCP server with mcp-go, including tool registration and handlers
+Writing the HTTP client that connects to a running server and discovers its tools
+Adding Basic Authentication middleware to the server
+When to choose HTTP over stdio: shared servers, persistence, multi-agent access
+
+
+How HTTP Transport Works
+
+
+MCP over HTTP uses two HTTP endpoints:
+
+
+
+GET /sse - the client opens a persistent Server-Sent Events connection here. The server pushes JSON-RPC responses and notifications down this stream.
+POST /message - the client sends JSON-RPC requests here. The server processes them and sends responses back over the SSE connection, not as HTTP response bodies.
+
+
+
+This split design allows the server to push notifications to the client at any time, not
+just in response to a request. For simple tool calling we send a request and wait for the
+response on the SSE stream; the bidirectionality becomes useful for progress notifications
+on long-running tools.
+
+
+The HTTP Server
+
+
+// cmd/httpserver/main.go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "os"
+
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+    s := server.NewMCPServer(
+        "http-tools",
+        "1.0.0",
+        server.WithToolCapabilities(false),
+    )
+
+    s.AddTool(
+        mcp.NewTool("get_time",
+            mcp.WithDescription("Get the current UTC time as an ISO 8601 string."),
+        ),
+        handleGetTime,
+    )
+
+    s.AddTool(
+        mcp.NewTool("echo",
+            mcp.WithDescription("Echo a message back. Useful for testing the connection."),
+            mcp.WithString("message",
+                mcp.Required(),
+                mcp.Description("The message to echo"),
+            ),
+        ),
+        handleEcho,
+    )
+
+    httpServer := server.NewSSEServer(s,
+        server.WithBaseURL("http://localhost:8080"),
+    )
+
+    fmt.Println("MCP server listening on :8080")
+    if err := http.ListenAndServe(":8080", httpServer); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+}
+
+
+Tool Handlers
+
+
+import "time"
+
+func handleGetTime(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    now := time.Now().UTC().Format(time.RFC3339)
+    result, _ := json.Marshal(map[string]string{"time": now})
+    return mcp.NewToolResultText(string(result)), nil
+}
+
+func handleEcho(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    msg, _ := req.Params.Arguments["message"].(string)
+    result, _ := json.Marshal(map[string]string{"echo": msg})
+    return mcp.NewToolResultText(string(result)), nil
+}
+
+
+The HTTP Client
+
+
+// cmd/httpclient/main.go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/mcp"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Connect to the SSE endpoint
+    mcpClient, err := client.NewSSEMCPClient("http://localhost:8080/sse")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "client:", err)
+        os.Exit(1)
+    }
+    defer mcpClient.Close()
+
+    if err := mcpClient.Start(ctx); err != nil {
+        fmt.Fprintln(os.Stderr, "start:", err)
+        os.Exit(1)
+    }
+
+    // Initialize
+    _, err = mcpClient.Initialize(ctx, mcp.InitializeRequest{
+        Params: mcp.InitializeRequestParams{
+            ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+            ClientInfo:      mcp.Implementation{Name: "client", Version: "1.0"},
+        },
+    })
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "initialize:", err)
+        os.Exit(1)
+    }
+
+    // List tools
+    tools, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "list tools:", err)
+        os.Exit(1)
+    }
+    for _, t := range tools.Tools {
+        fmt.Printf("tool: %s - %s\n", t.Name, t.Description)
+    }
+
+    // Call get_time
+    result, err := mcpClient.CallTool(ctx, mcp.CallToolRequest{
+        Params: mcp.CallToolRequestParams{
+            Name:      "get_time",
+            Arguments: map[string]interface{}{},
+        },
+    })
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "call:", err)
+        os.Exit(1)
+    }
+    if len(result.Content) > 0 {
+        if text, ok := result.Content[0].(mcp.TextContent); ok {
+            fmt.Println("time:", text.Text)
+        }
+    }
+}
+
+
+Adding Basic Authentication
+
+
+For an HTTP server reachable on a network, add authentication. The simplest approach is
+a middleware that checks an Authorization: Bearer <token> header.
+mcp-go's SSE server returns an http.Handler, which you can wrap:
+
+
+
+func authMiddleware(token string, next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        auth := r.Header.Get("Authorization")
+        if auth != "Bearer "+token {
+            http.Error(w, "Unauthorized", http.StatusUnauthorized)
+            return
+        }
+        next.ServeHTTP(w, r)
+    })
+}
+
+func main() {
+    // ... build s as before ...
+
+    serverToken := os.Getenv("MCP_TOKEN")
+    if serverToken == "" {
+        fmt.Fprintln(os.Stderr, "MCP_TOKEN not set")
+        os.Exit(1)
+    }
+
+    httpServer := server.NewSSEServer(s,
+        server.WithBaseURL("http://localhost:8080"),
+    )
+
+    fmt.Println("MCP server listening on :8080")
+    if err := http.ListenAndServe(":8080",
+        authMiddleware(serverToken, httpServer)); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+}
+
+
+
+The client sends the token in the request headers. With mcp-go's SSE client,
+pass custom headers via the options:
+
+
+
+mcpClient, err := client.NewSSEMCPClient(
+    "http://localhost:8080/sse",
+    client.WithHeaders(map[string]string{
+        "Authorization": "Bearer " + os.Getenv("MCP_TOKEN"),
+    }),
+)
+
+
+stdio vs HTTP: When to Use Each
+
+
+Use stdio when:
+
+
+
+The tool needs filesystem or local process access.
+The tool is specific to one agent and does not need to be shared.
+Simplicity matters more than persistence.
+
+
+
+Use HTTP when:
+
+
+
+Multiple agents or services need to share the same tool server.
+The server manages state that persists across agent sessions (a database connection, a cache).
+The tool runs on a different machine.
+You want to monitor and manage the tool server independently.
+
+
+Lifecycle Differences
+
+
+A stdio server exits with its parent. An HTTP server is a separate process with its own
+lifecycle. You need to:
+
+
+
+Start it separately (systemd, Docker, a background process).
+Handle reconnection in the client when the server restarts.
+Monitor it independently (health checks, logging, metrics).
+
+
+
+For development, running the server in one terminal and the agent in another is fine.
+For production, treat the MCP server as any other microservice.
+
+
+Summary
+
+
+HTTP MCP uses POST for client requests and a persistent SSE stream for server
+responses, which decouples the server's lifecycle from the client's. Multiple
+agents can share one HTTP MCP server. Add Basic Auth middleware between the
+HTTP listener and the mcp-go handler to restrict access. The client connects
+once, calls tools/list, caches the result, and reuses the
+connection. Choose HTTP over stdio when the server is long-lived, shared, or
+accessed over a network.
+
+
+Further Reading
+
+
+MCP Spec: HTTP with SSE Transport
+MDN: Using Server-Sent Events
+Go net/http - http.Handler, http.ListenAndServe
+
+
+See Also
+
+
+MCP over stdio - simpler local transport, covered first
+MCP over WebSocket - bidirectional alternative to SSE
+Intro to MCP Servers - protocol and transport overview
+

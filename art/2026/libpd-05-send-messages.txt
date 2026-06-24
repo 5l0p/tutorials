@@ -1,0 +1,243 @@
+libpd - Part 5: Sending Messages to Pd
+2026-10-26
+
+The power of libpd comes from the two-way communication channel between your C code and the Pd patch. On the outbound side - C sending to Pd - libpd provides a small, composable API for every Pd message type. This article covers each type in detail and shows practical patterns for controlling a running patch in real time.
+
+What You Will Learn
+
+
+How [receive] objects in the patch act as named message inlets from C code
+Sending bangs, floats, and symbols with the single-call API functions
+Building and sending list messages: libpd_start_message / libpd_add_* / libpd_finish_list
+Sending typed messages (Pd "messages") with a selector string and argument list
+Thread safety: when it is safe to call message functions and when to use a queue
+
+
+Receivers in the Pd Patch
+
+For C to send a message to Pd, the patch must have a receive object ([receive receiverName] or [r receiverName]) that listens on a named channel. The name is a plain string. Your C code and the patch just need to agree on the name.
+
+For example, a patch with [r freq] will receive any message sent to "freq" from C. The object then forwards the message to whatever is wired to its outlet.
+
+Bang
+
+
+#include <z_libpd.h>
+
+/* Send a bang to receiver "trigger" */
+int err = libpd_bang("trigger");
+/* Returns 0 on success, -1 if receiver not found */
+
+
+A bang is a trigger with no data - the Pd equivalent of pressing a button. Use it to start/stop patch components, reset envelopes, or fire one-shot events.
+
+Float
+
+
+/* Send the float 440.0 to receiver "freq" */
+libpd_float("freq", 440.0f);
+
+/* Send a volume in dB */
+libpd_float("volume_db", -6.0f);
+
+/* Send a boolean-style flag */
+libpd_float("mute", 1.0f);
+
+
+Floats are the most common message type in Pd. Nearly every control parameter maps to a float. Pd does not have a separate integer type in its message system - integers are just floats.
+
+Symbol
+
+
+/* Tell the patch which waveform to use */
+libpd_symbol("waveform", "sawtooth");
+
+/* Set a file path */
+libpd_symbol("sample_path", "/sounds/snare.wav");
+
+
+Symbols map to Pd's symbol type and appear in patches as text strings. Use them for names, modes, file paths, and any string data that the patch needs to branch on.
+
+Lists
+
+A Pd list is a sequence of atoms - each atom is either a float or a symbol. To send one, use the start/add/finish sequence:
+
+
+/* Send the list [440.0 0.8 "sine"] to receiver "osc_config" */
+libpd_start_message(3);          /* preallocate 3 atoms */
+libpd_add_float(440.0f);         /* atom 0: frequency   */
+libpd_add_float(0.8f);           /* atom 1: amplitude   */
+libpd_add_symbol("sine");        /* atom 2: waveform    */
+libpd_finish_list("osc_config");
+
+
+The integer passed to libpd_start_message is a hint for preallocating the internal buffer. Passing a larger number than needed is safe; passing a smaller number causes a realloc. For performance-critical paths, pass the exact count.
+
+Typed Messages
+
+A Pd message (as opposed to a list) has a selector string as its first atom. This is how you reach Pd's built-in object commands:
+
+
+/* [; pd dsp 1] - enable DSP */
+libpd_start_message(1);
+libpd_add_float(1.0f);
+libpd_finish_message("pd", "dsp");
+
+/* [; pd open foo.pd /patches] - load a patch from within Pd */
+libpd_start_message(2);
+libpd_add_symbol("foo.pd");
+libpd_add_symbol("/patches");
+libpd_finish_message("pd", "open");
+
+/* Custom: tell an [r synth] with a [route note] to play a note */
+libpd_start_message(2);
+libpd_add_float(60.0f);   /* MIDI pitch */
+libpd_add_float(100.0f);  /* velocity   */
+libpd_finish_message("synth", "note");
+
+
+In Pd's message syntax, the receiver comes after the semicolon, the selector after the receiver. The trailing atoms are the list. libpd_finish_message(receiver, selector) maps directly to this.
+
+Convenience: libpd_message
+
+For pre-built messages there is also a direct variadic form:
+
+
+/* Single float: same as libpd_float("freq", 880.0f) */
+/* Use the start/add/finish API for variadic content */
+
+
+Note that libpd_message is not a standard part of the API in all versions; use the start/add/finish approach for maximum portability.
+
+Sending Messages from the Audio Thread
+
+Message-sending functions are safe to call from within the audio callback. Any message sent this way is processed synchronously during the current or next tick. A common pattern is to apply parameter changes at the start of each callback:
+
+
+static float g_freq   = 440.0f;
+static float g_vol    = 0.8f;
+static int   g_dirty  = 0;
+
+void audio_callback(float *out, int frames) {
+    if (g_dirty) {
+        libpd_float("freq", g_freq);
+        libpd_float("vol",  g_vol);
+        g_dirty = 0;
+    }
+    libpd_process_float(frames / 64, NULL, out);
+}
+
+
+For updates arriving from a UI or network thread, use a lock-free SPSC ring buffer to hand parameters to the audio thread without locks.
+
+Sending Messages from Non-Audio Threads
+
+Calling libpd_float from a non-audio thread while the audio thread is inside libpd_process_float is technically not thread-safe in the single-instance API. Protect concurrent access with a mutex or, better, use the ring buffer pattern:
+
+
+/* Pseudocode for a simple parameter ring buffer */
+typedef struct { const char *recv; float value; } ParamMsg;
+static ParamMsg param_ring[256];
+static volatile int ring_write = 0;
+static volatile int ring_read  = 0;
+
+/* From UI thread: */
+void set_param(const char *recv, float v) {
+    int next = (ring_write + 1) & 255;
+    param_ring[ring_write].recv  = recv;
+    param_ring[ring_write].value = v;
+    ring_write = next; /* atomic write on most platforms */
+}
+
+/* From audio callback: */
+void drain_params(void) {
+    while (ring_read != ring_write) {
+        libpd_float(param_ring[ring_read].recv,
+                    param_ring[ring_read].value);
+        ring_read = (ring_read + 1) & 255;
+    }
+}
+
+
+Rate-Limiting Control Messages
+
+Pd control messages are cheap but not free - each one wakes up the scheduler and dispatches to the receiver. For smoothly-varying parameters (e.g., a filter cutoff following a mouse), send one message per audio block rather than one per UI event:
+
+
+static float g_cutoff_target = 1000.0f;
+static float g_cutoff_current = 1000.0f;
+
+void audio_callback(float *out, int frames) {
+    /* Smooth toward target */
+    g_cutoff_current += (g_cutoff_target - g_cutoff_current) * 0.1f;
+    libpd_float("cutoff", g_cutoff_current);
+    libpd_process_float(frames / 64, NULL, out);
+}
+
+
+Full Example: Controlling a Synthesiser Patch
+
+
+#include <z_libpd.h>
+#include <stdio.h>
+
+int main(void) {
+    libpd_init();
+    libpd_init_audio(0, 2, 44100);
+
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    void *patch = libpd_openfile("synth.pd", "patches");
+    if (!patch) return 1;
+
+    /* Configure oscillator */
+    libpd_symbol("waveform", "square");
+    libpd_float("freq",  220.0f);
+    libpd_float("vol",   0.7f);
+
+    /* Trigger filter sweep */
+    libpd_start_message(3);
+    libpd_add_float(200.0f);   /* start cutoff Hz */
+    libpd_add_float(4000.0f);  /* end cutoff Hz   */
+    libpd_add_float(2000.0f);  /* sweep time ms   */
+    libpd_finish_message("filter", "sweep");
+
+    /* Fire the gate */
+    libpd_bang("gate_on");
+
+    /* ... audio processing loop ... */
+
+    libpd_closefile(patch);
+    return 0;
+}
+
+
+Summary
+
+
+Send a float to a named receiver with libpd_float("recv", val), a bang with
+libpd_bang("recv"), and a symbol with libpd_symbol("recv", "str").
+For lists, bracket the calls with libpd_start_message(len),
+libpd_add_float/libpd_add_symbol for each element, then
+libpd_finish_list("recv"). All send functions are safe to call from the audio
+thread during the libpd_process_float call but not from other threads; use
+a lock-free queue to forward messages from other threads into the audio callback.
+
+
+Further Reading
+
+
+z_libpd.h message API reference
+Pure Data message syntax documentation
+libpd sample projects
+
+
+See Also
+
+
+The Audio Render Loop
+Receiving Messages from Pd
+MIDI with libpd
+

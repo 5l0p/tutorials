@@ -1,0 +1,259 @@
+openFrameworks - Part 15: Cross-Platform Overview
+2026-10-06
+
+
+openFrameworks advertises itself as cross-platform, and for the most part the claim holds -
+the same ofApp code that draws circles on Linux draws circles on macOS and
+Windows without modification. But "the same code" breaks down the moment you write a path with
+a backslash, use a Linux-only audio API, or assume the home directory is at
+/home/user. The platform layer is thinner than you think, and understanding
+where the seams are makes the difference between a sketch that ports cleanly and one that
+spends a weekend in build-system purgatory.
+
+
+What You Will Learn
+
+
+  How oF abstracts windowing, audio backends, and filesystem paths.
+  What concretely differs between Linux, macOS, and Windows builds.
+  The ofxTargetPlatform preprocessor flags and when to use them.
+  Why you must always use ofToDataPath() for asset paths.
+  Filesystem path conventions and their cross-platform pitfalls.
+  A checklist for auditing a codebase for portability.
+
+
+What oF Abstracts (and What It Does Not)
+
+
+The oF abstraction covers four areas:
+
+
+
+  Window creation: GLFW handles this on all three desktop platforms. You write
+  ofSetupOpenGL(w, h, OF_WINDOW) and get a window. The platform-specific
+  code is inside oF.
+  OpenGL context: Same API on all three. Driver quality differs, but GLSL and
+  the draw calls you write are identical.
+  Input events: Mouse, keyboard, and touch are unified behind the
+  ofBaseApp virtual methods. You do not call XNextEvent or
+  GetMessage directly.
+  File I/O paths: ofToDataPath() resolves a relative path to an
+  absolute path that works regardless of platform, executable location, or bundle structure.
+
+
+
+oF does not abstract:
+
+
+
+  The audio backend (ALSA/JACK vs CoreAudio vs WASAPI - the API surface looks the same
+  through ofSoundStream, but backend selection and device enumeration differ).
+  Platform-specific shared libraries (DLL vs dylib vs .so).
+  File permission models and home directory locations.
+  Process spawn / shell execution APIs.
+
+
+Windowing: GLFW on All Three Platforms
+
+
+oF 0.12.x uses GLFW 3.x for window management on Linux, macOS, and Windows. The window hint
+flags you set in main.cpp (fullscreen, resizable, OpenGL version request) work
+the same everywhere. Platform-specific considerations:
+
+
+
+  Linux (X11): GLFW targets X11 by default; Wayland support requires a build flag
+  (see Part 16). HiDPI scaling is compositor-controlled.
+  macOS (Cocoa): Retina display support is automatic; GLFW reports logical pixel
+  counts. The framebuffer is 2× the window size on Retina screens.
+  Windows: HiDPI requires a DPI-awareness manifest entry in the executable. oF
+  includes this in its Visual Studio project template.
+
+
+Audio Backends
+
+
+ofSoundStream sits in front of the platform audio layer and exposes a uniform
+interface. The concrete backend:
+
+
+
+  Linux: ALSA (default) or JACK (if compiled with OF_AUDIO_BACKEND=jack).
+  ALSA works out of the box on most distributions; JACK gives lower latency and better
+  multi-application routing.
+  macOS: CoreAudio. Exclusive by default; no extra setup. Low latency (256 samples
+  is achievable).
+  Windows: WASAPI via RTAudio. Shared mode (default, higher latency) or exclusive
+  mode (lower latency, requires driver support). ASIO4ALL enables ASIO on hardware that
+  does not natively support it.
+
+
+
+The ofSoundStreamSettings API is identical across platforms. Device enumeration
+differs in the names reported but not the C++ API you call.
+
+
+Preprocessor Platform Flags
+
+
+oF defines preprocessor macros that identify the target platform. Use them for any
+platform-specific code block:
+
+
+
+#include <ofMain.h>   // brings in ofConstants.h which defines the flags
+
+#ifdef TARGET_LINUX
+    // Linux-specific code
+    #include <sys/utsname.h>
+#endif
+
+#ifdef TARGET_OSX
+    // macOS-specific code
+    #include <CoreFoundation/CoreFoundation.h>
+#endif
+
+#ifdef TARGET_WIN32
+    // Windows-specific code (also true on 64-bit Windows in oF)
+    #include <windows.h>
+#endif
+
+#ifdef TARGET_LINUX_ARM
+    // ARM Linux (Raspberry Pi)
+#endif
+
+
+
+The full set is defined in libs/openFrameworks/utils/ofConstants.h. Note that
+TARGET_WIN32 is defined on 64-bit Windows builds of oF - it is a historical name,
+not an architecture flag.
+
+
+ofToDataPath() - The Single Most Important Portability Rule
+
+
+Asset files (images, shaders, config files, samples) live in bin/data/ on Linux
+and Windows, and inside the app bundle's Resources/ directory on macOS. The
+absolute path to those locations is different on every machine and every platform. Hard-coding
+paths breaks immediately on any computer other than the one the code was written on.
+
+
+
+ofToDataPath(relativePath) returns the correct absolute path on the current
+platform. It is the only correct way to build asset paths:
+
+
+
+// WRONG on macOS bundles and any machine with a different home dir:
+std::string path = "/home/alice/project/bin/data/shaders/plasma.frag";
+
+// WRONG: relative paths depend on the current working directory,
+// which differs between IDE runs and command-line runs:
+std::string path = "shaders/plasma.frag";
+
+// CORRECT: always resolves to the right place:
+std::string path = ofToDataPath("shaders/plasma.frag");
+
+
+
+oF sets the working directory to bin/data/ at startup on Linux and Windows, so
+bare relative paths work in practice most of the time - until you run from an IDE, a packaged
+app, or a symlink. Use ofToDataPath unconditionally and never debug path issues
+again.
+
+
+Path Separator: Forward Slash Works Everywhere
+
+
+C++ file APIs on Windows accept forward slashes as well as backslashes in paths. The Win32
+API has supported forward slashes since Windows NT. Therefore:
+
+
+
+// Works on all three platforms:
+YAML::LoadFile(ofToDataPath("config/synth.yaml"));
+
+// Do NOT write:
+YAML::LoadFile(ofToDataPath("config\\synth.yaml"));  // breaks on Linux/macOS
+
+
+
+The only place backslashes are unavoidable is when passing paths to cmd.exe or
+certain Windows-only legacy APIs. Everywhere else, forward slash is correct.
+
+
+Home Directory and User Data
+
+
+If you need to store user data (settings, recordings) outside the application bundle:
+
+
+
+std::string userHome() {
+#ifdef TARGET_WIN32
+    // USERPROFILE is "C:\Users\alice" on modern Windows
+    const char *h = std::getenv("USERPROFILE");
+    return h ? h : "C:\\Users\\Default";
+#else
+    const char *h = std::getenv("HOME");
+    return h ? h : "/tmp";
+#endif
+}
+
+std::string settingsPath = userHome() + "/Documents/MySketch/settings.yaml";
+
+
+
+On macOS, prefer ~/Library/Application Support/MySketch/ to match platform
+conventions. On Linux, use ~/.config/mysketch/ per the XDG spec.
+
+
+A Portability Checklist
+
+
+Run through this list before claiming a project is cross-platform:
+
+
+
+  All asset paths go through ofToDataPath().
+  No hardcoded absolute paths anywhere in source code.
+  All path separators are forward slashes.
+  Platform-specific code is inside #ifdef TARGET_* blocks.
+  No use of POSIX APIs (popen, fork, UNIX socket headers) outside
+  a Linux/macOS guard.
+  No use of Windows-only APIs (CreateFile, CoInitialize) outside
+  a TARGET_WIN32 guard.
+  Audio buffer size is a variable, not hardcoded to a value that only one backend accepts.
+  Shader source uses GLSL version 1.20 (or explicitly requests a higher version that is
+  available on all target platforms).
+  Font files are included in bin/data/, not assumed to be at a system path.
+
+
+Summary
+
+
+oF's cross-platform abstraction covers windowing, input, and the ofSoundStream
+surface. The audio backend, path conventions, and platform-specific system APIs are your
+responsibility. The tools: ofToDataPath() for asset paths, TARGET_*
+macros for conditional compilation, and forward-slash paths everywhere. The next three
+articles go platform-specific: Part 16 covers the Linux Makefile workflow in detail, Part 17
+covers Windows and Visual Studio, and Part 18 covers macOS and Xcode.
+
+
+Further Reading
+
+
+  ofToDataPath() Reference
+  ofConstants.h on GitHub
+  XDG Base Directory Specification
+  GLFW Introduction
+
+
+See Also
+
+
+  Linux Builds
+  Windows Builds
+  macOS Builds
+  Writing Portable oF Code
+

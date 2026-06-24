@@ -1,0 +1,430 @@
+Go - Part 21: Go Workspaces
+2026-07-24
+
+
+Most Go projects live in a single module - one go.mod, one version graph, one
+go.sum. That covers the vast majority of real-world code. But sometimes you
+are working on a library and an application that uses it simultaneously, or you have a
+monorepo with several related services that share a common module. Before Go 1.18, the
+standard workaround was the replace directive in go.mod, which
+works but has sharp edges. Go 1.18 introduced workspaces: a go.work file that
+says "these local modules should be developed together". This final article in the series
+explains workspaces from the ground up, compares them to replace directives,
+and closes with a reflection on everything the series has covered.
+
+
+What You Will Learn
+
+
+What problem workspaces solve and why replace directives fall short.
+The structure of a go.work file and the commands that manage it.
+A practical workspace with a shared library and two dependent applications.
+The go work sync command and when to run it.
+When to use workspaces vs replace directives vs a single module.
+A look back at the full Go for the Experienced Developer series.
+
+
+The Problem: Developing Across Module Boundaries
+
+
+Suppose you maintain a logging library at github.com/acme/logger and two
+services that depend on it: github.com/acme/api and
+github.com/acme/worker. All three live in the same monorepo:
+
+
+
+acme/
+    logger/
+        go.mod   (module github.com/acme/logger)
+        logger.go
+    api/
+        go.mod   (module github.com/acme/api, requires github.com/acme/logger v1.2.0)
+        main.go
+    worker/
+        go.mod   (module github.com/acme/worker, requires github.com/acme/logger v1.2.0)
+        main.go
+
+
+
+You want to add a method to logger and use it immediately in api
+before publishing a new release. Without a workspace, the only option is a
+replace directive in api/go.mod:
+
+
+
+// api/go.mod
+module github.com/acme/api
+
+require github.com/acme/logger v1.2.0
+
+replace github.com/acme/logger => ../logger
+
+
+
+This works, but it has two problems. First, if you commit go.mod with the
+replace directive, anyone who clones the repo must have the same directory
+layout. If they have logger in a different location, the build breaks.
+Second, you need to add and remove the directive manually every time you start or finish
+cross-module work. It is easy to accidentally commit a replace directive to a
+published module, which confuses every downstream consumer.
+
+
+
+C# and .NET do not have a direct equivalent because NuGet packages are always fetched from
+a feed; local path references in .csproj are similarly fragile in a team
+setting. Go workspaces solve this more cleanly.
+
+
+The go.work File
+
+
+A workspace is defined by a go.work file at the root of your checkout. It is
+not a module - it is above the module system. Create one:
+
+
+
+$ cd acme
+$ go work init ./logger ./api ./worker
+
+
+
+This creates:
+
+
+
+go 1.22
+
+use (
+    ./logger
+    ./api
+    ./worker
+)
+
+
+
+With this file present, any go command run from within the acme/
+tree uses the local logger directory for github.com/acme/logger
+automatically - no replace directive needed in any go.mod. The
+go.mod files are unchanged and safe to commit.
+
+
+
+The go.work file should typically not be committed if the repository
+is a collection of independent versioned modules (because it implies a local directory
+layout that other contributors may not share). It should be committed in a true
+monorepo where the directory layout is fixed and all contributors always check out the
+whole tree.
+
+
+Workspace Commands
+
+
+# Create a new go.work file listing the given modules
+go work init [module-dirs...]
+
+# Add a module to an existing go.work
+go work use ./newservice
+
+# Remove a module from go.work (edit the file or use -r)
+go work edit -dropuse ./oldservice
+
+# Sync the workspace build list into each module's go.sum
+go work sync
+
+# Print the effective workspace configuration
+go work edit -json
+
+
+
+go work sync deserves a specific explanation. Within the workspace, the go
+command uses a single build list - the union of all dependencies across all modules in the
+workspace. go work sync takes that unified build list and updates each
+module's go.sum to include checksums for all dependencies, even ones not
+directly required by that module alone. Run it before committing to ensure that each
+module's lockfile is consistent with the workspace-resolved versions.
+
+
+A Practical Workspace
+
+
+Let us walk through the complete setup. First, create the shared library:
+
+
+
+$ mkdir -p acme/logger && cd acme/logger
+$ go mod init github.com/acme/logger
+
+
+
+// logger/logger.go
+package logger
+
+import (
+    "fmt"
+    "time"
+)
+
+// Logger is a simple structured logger.
+type Logger struct {
+    prefix string
+}
+
+func New(prefix string) *Logger {
+    return &Logger{prefix: prefix}
+}
+
+func (l *Logger) Info(msg string) {
+    fmt.Printf("[%s] INFO  %s: %s\n", time.Now().Format(time.RFC3339), l.prefix, msg)
+}
+
+func (l *Logger) Error(msg string) {
+    fmt.Printf("[%s] ERROR %s: %s\n", time.Now().Format(time.RFC3339), l.prefix, msg)
+}
+
+
+
+Now the API service that uses it:
+
+
+
+$ mkdir -p acme/api && cd acme/api
+$ go mod init github.com/acme/api
+$ go get github.com/acme/logger@latest  # or a specific version
+
+
+
+// api/main.go
+package main
+
+import "github.com/acme/logger"
+
+func main() {
+    log := logger.New("api")
+    log.Info("starting")
+    // ... serve HTTP ...
+    log.Info("stopped")
+}
+
+
+
+$ mkdir -p acme/worker && cd acme/worker
+$ go mod init github.com/acme/worker
+$ go get github.com/acme/logger@latest
+
+
+
+// worker/main.go
+package main
+
+import "github.com/acme/logger"
+
+func main() {
+    log := logger.New("worker")
+    log.Info("processing")
+}
+
+
+
+Now initialise the workspace from the repository root:
+
+
+
+$ cd acme
+$ go work init ./logger ./api ./worker
+
+
+
+You can now add a method to logger and use it in api
+immediately, without publishing a new version or adding replace directives:
+
+
+
+// Add to logger/logger.go
+func (l *Logger) Debug(msg string) {
+    fmt.Printf("[%s] DEBUG %s: %s\n", time.Now().Format(time.RFC3339), l.prefix, msg)
+}
+
+
+
+// api/main.go - use the new method immediately
+log.Debug("detailed diagnostic")
+
+
+
+$ go build ./...   # run from workspace root - finds all three modules
+$ go test ./...    # tests across all modules in the workspace
+
+
+
+The Go toolchain treats all three modules as a unit. Changes to logger are
+immediately visible to api and worker without a publish step.
+
+
+Adding a Dependency Only Available in the Workspace
+
+
+If a module in the workspace depends on a package not yet published, use
+go work use to add it. For example, if you create a new module
+github.com/acme/metrics locally:
+
+
+
+$ mkdir acme/metrics && cd acme/metrics && go mod init github.com/acme/metrics
+$ cd .. && go work use ./metrics
+
+
+
+Now api can import github.com/acme/metrics and the workspace will
+resolve it to ./metrics even though no release exists yet.
+
+
+Workspaces vs replace Directives
+
+
+
+Feature
+replace directive
+go.work
+
+
+Affects go.mod
+Yes
+No
+
+
+Safe to commit
+Dangerous for published modules
+Yes (for monorepos)
+
+
+Applies to all modules in workspace
+No - per module
+Yes
+
+
+Requires directory layout agreement
+Yes (relative path)
+Yes (but go.work is the agreement)
+
+
+Works with go get to add new deps
+Yes
+Yes
+
+
+
+
+The rule of thumb: use a workspace for local multi-module development in a monorepo. Use
+replace directives for temporary patches of upstream dependencies (and remove
+them before publishing). Never commit a replace directive in a library module
+that others will import.
+
+
+Disabling the Workspace
+
+
+To ignore go.work for a single command - useful in CI where you want to verify
+each module builds independently:
+
+
+
+GOWORK=off go build ./...
+GOWORK=off go test ./...
+
+
+
+You can also set GOWORK=off in CI environment variables and selectively enable
+it only for workspace-aware steps.
+
+
+Workspaces vs Single Modules
+
+
+If you are starting a new project, default to a single module. Everything in one
+go.mod is simpler: one version graph, one go sum, one
+go build ./.... Add a workspace only when you genuinely have multiple modules
+that need to be developed in tandem.
+
+
+
+Signals that you need a workspace:
+
+
+
+You have a shared library and one or more consuming services in the same repository, and you regularly make changes to both in the same commit.
+You want to release the library and services on independent version schedules.
+You have tools (code generators, migration runners) that are Go programs but not part of the application's runtime dependency graph.
+
+
+Summary: The Full Series
+
+
+This is the twenty-first and final article in Go for the Experienced Developer. It is worth
+taking a moment to look at what the series has covered.
+
+
+
+The series started with the fundamentals: why Go exists (Part 1), syntax and types (Part 2),
+structs and methods (Part 3), interfaces (Part 4), and Go's distinctive error-handling
+model (Part 5). It covered the standard tools for resource management - defer, panic, and
+recover (Part 6) - and then the defining feature of the language: goroutines and channels
+(Part 7) and the concurrency patterns built on top of them (Part 8), including the
+context package (Part 9).
+
+
+
+Parts 10 through 14 covered the module ecosystem and tooling: generics (Part 10), modules
+(Part 11), vendoring (Part 12), cross-compilation (Part 13), and the Go developer toolkit
+of formatters, linters, and profilers (Part 14). Parts 15 and 16 extended that with code
+generation (Part 15) and platform-specific builds (Part 16).
+
+
+
+The final five articles turned to the craft of building real software: testing in depth
+(Part 17), structuring a project sensibly (Part 18), organising code by feature with
+vertical slices (Part 19), building command-line tools (Part 20), and multi-module
+development with workspaces (Part 21).
+
+
+
+If you arrived here from C, you have seen that Go is closer to C than it first appears:
+explicit memory reasoning (though GC-managed), no exceptions, minimal runtime, direct
+control over goroutine scheduling. The biggest shift is from manual memory and threads to
+goroutines and channels - that shift requires genuine re-wiring of intuition, but the
+model is simpler once you trust it.
+
+
+
+If you arrived from C#, you have seen a language that trades the richness of the CLR
+ecosystem for simplicity and operational ease. No NuGet fragmentation, no framework
+version matrix, no startup warmup. The pain points are real - the lack of exceptions, the
+verbose error-checking, the absence of LINQ - but the gains in deployability, performance,
+and tooling uniformity are also real.
+
+
+
+Go rewards reading the source. The standard library is clear, well-commented, and short
+enough to read in a week. When something does not work, read the implementation - you will
+usually find the answer faster than searching. That readability is not accidental; it is
+the language's founding philosophy, sustained by gofmt, the import cycle rule,
+and the deliberate refusal to add complexity without a concrete payoff.
+
+
+Further Reading
+
+
+Go Modules Reference: Workspaces - go.dev
+Get familiar with workspaces - The Go Blog
+Tutorial: Getting started with multi-module workspaces - go.dev
+go work commands - pkg.go.dev
+go.work file reference - go.dev
+
+
+See Also
+
+
+Modules & Dependencies
+Vendoring
+Clean Code & Project Layout
+Building & Cross-Compilation
+

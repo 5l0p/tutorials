@@ -1,0 +1,327 @@
+Go - Part 4: Interfaces & Structural Typing
+2026-07-07
+
+
+Interfaces are the primary mechanism for polymorphism in Go. They look superficially like
+C# interfaces but the relationship between a type and an interface it satisfies is
+completely different: in Go there is no implements keyword and no declaration
+of intent. If your type has the right methods, it satisfies the interface - period. This
+structural typing model is simpler in practice than it sounds and has deep consequences for
+how Go code is designed.
+
+
+What You Will Learn
+
+
+How Go interfaces are declared and how types satisfy them implicitly (no implements)
+The io.Reader / io.Writer pattern and why small interfaces are idiomatic
+Interface composition: building larger interfaces from smaller ones
+The empty interface any (interface{}): what it enables and why to use it sparingly
+Type assertions and type switches for recovering concrete types at runtime
+How interface values are represented in memory: (type, pointer) pairs
+Where to define interfaces: near the consumer, not the implementor
+
+
+Interface Syntax
+
+
+An interface is a named set of method signatures:
+
+
+
+type Stringer interface {
+    String() string
+}
+
+type Shape interface {
+    Area() float64
+    Perimeter() float64
+}
+
+
+
+That is the entire definition. No abstract, no virtual, no
+inheritance hierarchy needed.
+
+
+Implicit Satisfaction
+
+
+In C# you write class Circle : IShape to declare that Circle
+implements IShape. The compiler verifies the contract at the declaration site.
+In Go there is no such declaration. A type satisfies an interface automatically if it
+implements all the required methods:
+
+
+
+type Circle struct {
+    Radius float64
+}
+
+func (c Circle) Area() float64 {
+    return math.Pi * c.Radius * c.Radius
+}
+
+func (c Circle) Perimeter() float64 {
+    return 2 * math.Pi * c.Radius
+}
+
+// Circle now satisfies Shape - no declaration required.
+// You can assign it to a Shape variable:
+var s Shape = Circle{Radius: 5}
+fmt.Println(s.Area()) // 78.53...
+
+
+
+This is called structural typing or duck typing (if it has the right methods, it is
+that interface). The advantage is that you can retrofit existing types with new interfaces
+without modifying them - not even in the same package. This is impossible in C# without
+creating wrapper types.
+
+
+
+A common pattern is to define the interface in the consuming package, not the
+producing package. The standard library's io.Reader is famous
+precisely because any type with a Read([]byte) (int, error) method works with
+every piece of I/O code in the ecosystem, without any of those types having to know about
+io.Reader at the time they were written.
+
+
+The io.Reader / io.Writer Pattern
+
+
+The two most important interfaces in the Go standard library are:
+
+
+
+// from package io
+type Reader interface {
+    Read(p []byte) (n int, err error)
+}
+
+type Writer interface {
+    Write(p []byte) (n int, err error)
+}
+
+
+
+Every source of bytes (files, network connections, HTTP request bodies, in-memory
+buffers, compressed streams, crypto streams) implements io.Reader. Every
+sink implements io.Writer. This means you can write a function that compresses
+data from any source to any sink without knowing the concrete type of either:
+
+
+
+func compress(dst io.Writer, src io.Reader) error {
+    gz := gzip.NewWriter(dst)
+    defer gz.Close()
+    _, err := io.Copy(gz, src)
+    return err
+}
+
+// Works with files:
+f, _ := os.Open("input.txt")
+out, _ := os.Create("output.gz")
+compress(out, f)
+
+// Works with network connections, buffers, anything that implements the interface.
+
+
+
+In C, you would pass function pointers and a context struct to achieve the same effect.
+In C# you would use abstract base classes or Stream subclasses. The Go approach requires
+no common base - any type that happens to have the right method signature works.
+
+
+Interface Composition
+
+
+Interfaces can embed other interfaces, creating a composite:
+
+
+
+type ReadWriter interface {
+    Reader
+    Writer
+}
+
+type ReadWriteCloser interface {
+    Reader
+    Writer
+    Closer
+}
+
+
+
+This is common in the standard library. io.ReadWriter is satisfied by any
+type that has both Read and Write methods. The embedding syntax
+is the same as struct embedding but is purely additive - there is no runtime overhead.
+
+
+The Empty Interface
+
+
+An interface with no methods is satisfied by every type:
+
+
+
+// Pre-Go-1.18 spelling
+var anything interface{} = 42
+anything = "now a string"
+anything = []byte{1, 2, 3}
+
+// Go 1.18+ alias - preferred
+var anything any = 42
+
+
+
+any is Go's equivalent of C's void* or C#'s object.
+It carries both a type and a value at runtime. Use it sparingly - it escapes the type
+system and forces runtime type assertions. The standard library uses it in places like
+fmt.Println(args ...any) where the argument type genuinely cannot be known
+at compile time.
+
+
+Type Assertions
+
+
+To extract the concrete type from an interface value, use a type assertion:
+
+
+
+var s Shape = Circle{Radius: 5}
+
+// Unsafe assertion - panics if wrong type
+c := s.(Circle)
+fmt.Println(c.Radius) // 5
+
+// Safe assertion - returns (value, ok)
+c, ok := s.(Circle)
+if ok {
+    fmt.Println("It's a Circle with radius", c.Radius)
+} else {
+    fmt.Println("Not a Circle")
+}
+
+
+
+Always use the two-value form unless you are certain of the type and want a panic on
+mismatch. In C# the equivalent is a cast ((Circle)s which throws on failure)
+or s as Circle which returns null on failure.
+
+
+Type Switches
+
+
+When you need to handle several concrete types, a type switch is cleaner than a chain of
+type assertions:
+
+
+
+func describe(s Shape) string {
+    switch v := s.(type) {
+    case Circle:
+        return fmt.Sprintf("Circle with radius %.2f", v.Radius)
+    case Rectangle:
+        return fmt.Sprintf("Rectangle %gx%g", v.Width, v.Height)
+    default:
+        return fmt.Sprintf("Unknown shape: %T", v)
+    }
+}
+
+
+
+Inside each case, v has the concrete type. %T in
+fmt.Sprintf prints the dynamic type - useful for debugging. In C# you would
+use switch (s) with pattern matching (case Circle c:), which is
+equivalent and slightly more concise.
+
+
+Interface Values Under the Hood
+
+
+An interface value at runtime is a pair: a pointer to type information and a pointer to
+the concrete data. This has two practical implications.
+
+
+
+First, a nil interface value (the interface variable itself is nil) is distinct from an
+interface variable that holds a nil pointer. This is a common source of bugs:
+
+
+
+func returnsError() error {
+    var p *os.PathError = nil
+    // BUG: this returns a non-nil error interface containing a nil pointer
+    return p
+}
+
+err := returnsError()
+if err != nil {
+    fmt.Println("got an error") // This DOES print - interface is not nil
+}
+
+
+
+Return nil directly, not a typed nil pointer, to return a nil error.
+
+
+
+Second, storing a concrete value in an interface may cause a heap allocation (because
+the interface stores a pointer to the data). For performance-critical hot paths, large
+structs are better passed as *T rather than T to avoid
+redundant copies.
+
+
+Defining Interfaces Near Their Consumer
+
+
+Go convention is to define small interfaces close to where they are used, rather than
+in a central "interfaces" package. The ideal interface has one or two methods. A function
+that only needs to read bytes should accept io.Reader, not an
+*os.File - this makes it testable with a strings.NewReader or
+bytes.Buffer and removes the filesystem dependency.
+
+
+
+// Prefer this:
+func ProcessInput(r io.Reader) error { ... }
+
+// Over this (unnecessarily concrete):
+func ProcessInput(f *os.File) error { ... }
+
+
+
+In C# this principle is called the Dependency Inversion Principle. In Go it is just
+idiomatic use of small interfaces.
+
+
+Summary
+
+
+Go interfaces are satisfied implicitly: if your type has the right methods, it
+satisfies the interface — no declaration needed. Keep interfaces small; the
+standard library's io.Reader (one method) is the canonical example.
+Compose larger interfaces from smaller ones. An interface value holds a (type,
+pointer) pair; comparing to nil on an interface with a non-nil type
+pointer is a common gotcha. Define interfaces near their consumers, not near
+their implementations, so packages stay decoupled.
+
+
+Further Reading
+
+
+Effective Go: Interfaces
+Go Specification: Interface Types
+Package io - pkg.go.dev
+The Laws of Reflection - The Go Blog
+
+
+See Also
+
+
+Structs & Methods
+Error Handling Best Practices
+Generics
+Clean Code & Project Layout
+

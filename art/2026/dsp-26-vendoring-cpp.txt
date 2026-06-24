@@ -1,0 +1,365 @@
+DSP - Part 26: Vendoring C and C++ Dependencies
+2026-11-04
+
+
+DSP and audio projects routinely depend on C and C++ libraries: libsndfile for WAV
+I/O, RtAudio for audio device access, FFTW for transforms, or the stb collection for
+image and audio decoding. This article covers the three practical strategies for
+managing those dependencies, when to use each, and how to wire them into the Makefile
+from Part 25.
+
+
+What You Will Learn
+
+
+The three vendoring strategies: git submodule, source-copy (third_party/), and single-file amalgamation
+How to use pkg-config to query compiler and linker flags for installed libraries
+How to vendor libsndfile and RtAudio as git submodules and integrate them into a Makefile
+The stb single-header pattern and how to use it without modifying your own headers
+Writing a minimal Find<Lib>.cmake shim for CMake-based dependencies
+When dynamic linking is better than vendoring
+
+
+Strategy 1: Dynamic Linking with pkg-config
+
+
+If the library is widely packaged (libsndfile, libsamplerate, FFTW), the simplest
+approach is to install it via the system package manager and use pkg-config
+to get the right flags:
+
+
+
+sudo apt install libsndfile1-dev   # Debian/Ubuntu
+sudo dnf install libsndfile-devel  # Fedora
+
+
+
+Then in the Makefile:
+
+
+
+CFLAGS  += $(shell pkg-config --cflags sndfile)
+LDLIBS  += $(shell pkg-config --libs sndfile)
+
+
+
+pkg-config --cflags sndfile outputs -I/usr/include (or
+wherever the header is installed). pkg-config --libs sndfile outputs
+-lsndfile plus any transitive library flags.
+
+
+
+When to use this: CI environments where you control the installed packages,
+developer machines where everyone installs the same distro, or when the library has a
+stable ABI and you want to benefit from security updates without recompiling.
+
+
+
+When not to: when you need to ship a self-contained binary (see Part 27), when
+you need a specific version not available in the distro, or when you are targeting
+platforms with no package manager.
+
+
+Strategy 2: Git Submodules
+
+
+A git submodule pins a specific commit of a dependency inside your repository. The
+source tree is present locally but tracked as a separate repository:
+
+
+
+# Add the dependency:
+git submodule add https://github.com/libsndfile/libsndfile.git third_party/libsndfile
+git submodule add https://github.com/thestk/rtaudio.git third_party/rtaudio
+
+# After cloning the repo, initialise submodules:
+git submodule update --init --recursive
+
+
+
+The submodule records a specific commit SHA, so your build is reproducible. To
+update a dependency, cd into the submodule directory, git pull,
+then commit the parent repo with the new SHA.
+
+
+Building libsndfile from source in a Makefile:
+
+
+libsndfile uses autotools. Build it once with configure && make
+and use the resulting static library:
+
+
+
+LIBSNDFILE_DIR  = third_party/libsndfile
+LIBSNDFILE_LIB  = $(LIBSNDFILE_DIR)/build/src/.libs/libsndfile.a
+
+$(LIBSNDFILE_LIB):
+	cd $(LIBSNDFILE_DIR) && autoreconf -vif && \
+	  mkdir -p build && cd build && \
+	  ../configure --disable-shared --enable-static --disable-external-libs && \
+	  $(MAKE)
+
+CFLAGS  += -I$(LIBSNDFILE_DIR)/include
+LDLIBS  += $(LIBSNDFILE_LIB)
+
+$(TARGET): $(OBJS) $(LIBSNDFILE_LIB)
+	$(CC) $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)
+
+
+
+The --disable-external-libs flag avoids libsndfile pulling in its own
+optional dependencies (libogg, libvorbis, libflac), which simplifies the static link.
+
+
+Building RtAudio:
+
+
+RtAudio uses CMake. Build it into a local directory and link the resulting archive:
+
+
+
+RTAUDIO_DIR  = third_party/rtaudio
+RTAUDIO_LIB  = $(RTAUDIO_DIR)/build/librtaudio.a
+
+$(RTAUDIO_LIB):
+	cmake -S $(RTAUDIO_DIR) -B $(RTAUDIO_DIR)/build \
+	  -DBUILD_SHARED_LIBS=OFF \
+	  -DRTAUDIO_API_ALSA=ON \
+	  -DRTAUDIO_API_JACK=OFF \
+	  -DRTAUDIO_API_PULSE=OFF \
+	  -DCMAKE_BUILD_TYPE=Release
+	cmake --build $(RTAUDIO_DIR)/build
+
+CFLAGS  += -I$(RTAUDIO_DIR)
+LDLIBS  += $(RTAUDIO_LIB) -lpthread -lasound
+
+
+
+ALSA (-lasound) and pthreads are system libraries that RtAudio wraps —
+they must appear on the link line after the RtAudio archive.
+
+
+Strategy 3: Source-Copy (third_party/ tree)
+
+
+For smaller libraries, copy the source files directly into a third_party/
+directory in your repository. No submodule bookkeeping, no build system for the
+dependency — just files.
+
+
+
+third_party/
+  miniaudio/
+    miniaudio.h        # single-file library
+  dr_libs/
+    dr_wav.h           # single-file WAV decoder
+    dr_mp3.h           # single-file MP3 decoder
+  unity/
+    unity.h
+    unity.c            # test framework (two files)
+
+
+
+Add the third_party include path to CFLAGS:
+
+
+
+CFLAGS += -Ithird_party
+
+
+
+Source-copy works well when the dependency is small, changes infrequently, and you
+want to be able to modify it (apply patches, add instrumentation for debugging). The
+downside is that updates require manually diffing and re-copying files.
+
+
+The stb Single-Header Pattern
+
+
+The stb collection by Sean Barrett
+popularised the single-header library pattern. Each library is a single .h
+file that contains both declarations and definitions. You get the implementation by
+defining a macro in exactly one .c file:
+
+
+
+/* stb_impl.c — implementation file, compiled once */
+#define STB_VORBIS_IMPLEMENTATION
+#include "stb_vorbis.h"
+
+#define DR_WAV_IMPLEMENTATION
+#include "dr_wav.h"
+
+
+
+Every other file that needs the library only includes the header (no macro):
+
+
+
+/* decoder.c */
+#include "dr_wav.h"   /* declarations only */
+
+void decode(const char *path) {
+    drwav wav;
+    if (!drwav_init_file(&wav, path, NULL)) return;
+    /* ... */
+    drwav_uninit(&wav);
+}
+
+
+
+Wire the implementation file into the build like any other source file:
+
+
+
+SRCS = main.c decoder.c synth.c stb_impl.c
+
+
+
+Never define _IMPLEMENTATION in a header file or in more than one
+translation unit — the linker will complain about multiply-defined symbols.
+
+
+pkg-config for Custom Installs
+
+
+If you build a dependency to a non-standard prefix (e.g.
+./configure --prefix=$HOME/.local), pkg-config will not find it unless
+you set PKG_CONFIG_PATH:
+
+
+
+export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH"
+
+
+
+Write this into a Makefile variable so contributors do not need to set
+environment variables:
+
+
+
+PKG_CONFIG_PATH = $(CURDIR)/third_party/libsndfile/build/lib/pkgconfig
+export PKG_CONFIG_PATH
+
+CFLAGS  += $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags sndfile)
+LDLIBS  += $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs --static sndfile)
+
+
+
+The --static flag tells pkg-config to include transitive static library
+flags (e.g. -logg -lvorbis) which are normally omitted for dynamic builds.
+
+
+Writing a FindXxx.cmake Shim
+
+
+If your project uses CMake and a dependency does not provide a package config file,
+write a FindXxx.cmake module in a cmake/ directory and add
+it to the module path:
+
+
+
+# cmake/FindRtAudio.cmake
+find_path(RTAUDIO_INCLUDE_DIR RtAudio.h
+    HINTS ${CMAKE_SOURCE_DIR}/third_party/rtaudio
+          /usr/include /usr/local/include)
+
+find_library(RTAUDIO_LIBRARY
+    NAMES rtaudio
+    HINTS ${CMAKE_SOURCE_DIR}/third_party/rtaudio/build
+          /usr/lib /usr/local/lib)
+
+include(FindPackageHandleStandardArgs)
+find_package_handle_standard_args(RtAudio
+    REQUIRED_VARS RTAUDIO_LIBRARY RTAUDIO_INCLUDE_DIR)
+
+if(RTAUDIO_FOUND)
+    set(RTAUDIO_INCLUDE_DIRS ${RTAUDIO_INCLUDE_DIR})
+    set(RTAUDIO_LIBRARIES    ${RTAUDIO_LIBRARY})
+    if(NOT TARGET RtAudio::RtAudio)
+        add_library(RtAudio::RtAudio UNKNOWN IMPORTED)
+        set_target_properties(RtAudio::RtAudio PROPERTIES
+            IMPORTED_LOCATION             "${RTAUDIO_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${RTAUDIO_INCLUDE_DIR}")
+    endif()
+endif()
+
+
+
+In CMakeLists.txt:
+
+
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+find_package(RtAudio REQUIRED)
+target_link_libraries(synth PRIVATE RtAudio::RtAudio)
+
+
+
+The IMPORTED target is the modern CMake idiom — it carries include
+directories and link flags as properties, so consumers do not need to know the
+internal layout of the library.
+
+
+When to Vendor vs Link Dynamically
+
+
+ScenarioRecommendation
+Shipping a standalone binaryVendor (static link)
+Library with a stable ABI (libssl, glibc)Dynamic link — benefit from distro security patches
+Pinning a specific version for reproducibilitySubmodule or source-copy
+Small utility library (<5 files)Source-copy into third_party/
+Single-header library (stb, dr_libs)stb pattern — copy the header
+Large library with its own build systemSubmodule + build step in Makefile
+Library available in all target distrospkg-config + system install
+
+
+Keeping Vendored Code Auditable
+
+
+Record the upstream source and version for every vendored dependency in a
+third_party/README.md:
+
+
+
+# Third-party dependencies
+
+## dr_wav.h
+- Source: https://github.com/mackron/dr_libs
+- Version: 0.13.16 (commit a4b73d3)
+- License: MIT / Public Domain (dual)
+- Files: dr_libs/dr_wav.h
+
+## unity (test framework)
+- Source: https://github.com/ThrowTheSwitch/Unity
+- Version: 2.6.0
+- License: MIT
+- Files: unity/unity.h unity/unity.c unity/unity_internals.h
+
+
+
+This file is the audit trail for licence compliance and the starting point for
+updating a vendored dependency when a security issue is disclosed upstream.
+
+
+Summary
+
+
+Use pkg-config and dynamic linking for widely-packaged libraries when
+shipping to systems where you control the environment. Use git submodules to pin a
+specific version of a library with its own build system (libsndfile, RtAudio) and
+build it as a static archive from a Makefile rule. Use source-copy into
+third_party/ for small libraries where you want complete control. Use the
+stb single-header pattern for implementation-only libraries — one
+_IMPLEMENTATION translation unit, ordinary #include everywhere
+else. Write a FindXxx.cmake module when a dependency has no CMake package
+config. Record upstream source, version, and licence for every vendored file.
+
+
+See Also
+
+
+Makefiles for C and C++ - the build system that integrates these dependencies
+Static Linking and Distribution - producing a self-contained binary from vendored deps
+Testing DSP Code - using the Unity test framework vendored here
+

@@ -1,0 +1,522 @@
+Go - Part 20: CLI Tools - flags and cobra
+2026-07-23
+
+
+Go is one of the best languages for building command-line tools. The compiler produces a
+single static binary with no runtime dependency, startup is nearly instant, and the
+standard library includes a complete flag-parsing package. For complex tools with
+subcommands - think git, kubectl, docker - the
+ecosystem has converged on cobra, the CLI library used by most major Go
+infrastructure tools. This article takes you from the basic flag package to a
+complete multi-command CLI with persistent flags, shell completion, and a version
+subcommand.
+
+
+What You Will Learn
+
+
+The Unix flag conventions Go follows, and how they differ from Windows conventions.
+Using the stdlib flag package: defining flags, parsing, and custom flag types.
+Why cobra exists and what it adds over the stdlib.
+Building a multi-command CLI with subcommands, persistent flags, and a version command.
+Shell completion with cobra and the completion subcommand.
+A complete worked CLI tool you can use as a starting point.
+
+
+Unix Flag Conventions
+
+
+C programs typically follow POSIX flag conventions: single-character flags preceded by
+a single hyphen (-v), combinable into one argument (-xvf), and
+long-form options with double hyphens (--verbose). C# console apps have no
+enforced convention; some use /flag (Windows legacy), some use GNU-style
+--flag.
+
+
+
+Go's flag package uses a simpler and slightly different convention: both
+-flag and --flag are accepted (one or two hyphens, your choice),
+but single-character flags are not combinable. -xvf is not parsed as
+-x -v -f; it is treated as a single flag named xvf. This is
+a deliberate simplification. For GNU-compatible flag parsing, use pflag
+(which cobra uses internally).
+
+
+The stdlib flag Package
+
+
+For simple tools with no subcommands, the stdlib flag package is the right
+choice. It has no dependencies, no installation, and its output is predictable.
+
+
+
+// cmd/fetch/main.go
+package main
+
+import (
+    "flag"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+    "time"
+)
+
+func main() {
+    // Define flags
+    timeout := flag.Duration("timeout", 10*time.Second, "request timeout")
+    verbose := flag.Bool("verbose", false, "print response headers")
+    output  := flag.String("output", "", "write response body to `file` (default: stdout)")
+
+    // flag.Usage is called when -help or an unknown flag is used
+    flag.Usage = func() {
+        fmt.Fprintf(os.Stderr, "Usage: fetch [flags] <url>\n\n")
+        fmt.Fprintf(os.Stderr, "Flags:\n")
+        flag.PrintDefaults()
+    }
+
+    flag.Parse() // parse os.Args[1:]
+
+    args := flag.Args() // non-flag arguments
+    if len(args) != 1 {
+        flag.Usage()
+        os.Exit(1)
+    }
+    url := args[0]
+
+    if err := fetch(url, *timeout, *verbose, *output); err != nil {
+        fmt.Fprintln(os.Stderr, "error:", err)
+        os.Exit(1)
+    }
+}
+
+func fetch(url string, timeout time.Duration, verbose bool, outPath string) error {
+    client := &http.Client{Timeout: timeout}
+    resp, err := client.Get(url)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    if verbose {
+        for k, vs := range resp.Header {
+            for _, v := range vs {
+                fmt.Printf("%s: %s\n", k, v)
+            }
+        }
+        fmt.Println()
+    }
+
+    out := io.Writer(os.Stdout)
+    if outPath != "" {
+        f, err := os.Create(outPath)
+        if err != nil {
+            return err
+        }
+        defer f.Close()
+        out = f
+    }
+
+    _, err = io.Copy(out, resp.Body)
+    return err
+}
+
+
+
+$ go build -o fetch ./cmd/fetch
+$ ./fetch -timeout 5s -verbose https://example.com
+Content-Type: text/html; charset=UTF-8
+...
+
+$ ./fetch -output page.html https://example.com
+$ ./fetch -help
+Usage: fetch [flags] <url>
+
+Flags:
+  -output file
+        write response body to file (default: stdout)
+  -timeout duration
+        request timeout (default: 10s)
+  -verbose
+        print response headers
+
+
+Custom Flag Types
+
+
+The flag package supports custom types via the flag.Value
+interface - two methods: String() string and Set(string) error.
+This is how you accept a comma-separated list, a custom enum, or a URL as a flag value.
+
+
+
+// stringSlice is a flag.Value that accumulates repeated -header flags
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+    return fmt.Sprintf("%v", *s)
+}
+
+func (s *stringSlice) Set(v string) error {
+    *s = append(*s, v)
+    return nil
+}
+
+// Usage: fetch -header "X-API-Key: abc" -header "Accept: application/json" url
+var headers stringSlice
+flag.Var(&headers, "header", "add `header` to request (repeatable)")
+
+
+
+In C# you would use a custom TypeConverter or use a library like
+System.CommandLine that handles collection-valued options natively. Go's
+approach requires slightly more code but is explicit and portable.
+
+
+When to Use cobra
+
+
+The stdlib flag package has no concept of subcommands. When your tool grows
+to have commands like mytool create, mytool delete, and
+mytool list, you need to route between them yourself - or use a library. The
+standard choice in the Go ecosystem is cobra:
+
+
+
+go get github.com/spf13/cobra
+
+
+
+Cobra is used by Docker, kubectl, Hugo, GitHub CLI, and dozens of other major Go tools.
+It provides: subcommands with their own flag sets, persistent flags inherited by all
+subcommands, automatic help generation, shell completion generation, and support for
+command aliases.
+
+
+A Complete cobra CLI: linkctl
+
+
+Let us build linkctl - a command-line client for the URL shortener from Part
+19. It will have three subcommands: create, resolve, and
+version, plus a persistent --server flag.
+
+
+
+linkctl/
+    cmd/
+        linkctl/
+            main.go
+    internal/
+        cli/
+            root.go
+            create.go
+            resolve.go
+            version.go
+    go.mod
+
+
+
+The root command holds the persistent flag and registers subcommands:
+
+
+
+// internal/cli/root.go
+package cli
+
+import (
+    "fmt"
+    "os"
+    "github.com/spf13/cobra"
+)
+
+// serverURL is set by the persistent --server flag; all subcommands read it.
+var serverURL string
+
+var rootCmd = &cobra.Command{
+    Use:   "linkctl",
+    Short: "linkctl - manage short links",
+    Long:  "linkctl is a command-line client for the URL shortener service.",
+    // SilenceUsage prevents cobra printing the usage on every error.
+    SilenceUsage: true,
+}
+
+// Execute is the entry point; called from main.
+func Execute() {
+    if err := rootCmd.Execute(); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+}
+
+func init() {
+    // PersistentFlags are inherited by all subcommands.
+    rootCmd.PersistentFlags().StringVar(
+        &serverURL, "server", "http://localhost:8080",
+        "URL of the shortener server",
+    )
+
+    rootCmd.AddCommand(createCmd)
+    rootCmd.AddCommand(resolveCmd)
+    rootCmd.AddCommand(versionCmd)
+    rootCmd.AddCommand(completionCmd)
+}
+
+
+
+// internal/cli/create.go
+package cli
+
+import (
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "strings"
+
+    "github.com/spf13/cobra"
+)
+
+var createCmd = &cobra.Command{
+    Use:   "create <url>",
+    Short: "Create a short link",
+    Args:  cobra.ExactArgs(1),  // validates argument count before RunE is called
+    RunE:  runCreate,
+}
+
+func runCreate(cmd *cobra.Command, args []string) error {
+    rawURL := args[0]
+
+    body := fmt.Sprintf(`{"url":%q}`, rawURL)
+    resp, err := http.Post(
+        serverURL+"/links",
+        "application/json",
+        strings.NewReader(body),
+    )
+    if err != nil {
+        return fmt.Errorf("request failed: %w", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusCreated {
+        return fmt.Errorf("server returned %d", resp.StatusCode)
+    }
+
+    var result struct {
+        Code string `json:"code"`
+    }
+    if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+        return fmt.Errorf("decoding response: %w", err)
+    }
+
+    fmt.Println(result.Code)
+    return nil
+}
+
+
+
+// internal/cli/resolve.go
+package cli
+
+import (
+    "fmt"
+    "net/http"
+
+    "github.com/spf13/cobra"
+)
+
+var resolveCmd = &cobra.Command{
+    Use:   "resolve <code>",
+    Short: "Resolve a short code to its original URL",
+    Args:  cobra.ExactArgs(1),
+    RunE:  runResolve,
+}
+
+func runResolve(cmd *cobra.Command, args []string) error {
+    code := args[0]
+
+    // Use a client that does not follow redirects so we can read the Location header.
+    client := &http.Client{
+        CheckRedirect: func(req *http.Request, via []*http.Request) error {
+            return http.ErrUseLastResponse
+        },
+    }
+    resp, err := client.Get(serverURL + "/" + code)
+    if err != nil {
+        return fmt.Errorf("request failed: %w", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode == http.StatusNotFound {
+        return fmt.Errorf("code %q not found", code)
+    }
+
+    loc := resp.Header.Get("Location")
+    if loc == "" {
+        return fmt.Errorf("no Location header in response")
+    }
+    fmt.Println(loc)
+    return nil
+}
+
+
+
+// internal/cli/version.go
+package cli
+
+import (
+    "fmt"
+    "github.com/spf13/cobra"
+)
+
+// Version is set at link time with -ldflags.
+// Build with: go build -ldflags "-X cli.Version=1.2.3"
+var Version = "dev"
+
+var versionCmd = &cobra.Command{
+    Use:   "version",
+    Short: "Print the version and exit",
+    Run: func(cmd *cobra.Command, args []string) {
+        fmt.Println("linkctl", Version)
+    },
+}
+
+
+
+The version is injected at build time using -ldflags, not hardcoded. In CI:
+
+
+
+go build -ldflags "-X github.com/acme/linkctl/internal/cli.Version=$(git describe --tags)" \
+    -o linkctl ./cmd/linkctl
+
+
+
+The entry point is minimal:
+
+
+
+// cmd/linkctl/main.go
+package main
+
+import "github.com/acme/linkctl/internal/cli"
+
+func main() {
+    cli.Execute()
+}
+
+
+Shell Completion
+
+
+Cobra can generate shell completion scripts for bash, zsh, fish, and PowerShell. Add a
+completion subcommand:
+
+
+
+// internal/cli/completion.go (add to init() in root.go, or here)
+var completionCmd = &cobra.Command{
+    Use:   "completion [bash|zsh|fish|powershell]",
+    Short: "Generate shell completion script",
+    Args:  cobra.ExactArgs(1),
+    ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
+    RunE: func(cmd *cobra.Command, args []string) error {
+        switch args[0] {
+        case "bash":
+            return rootCmd.GenBashCompletion(cmd.OutOrStdout())
+        case "zsh":
+            return rootCmd.GenZshCompletion(cmd.OutOrStdout())
+        case "fish":
+            return rootCmd.GenFishCompletion(cmd.OutOrStdout(), true)
+        case "powershell":
+            return rootCmd.GenPowerShellCompletion(cmd.OutOrStdout())
+        default:
+            return fmt.Errorf("unknown shell: %s", args[0])
+        }
+    },
+}
+
+
+
+# Install completion for the current user (bash)
+$ linkctl completion bash > ~/.bash_completion.d/linkctl
+$ source ~/.bash_completion.d/linkctl
+
+# Now tab-complete works:
+$ linkctl <TAB>
+completion  create  resolve  version
+
+
+
+In C# System.CommandLine (now the preferred Microsoft CLI library) provides
+similar tab-completion support. Cobra's is more widely used in practice, and the generated
+scripts work with all major shells.
+
+
+Cobra Patterns and Gotchas
+
+
+Use RunE not Run. Run does not return an
+error, so you must handle errors internally. RunE returns an error; cobra
+prints it and exits with a non-zero code. Always prefer RunE.
+
+
+
+Persistent vs local flags. PersistentFlags() defines flags inherited
+by all subcommands. Flags() defines flags local to one command. Use persistent
+flags for things like --server, --config, --verbose.
+Use local flags for things like --format on a specific command.
+
+
+
+Cobra and init(). The convention of wiring commands in init() is
+common in cobra examples but can make testing harder. For testable CLIs, pass the command
+as a parameter or expose a constructor:
+
+
+
+// Testable approach: return *cobra.Command from a constructor
+func NewRootCmd(version string) *cobra.Command {
+    var serverURL string
+    root := &cobra.Command{Use: "linkctl"}
+    root.PersistentFlags().StringVar(&serverURL, "server", "http://localhost:8080", "...")
+    root.AddCommand(newCreateCmd(&serverURL))
+    root.AddCommand(newVersionCmd(version))
+    return root
+}
+
+
+Summary
+
+
+The stdlib flag package is the right starting point for simple tools. It
+follows Go's convention of preferring the standard library until you genuinely need more.
+When you need subcommands, cobra is the ecosystem standard - used by the tools you already
+use daily. A well-structured cobra CLI has a thin main, a root command with
+persistent flags, subcommands in separate files, version injection via -ldflags,
+and shell completion built in.
+
+
+
+Go's single static binary output is what makes CLI tooling a strength: you build once and
+distribute one file. No installer, no runtime, no shared libraries. Combined with the
+cross-compilation from Part 13, you can build for Linux, macOS, and Windows from one
+machine in seconds.
+
+
+Further Reading
+
+
+flag - pkg.go.dev
+cobra - github.com/spf13/cobra
+cobra - pkg.go.dev
+How to Write Go Code - go.dev
+Command Line Interface Guidelines - clig.dev
+
+
+See Also
+
+
+Building & Cross-Compilation
+Modules & Dependencies
+Clean Code & Project Layout
+Go Workspaces
+

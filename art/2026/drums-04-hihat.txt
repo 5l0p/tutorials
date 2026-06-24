@@ -1,0 +1,385 @@
+Drums - Part 4: Hi-Hat Synthesis in Pure Data
+2026-12-13
+
+
+The metallic ring of a hi-hat comes from inharmonic partial frequencies — not the
+neat 2:1 ratios of a harmonic series, but irregular relationships that prevent the
+brain from resolving the sound into a clear pitch. The classic technique, used in the
+Roland 808 and 909, is to mix six detuned square wave oscillators and filter the
+result into frequency bands with independent decay envelopes. Open and closed hats
+are the same patch with different decay times.
+
+
+What You Will Learn
+
+
+Why six inharmonic oscillator frequencies produce metallic sound
+Generating square waves from [phasor~] in Pd
+Three-band signal splitting with independent decay envelopes
+Blending SID noise with the oscillator bank
+Open vs closed hat: controlling all decay times from a single receiver
+An optional flanger for shimmering effect patches
+X/Y mapping: brightness vs openness
+
+
+The Inharmonic Oscillator Bank
+
+
+Six oscillator frequencies chosen to have no simple integer ratios among them produce
+a dense inharmonic spectrum that sounds metallic. The 808 hi-hat uses these six
+frequencies (all square waves):
+
+
+
+; Classic 808-style closed hi-hat frequencies:
+205.3 Hz
+304.4 Hz
+369.9 Hz
+522.5 Hz
+539.8 Hz
+800.0 Hz
+
+
+
+None of these are octave relationships. 205:304 ≈ 2:3 (close to a fifth, which would
+sound pitched). 304:370 ≈ 5:6 (close to a minor third). The irregularity creates the
+characteristic metallic shimmer rather than a pitched tone.
+
+
+
+A shifted version of these frequencies (all multiplied by ~4.4) gives an open hat with
+a much brighter, more cutting character:
+
+
+
+; Bright/open hi-hat frequencies:
+903.0 Hz
+936.0 Hz
+969.0 Hz
+1041.0 Hz
+1096.0 Hz
+1178.0 Hz
+
+
+
+Rather than hard-coding two sets, parameterise a BaseFrequency offset
+added to the six base frequencies, and a set of individual frequency values that can
+all shift together.
+
+
+Square Waves in Pd
+
+
+[osc~] outputs a sine wave. To get a square wave, overdrive the sine and
+clip it:
+
+
+
+[osc~ 205.3]
+|
+[*~ 100]        ; overdrive — very high gain
+|
+[clip~ -1 1]    ; hard clip → square wave
+|
+[*~ $gain1]     ; per-oscillator gain control
+
+
+
+Alternatively, use [phasor~] which produces a sawtooth 0–1, then apply
+a threshold comparison:
+
+
+
+[phasor~ 205.3]
+|
+[*~ 2]
+|
+[-~ 1]          ; -1 to +1 ramp
+|
+[clip~ -1 1]    ; not needed for phasor but clips any overshoot
+
+
+
+The overdrive+clip approach is simpler in Pd. Both produce rich, buzzy square waves.
+
+
+Six-Oscillator Bank with BaseFrequency Shift
+
+
+; All six oscillators, with BaseFrequency offset applied to each:
+[r $0-baseFreq]     ; 0 Hz for dark, 600+ for bright
+|
+[t f f f f f f]
+|      |      |      |      |      |
+[+205] [+304] [+370] [+523] [+540] [+800]
+|      |      |      |      |      |
+[sq~1] [sq~2] [sq~3] [sq~4] [sq~5] [sq~6]
+(where sq~ = osc~ *~ 100 → clip~ -1 1)
+|      |      |      |      |      |
+[*~g1] [*~g2] [*~g3] [*~g4] [*~g5] [*~g6]
+|
+[+~] [+~] [+~] [+~] [+~]    ; sum all six
+|
+oscillator bus
+
+
+
+In practice, reduce to a more compact layout using a subpatch for the oscillator
+(pass frequency in, get square wave out) and create six instances.
+
+
+SID Noise Blend
+
+
+SID noise (hard-clipped, optionally rate-reduced white noise) adds a breathier quality
+to the metallic oscillator sound:
+
+
+
+[noise~]
+|
+[clip~ -0.1 0.1]   ; hard clip
+|
+[*~ 10]            ; restore amplitude
+|
+[*~ $0-sidNoiseMix]
+
+; Add to oscillator bus:
+oscillator bus
+    |
+[+~] ← SID noise * sidNoiseMix
+    |
+source bus (oscillators + noise)
+
+
+
+A sidNoiseMix of 0 gives the pure metallic oscillator sound. Values above
+0.5 give a breathier, noisier character. Factory closed hats typically use 0.4–0.7.
+
+
+Three-Band Filter Split
+
+
+Split the source bus into three frequency bands, each with its own bandpass/highpass
+filter, amplitude decay envelope, and level control:
+
+
+
+source bus
+    │
+    ├── LOW band ──────────────────────────────────────
+    │   [bp~ $bpLow $bpLowQ]       ; bandpass, e.g. 800–2000 Hz
+    │   [hip~ $hpfLow $hpfLowQ]    ; remove sub content
+    │   [vline~]                   ; decay: DcyLow
+    │   [*~ $mixLow]
+    │
+    ├── MID band ──────────────────────────────────────
+    │   [bp~ $bpMid $bpMidQ]       ; bandpass, e.g. 3000–8000 Hz
+    │   [hip~ $hpfMid $hpfMidQ]
+    │   [vline~]                   ; decay: DcyMid
+    │   [*~ $mixMid]
+    │
+    └── HI band ───────────────────────────────────────
+        ; Residual above the mid band — no explicit bandpass, just a steep HPF:
+        [hip~ $hpfHi $hpfHiQ]      ; remove everything below ~4000 Hz
+        [vline~]                   ; decay: DcyHi (longest for open hat tail)
+        [*~ $mixHi]
+
+
+
+Plus the noise band:
+
+
+
+[noise~]
+    |
+[hip~ $hpfNoise $hpfNoiseQ]   ; highpass to remove low rumble
+    |
+[vline~]                       ; DcyNoise (longest of all four bands)
+    |
+[*~ $mixNoise]
+
+
+Open vs Closed Hat
+
+
+The open hat is not a separate voice. It is the same patch with longer decay times.
+The dominant difference is in DcyHi and DcyNoise — the
+high-frequency bands that produce the perceived tail:
+
+
+
+DcyLowDcyMidDcyHiDcyNoise
+Closed hat136 ms406 ms1585 ms4441 ms
+Open hat1096 ms481 ms4322 ms>10000 ms
+
+
+
+Implement in Lua with a single $0-openness receiver that drives all four
+decay times at once:
+
+
+
+-- openness: 0.0 (closed) to 1.0 (open)
+local function setOpenness(v)
+    -- exponential scaling from 200ms to 30000ms
+    local dcyHi    = 200 * math.pow(150, v)    -- 200 to 30000
+    local dcyNoise = 500 * math.pow(60, v)     -- 500 to 30000
+    local dcyLow   = 100 * math.pow(11, v)     -- 100 to 1100
+    local dcyMid   = 400 * (1 + v * 0.2)      -- 400 to 480 (relatively stable)
+    pd.send("dcyHi",    dcyHi)
+    pd.send("dcyNoise", dcyNoise)
+    pd.send("dcyLow",   dcyLow)
+    pd.send("dcyMid",   dcyMid)
+end
+
+
+
+In Pd, handle open/closed with two trigger receivers — or just expose $0-openness
+as a continuous control and let the Lua UI decide whether to call it
+"closed hat" (send 0.1) or "open hat" (send 0.8).
+
+
+Choke: Open Hat Silenced by Closed Hit
+
+
+A choke implementation resets all decay envelopes when a closed-hat trigger fires.
+Since [vline~] immediately restarts on any new message, the simplest
+choke is: always trigger the hi-hat patch on every hit (both closed and open), and
+set the decay time before each trigger:
+
+
+
+-- In Lua:
+closedButton:onPress(function()
+    setOpenness(0.1)          -- set short decays
+    pd.bang("$0-trigger")     -- fire: new trigger resets all vline~ envelopes
+end)
+
+openButton:onPress(function()
+    setOpenness(0.8)          -- set long decays
+    pd.bang("$0-trigger")
+end)
+
+
+
+Because [vline~] resets on a new message, the closed-hat bang that
+arrives right after setOpenness(0.1) immediately chokes any open-hat
+tail that was still ringing. No separate choke logic needed in Pd.
+
+
+Flanger (Optional)
+
+
+Most factory patches bypass the flanger (all parameters zero). When active, it adds
+shimmering pitch modulation via a short variable-delay line:
+
+
+
+[delwrite~ $0-fl 100]    ; 100 ms max delay buffer
+
+; LFO for delay time:
+[phasor~ $flangeRate]    ; FlangeRate Hz (0.1–10)
+|
+[*~ $flangeDepth]        ; depth in ms (0–20)
+|
+[+ $flangeOffset]        ; center delay offset (0–50 ms)
+|
+[delread~ $0-fl]         ; variable delay read
+
+; Feedback loop: delay output → multiply by feedback → add to input
+; Mix: [*~ $flangeMix] (wet) + inlet [*~ 1-$flangeMix] (dry)
+
+
+
+Effect patches like HIHATE use the flanger for a vintage chorus-on-cymbal sound.
+Leave it bypassed ($0-flangeMix = 0) for all standard hat sounds.
+
+
+Complete Signal Graph
+
+
+[r $0-baseFreq] → [+ per-osc offset] → [osc~ *100 clip~ -1 1] × 6 → [sum]
+   + [noise~ clip~ *10] × $sidNoiseMix
+   = source bus
+
+source bus (+ separate [noise~] for noise band)
+    │
+    ├─ [bp~ bpLow] [hip~ hpfLow] [vline~ DcyLow] [*~ mixLow]   ─┐
+    ├─ [bp~ bpMid] [hip~ hpfMid] [vline~ DcyMid] [*~ mixMid]   ─┤ [+~]
+    ├─ [hip~ hpfHi]              [vline~ DcyHi]  [*~ mixHi]    ─┤
+    └─ [noise~ hip~ hpfNoise]    [vline~ DcyNoise][*~ mixNoise] ─┘
+                                                                  │
+                                                           [flanger] (optional)
+                                                                  │
+                                                           [*~ outLevel]
+                                                                  │
+                                                           [*~ velocity]
+                                                                  │
+                                                              [outlet~]
+
+
+X/Y Mapping
+
+
+AxisDrivesRangeEffect
+XBaseFrequency offset0–600 HzLeft = dark metallic; Right = bright cutting
+YDcyHi + DcyNoise (linked)200–30000 msBottom = closed tight; Top = open long
+
+
+Factory Presets (Lua)
+
+
+local presets = {
+    hihat0 = {  -- classic closed hat, 808-style
+        baseFreq=0, openness=0.05, sidNoise=0.63,
+        mixLow=0.61, mixMid=0.73, mixHi=0.88,
+        bpLow=2163, bpMid=8385, outLevel=0.63,
+    },
+    hihatA = {  -- bright open hat
+        baseFreq=645, openness=0.7, sidNoise=0.56,
+        mixLow=0.62, mixMid=0.45, mixHi=0.61,
+        bpLow=1072, bpMid=8290, outLevel=0.69,
+    },
+    hihat8 = {  -- ultra-tight closed
+        baseFreq=0, openness=0.01, sidNoise=0.44,
+        mixLow=0.4, mixMid=0.6, mixHi=0.5,
+        bpLow=2014, bpMid=6533, outLevel=0.65,
+    },
+}
+
+
+Build Order
+
+
+Single [osc~ 400] → [*~ 100] → [clip~ -1 1] → [vline~] 200 ms decay → verify metallic ring.
+Add all six oscillators at their inharmonic frequencies, sum them.
+Add [hip~ 3000] to remove sub content → hi-hat character emerges.
+Add SID noise blend.
+Implement LOW and MID band splits with separate decay times.
+Implement HI band and Noise band.
+Wire $0-baseFreq as a global offset to all six oscillator frequencies.
+Wire $0-openness to drive all four decay times from Lua.
+Add optional flanger subpatch (bypassed by default).
+
+
+Summary
+
+
+Six inharmonic detuned square wave oscillators create the metallic ring of a hi-hat.
+SID noise adds breath. The combined signal is split into three frequency bands —
+Low, Mid, Hi — plus a separate noise band, each with its own highpass filter and
+independent decay envelope. Closed and open hats are the same patch: a single
+$0-openness receiver drives all four decay times in proportion. New
+triggers immediately choke old tails because [vline~] resets on any
+new message. X controls brightness (BaseFrequency offset); Y controls openness
+(DcyHi + DcyNoise).
+
+
+See Also
+
+
+Architecture and Approach - the extend-decay envelope pattern and $0 namespacing
+Clap Synthesis - another noise-forward synthesis approach with roll clusters
+Spectral Processing with FFT - the frequency-band thinking behind the three-band split
+

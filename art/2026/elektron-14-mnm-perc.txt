@@ -1,0 +1,203 @@
+Elektron Synthesis - Part 14: Monomachine Percussion Toolbox
+2026-01-01
+
+
+The Monomachine includes a Percussion Toolbox synthesis engine — a set of built-in
+drum synthesis voices that can be assigned to any of the six MNM tracks. This allows
+drum patterns to be sequenced alongside melodic content using the same p-lock
+sequencer, and lets drum voices share the MNM's filter and effects bus. The percussion
+voices are simpler than the Machinedrum's TRX machines — they are optimised for rapid
+live programming rather than deep sound design — but they produce a distinctive MNM
+drum character.
+
+
+Percussion Toolbox Voices
+
+
+VoiceDescriptionArchitecture
+PERC BDBass drum / kickSine sweep + noise burst
+PERC SDSnare drumResonator + noise snap
+PERC HHHi-hat (open/closed via decay)Metallic oscillator + HPF
+PERC CYCymbal / crashDense inharmonic + long decay
+PERC CLAPClapNoise burst + short reverb
+PERC MISCMisc percussion (rim, cowbell, clave variants)Parametric resonator
+
+
+PERC BD Parameters
+
+
+KnobNameFunctionRange
+1PITCHBase frequency30–200 Hz
+2DECAYAmplitude decay20–5000 ms
+3SWEEPPitch sweep amount0–600 Hz
+4NOISENoise burst level0–1
+5DISTWaveshaper0–1
+
+
+
+The PERC BD is a single sine oscillator with pitch sweep and optional noise — simpler
+than the TRX-BD's two sines + transient click + waveshaper cascade. The sound is
+more immediate and "synthesiser-like" than the TRX-BD's more analogue-modeled character:
+
+
+
+; PERC BD Pd implementation:
+
+; Pitch sweep:
+[vline~]    ; peak 0, base pdcy    ; exponential from Part 2: [expr~ exp(-3*$v1)*swp + pitch]
+→ [osc~]
+
+; Amplitude:
+[vline~]    ; 1 2, 0 dcy 2
+→ [*~]
+
+; + noise:
+[noise~] → [lop~ pitch*3] → [*~] (fast 30ms) → [*~ nse]
+
+[+~] osc, noise
+→ [tanh * dst]
+→ [*~ level * vel]
+→ [outlet~]
+
+
+PERC SD Parameters
+
+
+KnobNameFunctionRange
+1TONEBody frequency80–400 Hz
+2SNAPNoise (snap) level0–1
+3DECAYBody decay20–1000 ms
+4HDECAYSnap decay5–300 ms
+5DISTWaveshaper0–1
+
+
+
+The PERC SD combines a single resonant sine body with highpass-filtered noise snap —
+a stripped-down version of the TRX-SD architecture:
+
+
+
+; PERC SD:
+[osc~ tone]
+|
+[*~] ← [vline~] 1 2, 0 dcy 2
+|
+[*~ 1-snap]            ; body level = 1-snap (more snap = quieter body)
+
+[noise~] → [hip~ tone*6] → [*~] ← [vline~] 1 2, 0 hdcy 2 → [*~ snap]
+
+[+~] body, snap
+→ [tanh * dist]
+→ [*~ level * vel]
+→ [outlet~]
+
+
+PERC HH Parameters
+
+
+KnobNameFunctionRange
+1FREQOscillator bank frequency offset0–400 Hz offset
+2DECAYAmplitude decay (open/closed control)5–8000 ms
+3TONEHighpass filter cutoff1000–18000 Hz
+4NOISENoise blend0–1
+
+
+
+The PERC HH uses a simplified version of the TRX-HH: four oscillators (not six) at
+inharmonic frequencies, plus HPF-filtered noise:
+
+
+
+; PERC HH: 4 oscillators (fewer than TRX-HH for CPU efficiency)
+; Base frequencies + FREQ offset:
+; 290+frq, 388+frq, 553+frq, 799+frq
+
+[osc~ 290+frq] → *100 → clip -1 1 → *gain  ─┐
+[osc~ 388+frq] → *100 → clip -1 1 → *gain  ─┤ osc bus
+[osc~ 553+frq] → *100 → clip -1 1 → *gain  ─┤
+[osc~ 799+frq] → *100 → clip -1 1 → *gain  ─┘
+
+[noise~] → [hip~ tone*0.8] → [*~ noise]
+
+[+~] osc_bus * (1-noise), noisy_hpf_bus * noise
+|
+[hip~ tone]               ; main highpass shaping
+|
+[*~] ← [vline~] decay envelope
+|
+[*~ level * vel]
+|
+[outlet~]
+
+
+Integration with MNM Track Architecture
+
+
+On the Monomachine, PERC voices share the track's filter and amplifier:
+
+
+
+; MNM track signal flow with PERC voice:
+
+PERC engine output
+    │
+[VCF] — shared filter (cutoff, resonance, filter ADSR)
+    │
+[VCA] — shared amplifier (ADSR, velocity sensitivity)
+    │
+[send to FX bus]
+    │
+[outlet~]
+
+
+
+This means you can apply the MNM's resonant filter to the drum voices for filter
+sweeps — sweeping the cutoff on a PERC HH while it plays creates an acid hi-hat
+effect that would require a separate send on the Machinedrum.
+
+
+P-Locks on Percussion Toolbox
+
+
+Because PERC voices run in the standard MNM track, all parameters are p-lockable.
+This is the key advantage over a dedicated drum machine: you can lock PITCH per step
+to create melodic kick patterns, lock DECAY per step to program open/closed hi-hat
+dynamics, or lock SNAP per step for dynamic snare velocity variation.
+
+
+
+-- Lua pattern with p-locked PERC BD pitch:
+local kick_pattern = {
+    steps = {1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,1,0},
+    pitch = {60,0,0,0, 0,0,0,0, 55,0,0,0, 0,0,50,0},  -- MIDI notes
+    decay = {500,0,0,0, 0,0,0,0, 800,0,0,0, 0,0,300,0},
+}
+
+for step, vel in ipairs(kick_pattern.steps) do
+    if vel  0 then
+        pd.send("bd-pitch", midi_to_hz(kick_pattern.pitch[step]))
+        pd.send("bd-decay", kick_pattern.decay[step])
+        pd.send("bd-trig", "bang")
+    end
+end
+
+
+Summary
+
+
+The Monomachine Percussion Toolbox provides simplified drum synthesis voices (BD, SD,
+HH, CY, Clap, Misc) that run inside standard MNM tracks. They are architecturally
+simpler than TRX machines — fewer oscillators, fewer parameters — but share the MNM's
+filter, amplifier, and effects bus, enabling filter automation and FX routing that
+would be impossible on a dedicated drum machine. All parameters are p-lockable per step,
+enabling melodic kick patterns, dynamic open/closed hi-hat control, and per-step
+timbre variation from the same MNM sequencer used for melodic voices.
+
+
+See Also
+
+
+Machinedrum and Monomachine Effects - the effects bus these voices share
+Machinedrum TRX-BD - the more elaborate BD architecture these simplified versions derive from
+Assembling a Drum Machine (Series 9) - the complete drum machine architecture
+

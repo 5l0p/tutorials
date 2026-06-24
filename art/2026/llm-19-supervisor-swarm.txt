@@ -1,0 +1,384 @@
+LLM - Part 19: Supervisor & Swarm Patterns
+2026-06-28
+
+
+This final article in the series covers the two most common topologies for larger
+multi-agent systems: the supervisor pattern (hierarchical, single point of control) and
+the swarm pattern (flat, peer-to-peer, consensus-based). Both build on everything in
+the series - agents, tools, MCP, memory, and orchestration. After reading this article
+you should be able to design a multi-agent architecture for any problem and identify
+which pattern fits.
+
+
+What You Will Learn
+
+
+The supervisor pattern: a hierarchical controller that delegates to specialist agents and monitors progress
+Implementing the supervisor loop in Go: task dispatch, status polling, failure recovery
+The swarm pattern: peer agents with no central controller reaching consensus
+Implementing a consensus mechanism: majority vote and conflict resolution
+A reference architecture diagram comparing supervisor and swarm topologies
+How to choose between the two patterns for a given problem
+
+
+The Supervisor Pattern
+
+
+A supervisor agent sits at the top of a hierarchy. It receives user tasks, decides which
+specialist agent is best suited for each subtask, delegates, monitors progress, and
+handles failures. Specialist agents are narrow and deep - they know one domain well.
+
+
+
+                        ┌──────────────┐
+                        │  Supervisor  │
+                        └──────┬───────┘
+              ┌────────────────┼────────────────┐
+              ▼                ▼                 ▼
+     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+     │ Coder Agent │  │  QA Agent   │  │ Docs Agent  │
+     └─────────────┘  └─────────────┘  └─────────────┘
+
+
+Supervisor Implementation
+
+
+type SupervisorAgent struct {
+    APIKey   string
+    Model    string
+    Agents   map[string]*SubAgent // name → agent
+    MaxRetry int
+}
+
+func (s *SupervisorAgent) Run(ctx context.Context, task string) (string, error) {
+    // Describe available agents to the supervisor
+    var agentDescriptions strings.Builder
+    agentDescriptions.WriteString("Available specialist agents:\n")
+    for name, agent := range s.Agents {
+        fmt.Fprintf(&agentDescriptions, "- %s: %s\n", name, agent.SystemPrompt[:80])
+    }
+
+    systemPrompt := fmt.Sprintf(`You are a supervisor coordinating a team of specialist agents.
+%s
+
+To delegate a task, use the delegate_task tool. Monitor results and retry on failure.
+Synthesise the final result from all delegations.`, agentDescriptions.String())
+
+    delegateTool := s.buildDelegateTool()
+    supervisorLoop := NewAgent(s.APIKey, s.Model, systemPrompt, []Tool{delegateTool})
+
+    return supervisorLoop.RunWithContext(ctx, task)
+}
+
+func (s *SupervisorAgent) buildDelegateTool() Tool {
+    // Build enum of valid agent names
+    var names []string
+    for name := range s.Agents {
+        names = append(names, name)
+    }
+
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name:        "delegate_task",
+            Description: "Delegate a specific task to a specialist agent. Returns the agent's result.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "agent": {
+                        Type:        "string",
+                        Description: "Name of the specialist agent to use",
+                        Enum:        names,
+                    },
+                    "task": {
+                        Type:        "string",
+                        Description: "Clear, specific task description for the agent",
+                    },
+                },
+                Required: []string{"agent", "task"},
+            },
+        },
+    }
+}
+
+
+Failure Recovery in the Supervisor
+
+
+When a specialist agent fails, the supervisor has options: retry, escalate to a different
+agent, or report failure. Encode this logic in the supervisor's system prompt and in the
+tool's error handling:
+
+
+
+func (s *SupervisorAgent) delegateWithRetry(
+    ctx context.Context,
+    agentName, task string,
+) (string, error) {
+    agent, ok := s.Agents[agentName]
+    if !ok {
+        return "", fmt.Errorf("unknown agent: %s", agentName)
+    }
+
+    var lastErr error
+    for i := 0; i < s.MaxRetry; i++ {
+        result, err := agent.Run(ctx, task)
+        if err == nil {
+            return result, nil
+        }
+        lastErr = err
+        // Log failure so the supervisor model can adapt
+        fmt.Printf("[supervisor] agent %s failed attempt %d: %v\n", agentName, i+1, err)
+        time.Sleep(time.Duration(1<<i) * time.Second)
+    }
+    return "", fmt.Errorf("agent %s failed after %d retries: %w", agentName, s.MaxRetry, lastErr)
+}
+
+
+
+The supervisor model sees the error returned as the tool result and can decide to try a
+different agent, report the failure to the user, or decompose the task differently.
+
+
+The Swarm Pattern
+
+
+In a swarm, there is no central coordinator. N peer agents receive the same task and
+work on it independently. Their outputs are then aggregated - by majority vote, by a
+separate evaluation agent, or by blending. Swarms are useful when:
+
+
+
+You want multiple independent perspectives on a problem.
+You need high confidence that the answer is correct (vote on it).
+A task has inherent parallelism that a supervisor would serialise.
+
+
+
+                ┌────────┐
+                │  Task  │
+                └───┬────┘
+      ┌─────────────┼─────────────┐
+      ▼             ▼             ▼
+ ┌─────────┐  ┌─────────┐  ┌─────────┐
+ │ Agent A │  │ Agent B │  │ Agent C │
+ └────┬────┘  └────┬────┘  └────┬────┘
+      └─────────────┼─────────────┘
+                    ▼
+              ┌──────────┐
+              │ Consensus│
+              └──────────┘
+
+
+Swarm Implementation
+
+
+type SwarmResult struct {
+    AgentIndex int
+    Output     string
+    Err        error
+}
+
+func RunSwarm(
+    ctx context.Context,
+    agents []*SubAgent,
+    task string,
+) []SwarmResult {
+    results := make([]SwarmResult, len(agents))
+    var wg sync.WaitGroup
+
+    for i, agent := range agents {
+        wg.Add(1)
+        go func(idx int, a *SubAgent) {
+            defer wg.Done()
+            out, err := a.Run(ctx, task)
+            results[idx] = SwarmResult{AgentIndex: idx, Output: out, Err: err}
+        }(i, agent)
+    }
+    wg.Wait()
+    return results
+}
+
+
+Consensus Strategies
+
+Majority vote (for classification tasks) - if most agents agree, return that answer:
+
+
+func MajorityVote(results []SwarmResult) string {
+    counts := make(map[string]int)
+    for _, r := range results {
+        if r.Err == nil {
+            counts[strings.TrimSpace(r.Output)]++
+        }
+    }
+    var best string
+    var bestCount int
+    for answer, count := range counts {
+        if count > bestCount {
+            best, bestCount = answer, count
+        }
+    }
+    return best
+}
+
+
+LLM-based synthesis (for open-ended tasks) - send all results to a synthesis agent:
+
+
+func SynthesiseWithLLM(
+    ctx context.Context,
+    apiKey string,
+    task string,
+    results []SwarmResult,
+) (string, error) {
+    var sb strings.Builder
+    fmt.Fprintf(&sb, "Task: %s\n\nMultiple agents produced the following responses:\n\n", task)
+    for i, r := range results {
+        if r.Err == nil {
+            fmt.Fprintf(&sb, "Agent %d:\n%s\n\n", i+1, r.Output)
+        }
+    }
+    sb.WriteString("Synthesise these responses into a single, accurate, comprehensive answer.")
+
+    synth := &LLMChain{
+        APIKey:       apiKey,
+        Model:        "gpt-4o-mini",
+        SystemPrompt: "You are an expert at synthesising multiple responses into one definitive answer.",
+        Temperature:  0.2,
+    }
+    return synth.Run(ctx, sb.String())
+}
+
+
+Failure Recovery in the Swarm
+
+
+A swarm degrades gracefully: if one agent fails, the remaining agents' results are still
+valid. Filter out failed results before consensus:
+
+
+
+func filterSuccessful(results []SwarmResult) []SwarmResult {
+    var ok []SwarmResult
+    for _, r := range results {
+        if r.Err == nil && strings.TrimSpace(r.Output) != "" {
+            ok = append(ok, r)
+        }
+    }
+    return ok
+}
+
+
+
+If fewer than a quorum of agents succeed, report failure rather than producing a
+potentially unreliable result:
+
+
+
+const quorum = 0.5 // 50% success required
+
+successful := filterSuccessful(results)
+if float64(len(successful)) / float64(len(results)) < quorum {
+    return "", fmt.Errorf("swarm failed: only %d/%d agents succeeded",
+        len(successful), len(results))
+}
+
+
+Reference Architecture
+
+
+A complete multi-agent system combining supervisor and swarm patterns:
+
+
+
+User Request
+     │
+     ▼
+┌────────────────────────────────────────────────────┐
+│                   Supervisor Agent                  │
+│         (gpt-4o, plans and coordinates)             │
+└────────────────┬────────────────────┬───────────────┘
+                 │                    │
+      ┌──────────▼──────────┐   ┌─────▼──────────────┐
+      │   Research Swarm    │   │  Execution Pipeline │
+      │ (3× gpt-4o-mini)    │   │  (sequential chain) │
+      │                     │   │                     │
+      │ Agent A │ B │ C     │   │ Write → Review → Fix│
+      │    ↓    ↓   ↓      │   │ (coder + QA agents) │
+      │  Consensus / Vote   │   └────────────────────-┘
+      └─────────────────────┘
+                 │                    │
+                 └──────────┬─────────┘
+                            ▼
+                    ┌───────────────┐
+                    │  Final Result  │
+                    │  to User       │
+                    └───────────────┘
+
+
+Choosing Between Supervisor and Swarm
+
+
+Use supervisor when tasks have dependencies (B needs A's output), require coordination, or involve sequential decision-making.
+Use swarm when tasks are independent, you want diversity of thought, or you need redundancy for reliability.
+Use both when tasks have a planning phase (supervisor) followed by parallel execution (swarm).
+
+
+What This Series Has Built
+
+
+Over nineteen articles you have built, from scratch and in pure Go:
+
+
+
+A raw HTTP client for the OpenAI API and its chat completions format.
+Tool calling with JSON schema definitions and a dispatch loop.
+A stateful agent loop with termination conditions and error recovery.
+A composable skills registry with typed interfaces.
+Three MCP server transports: stdio, HTTP/SSE, and WebSocket.
+Short-term and long-term memory with summarisation.
+A JSON-backed vector store with cosine similarity for RAG.
+Prompt caching strategy (CAG) for static knowledge bases.
+Local model inference via llama.cpp's OpenAI-compatible API.
+A fully assembled agent binary with all components integrated.
+Chains, routers, prompt templates, and reflection loops (mini LangChain).
+Parallel orchestration with goroutines, channels, and context cancellation.
+Agent-to-agent communication via MCP with cycle prevention.
+Supervisor and swarm topologies with failure recovery and consensus.
+
+
+
+None of this required a framework. The Go standard library, a few focused third-party
+packages (mcp-go, yaml.v3), and a clear understanding of the
+primitives is sufficient. That is the point of building it yourself: not to avoid
+frameworks forever, but to understand what they are actually doing.
+
+
+Summary
+
+
+A supervisor agent dispatches tasks to specialist agents, tracks their progress, and
+retries or reroutes on failure — all without the worker agents knowing about each other.
+A swarm has no central coordinator: each agent sees the shared problem state and
+contributes an answer, with a majority vote or merge step producing the final output.
+Supervisors are easier to debug (a single point of control) and better for sequential
+pipelines; swarms are better for independent parallel verification and fault tolerance
+when no single agent should be trusted alone.
+
+
+Further Reading
+
+
+AgentScope: A Flexible yet Robust Multi-Agent Platform (2024)
+LangGraph: Multi-Agent Collaboration tutorial
+Anthropic: Building Effective Agents
+
+
+See Also
+
+
+Multi-Agent Orchestration - fan-out with goroutines and channels
+Agent-to-Agent Communication - typed inter-agent calls via MCP
+Putting It Together: A Full Agent - the single-agent foundation this series builds on
+

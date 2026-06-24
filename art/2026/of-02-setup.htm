@@ -1,0 +1,357 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>openFrameworks - Part 2: Setup & Project Generator</title>
+    <meta name="description" content="How to download openFrameworks, use the project generator to create a new project, understand the folder layout, and build and run your first sketch on Linux, macOS, and Windows.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="cpp, openframeworks, graphics">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="of-02-setup.txt">plain/text</a> | <i>2026-09-23</i> | <i><a href="../../cpp.htm">cpp</a>, <a href="../../openframeworks.htm">openframeworks</a>, <a href="../../graphics.htm">graphics</a></i>
+        <h2>openFrameworks - Part 2: Setup & Project Generator</h2>
+        <p>
+Before you can draw a single pixel you need a working build environment. openFrameworks is not
+installed from a package manager - you download a release archive, unzip it, and every project
+you create lives inside that directory tree. This article walks through that process, explains
+the folder layout, and shows you how to compile and run a project on each of the three major
+desktop platforms.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How to download the openFrameworks release archive and what the folder layout means</li>
+<li>How to use the Project Generator to create a new project with addons</li>
+<li>How to compile and run a project with make on Linux, Xcode on macOS, and Visual Studio on Windows</li>
+<li>What lives in the apps/, addons/, and libs/ directories</li>
+<li>How to read example source code as the fastest way to learn the oF API</li>
+</ul>
+
+<h3>Downloading openFrameworks</h3>
+
+<p>
+Go to <a href="https://openframeworks.cc/download/">openframeworks.cc/download</a> and grab the
+archive for your platform: <b>linux64</b>, <b>osx</b>, or <b>vs</b> (Visual Studio, Windows).
+The 0.12.x series is the current stable branch. Each platform archive is roughly 250–300 MB
+because it bundles all the precompiled third-party libraries oF depends on.
+</p>
+
+<p>
+Unzip to a location without spaces in the path. A common convention is:
+</p>
+
+<pre>
+~/of/           # Linux / macOS home directory
+C:\of\          # Windows, short path avoids NTFS MAX_PATH issues
+</pre>
+
+<p>
+After unzipping you will see the top-level oF distribution. All your own projects will live
+inside this tree, under <code>apps/myApps/</code> by convention.
+</p>
+
+<h3>The Distribution Folder Layout</h3>
+
+<pre>
+of_v0.12.0_linux64_release/
+  addons/             &lt;-- ofxOSC, ofxGui, etc. (bundled addons)
+  apps/
+    myApps/           &lt;-- your projects go here
+  libs/               &lt;-- oF core source + third-party (FreeType, GLFW, ...)
+  scripts/            &lt;-- platform setup scripts
+  projectGenerator/   &lt;-- the GUI tool for creating projects
+  examples/           &lt;-- official examples, organised by topic
+</pre>
+
+<p>
+The <code>libs/</code> directory is large. It contains both the oF source code
+(<code>libs/openFrameworks/</code>) and precompiled third-party binaries for your target
+platform. You almost never need to modify anything here.
+</p>
+
+<h3>Running the Project Generator</h3>
+
+<p>
+The project generator (PG) creates a correctly wired skeleton project. On Linux and macOS you
+can run it as a GUI application or from the command line. On Windows the GUI version is the
+primary workflow.
+</p>
+
+<p>
+<b>GUI workflow (all platforms):</b> Launch <code>projectGenerator/projectGenerator</code>
+(Linux/macOS) or <code>projectGenerator\projectGenerator.exe</code> (Windows). Set:
+</p>
+
+<ul>
+  <li><b>Project name</b> - e.g. <code>mySketch</code></li>
+  <li><b>Project path</b> - defaults to <code>apps/myApps/</code>, which is correct</li>
+  <li><b>Addons</b> - check any bundled addons you need (you can re-run PG later to add more)</li>
+</ul>
+
+<p>
+Click <b>Generate</b>. The tool creates the project folder and exits cleanly.
+</p>
+
+<p>
+<b>Command-line workflow (Linux/macOS):</b>
+</p>
+
+<pre>
+cd ~/of/of_v0.12.0_linux64_release/
+./projectGenerator/projectGenerator \
+    --project apps/myApps/mySketch \
+    --addons ofxOSC,ofxGui
+</pre>
+
+<h3>Inside a Generated Project</h3>
+
+<pre>
+apps/myApps/mySketch/
+  src/
+    main.cpp
+    ofApp.h
+    ofApp.cpp
+  bin/               &lt;-- compiled binary appears here after build
+  addons.make        &lt;-- list of addons for the Makefile system
+  Makefile
+  mySketch.xcodeproj/   (macOS only)
+  mySketch.sln          (Windows only)
+  mySketch.vcxproj      (Windows only)
+</pre>
+
+<p>
+The generated <code>src/ofApp.h</code>, <code>src/ofApp.cpp</code>, and
+<code>src/main.cpp</code> contain the minimal skeleton covered in the previous article. You
+should not need to edit <code>main.cpp</code> until you want to change the window size or
+switch to fullscreen.
+</p>
+
+<h3>Building on Linux</h3>
+
+<p>
+openFrameworks on Linux uses a GNU Makefile build system. Install the prerequisites first
+(Ubuntu / Debian shown):
+</p>
+
+<pre>
+sudo apt update
+sudo apt install build-essential libgl1-mesa-dev libglu1-mesa-dev \
+    libasound2-dev libpulse-dev libgtk-3-dev libfreeimage-dev \
+    libfreetype6-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    libmpg123-dev libsndfile1-dev
+</pre>
+
+<p>
+The oF distribution includes a convenience script that installs all of these for various
+distros:
+</p>
+
+<pre>
+cd ~/of/of_v0.12.0_linux64_release/scripts/linux/
+sudo ./install_dependencies.sh
+</pre>
+
+<p>
+Then build your project:
+</p>
+
+<pre>
+cd ~/of/of_v0.12.0_linux64_release/apps/myApps/mySketch/
+make -j$(nproc)
+make run
+</pre>
+
+<p>
+The first build compiles both the oF static library and your project - this takes several
+minutes. Subsequent builds are incremental and typically take a few seconds.
+</p>
+
+<h3>Building on macOS</h3>
+
+<p>
+The PG generates an Xcode project. Open <code>mySketch.xcodeproj</code> in Xcode, select the
+<code>mySketch</code> scheme, and press <b>Cmd+R</b> to build and run. Xcode must be installed
+from the App Store; the Command Line Tools alone are not sufficient because oF links against
+macOS frameworks.
+</p>
+
+<p>
+Alternatively, from the terminal:
+</p>
+
+<pre>
+cd ~/of/of_v0.12.0_osx/apps/myApps/mySketch/
+make -j$(sysctl -n hw.ncpu)
+make run
+</pre>
+
+<p>
+The macOS Makefile path is supported but the Xcode IDE gives you the debugger and profiler,
+which are valuable for creative coding work.
+</p>
+
+<h3>Building on Windows</h3>
+
+<p>
+Download and install <b>Visual Studio Community</b> (free). During installation select the
+<b>Desktop development with C++</b> workload. The project generator creates a
+<code>.sln</code> solution file. Open it, set the configuration to <b>Release x64</b> (or
+Debug if you need to step through code), and press <b>F5</b>.
+</p>
+
+<p>
+Visual Studio places the compiled binary in <code>bin\</code> relative to your project root,
+matching the Linux and macOS convention.
+</p>
+
+<h3>Adding an Addon After Project Creation</h3>
+
+<p>
+Open <code>addons.make</code> in your project folder and add one addon name per line:
+</p>
+
+<pre>
+ofxOSC
+ofxGui
+ofxAssimpModelLoader
+</pre>
+
+<p>
+Then re-run the project generator (point it at the existing project folder) to regenerate the
+platform-specific project files. On Linux the Makefile system reads <code>addons.make</code>
+directly at build time, so you only need to re-run PG if you use Xcode or Visual Studio.
+</p>
+
+<h3>The config.make File</h3>
+
+<p>
+Each project on Linux/macOS has a <code>config.make</code> that lets you override build
+variables. Common overrides:
+</p>
+
+<pre>
+# config.make
+CFLAGS += -O3 -march=native       # optimise for the current CPU
+PROJECT_LDFLAGS += -lsndfile      # link an extra system library
+EXCLUDE_FROM_BUILD = src/WipFile.cpp
+</pre>
+
+<h3>Running the Official Examples</h3>
+
+<p>
+Before writing your own code, build and run a few of the official examples:
+</p>
+
+<pre>
+cd ~/of/of_v0.12.0_linux64_release/examples/graphics/polygonExample/
+make -j$(nproc) &amp;&amp; make run
+</pre>
+
+<p>
+The examples directory is organised by topic: <code>graphics/</code>, <code>sound/</code>,
+<code>3d/</code>, <code>gl/</code>, <code>input_output/</code>. Each example is a
+self-contained project with its own Makefile. Reading example source code is one of the fastest
+ways to learn the oF API.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Download the release archive from openframeworks.cc and unzip it — all your projects live
+inside the resulting directory. Run the Project Generator to create a new app; it generates
+the correct Makefile and IDE project for your platform and lists addons in
+<code>addons.make</code>. Build with <code>make &amp;&amp; make RunRelease</code> on Linux,
+open the Xcode project on macOS, or the Visual Studio solution on Windows. The
+<code>examples/</code> directory is organised by topic and is the best reference for the
+oF API.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+  <li><a href="https://openframeworks.cc/download/">openFrameworks Download Page</a></li>
+  <li><a href="https://openframeworks.cc/setup/linux-install/">oF Linux Setup Guide</a></li>
+  <li><a href="https://openframeworks.cc/setup/xcode/">oF macOS / Xcode Setup Guide</a></li>
+  <li><a href="https://openframeworks.cc/setup/vs/">oF Windows / Visual Studio Setup Guide</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+  <li><a href="of-01-what-is-of.htm">What Is openFrameworks?</a></li>
+  <li><a href="of-03-lifecycle.htm">The ofApp Lifecycle</a></li>
+  <li><a href="of-16-linux-builds.htm">Linux Builds</a></li>
+  <li><a href="of-17-windows-builds.htm">Windows Builds</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

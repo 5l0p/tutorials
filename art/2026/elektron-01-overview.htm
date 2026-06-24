@@ -1,0 +1,260 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Elektron Synthesis - Part 1: Machinedrum and Monomachine Architecture</title>
+    <meta name="description" content="An engineering overview of the Elektron Machinedrum and Monomachine synthesisers: their machine-type architectures, synthesis families (TRX, EFM, E12, PI; GND, SFX, VO, DIGI), how parameter-per-step locks work, and the approach for recreating each machine type as a Pd patch or external.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, puredata, audio, synthesis, elektron">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="elektron-01-overview.txt">plain/text</a> | <i>2026-01-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../synthesis.htm">synthesis</a>, <a href="../../elektron.htm">elektron</a></i>
+        <h2>Elektron Synthesis - Part 1: Machinedrum and Monomachine Architecture</h2>
+        <p>
+The Elektron Machinedrum (2001) and Monomachine (2004) are hardware synthesisers that
+organise their audio generation into discrete, swappable <em>machines</em> — synthesis
+algorithms that can be assigned independently to each track. Understanding what algorithm
+each machine type implements is the prerequisite for recreating it in Pure Data or as
+a Pd external. This series reverse-engineers each machine family from the synthesis
+architecture up.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What "machine type" means on each instrument and why it matters for synthesis</li>
+<li>The four Machinedrum machine families: TRX, EFM, E12, PI</li>
+<li>The four Monomachine synthesis engines: GND, SFX, VO, DIGI</li>
+<li>How parameter-per-step locks work and what they imply for synthesis design</li>
+<li>The common architecture shared by all Pd recreations in this series</li>
+<li>What "recreating as a Pd external" means vs a vanilla Pd patch</li>
+</ul>
+
+<h3>The Machinedrum</h3>
+
+<p>
+The Machinedrum SPS-1 is a 16-track drum synthesiser with a step sequencer. Each of
+the 16 tracks runs an independently selectable machine — a synthesis algorithm tuned
+for a specific class of drum sound. The machine type determines which parameters
+appear on the track's eight knobs and what sound is produced on trigger.
+</p>
+
+<p>
+Four synthesis families are available:
+</p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Family</th><th>Name</th><th>Architecture</th><th>Articles</th></tr>
+<tr><td><b>TRX</b></td><td>Turbo Resonant eXtended</td><td>Analog-modeled subtractive synthesis</td><td>Parts 2–6</td></tr>
+<tr><td><b>EFM</b></td><td>Extended FM</td><td>Multi-operator FM synthesis</td><td>Part 7</td></tr>
+<tr><td><b>E12</b></td><td>Emulation 12</td><td>Vector/PCM emulation of classic machines</td><td>Part 8</td></tr>
+<tr><td><b>PI</b></td><td>Pitched Instruments</td><td>Physical modelling / resonant synthesis</td><td>Part 9</td></tr>
+</table>
+
+<p>
+Within each family, machines are organised by instrument role: BD (bass drum), SD (snare),
+HH (hi-hat closed), XT (hi-hat open), CY (cymbal), CB (cowbell), CP (clap), RS (rimshot).
+A TRX-BD and an EFM-BD produce a kick drum sound using entirely different synthesis
+algorithms — you choose the family that matches the character you want.
+</p>
+
+<h3>The Monomachine</h3>
+
+<p>
+The Monomachine SFX60 is a 6-track synthesiser — not a drum machine, but a
+general-purpose synthesiser with monophonic tracks. Each track runs one machine from
+one of four synthesis engines, plus the universal filter, amplifier, and effects chain.
+</p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Engine</th><th>Name</th><th>Architecture</th><th>Articles</th></tr>
+<tr><td><b>SID</b></td><td>SID machines</td><td>MOS6581/8580 chip emulation: tri/saw/pulse/noise, ring mod, sync, 4-pole filter</td><td>Part 9</td></tr>
+<tr><td><b>VO</b></td><td>Virtual Operator</td><td>2-operator FM: carrier, modulator, index ADSR, feedback</td><td>Part 10</td></tr>
+<tr><td><b>FM+</b></td><td>Extended FM</td><td>3-operator FM with algorithm selection and per-operator envelopes</td><td>Part 11</td></tr>
+<tr><td><b>SuperWave</b></td><td>SuperWave machines</td><td>Up to 7 detuned oscillators (saw/square/triangle) for thick unison sounds</td><td>Part 12</td></tr>
+<tr><td><b>DigiPro</b></td><td>DigiPro machines</td><td>Phase distortion synthesis (CZ-style) and wavetable scanning</td><td>Part 13</td></tr>
+<tr><td><b>PERC</b></td><td>Percussion Toolbox</td><td>Built-in drum synthesis voices (BD, SD, HH, CY, Clap) on any track</td><td>Part 14</td></tr>
+</table>
+
+<p>
+Unlike the Machinedrum, all Monomachine tracks share the same downstream architecture:
+a 2-pole multimode filter (LP/BP/HP), an amplifier with ADSR envelope, and a per-track
+send to the effects bus. The machine type controls only the oscillator section.
+</p>
+
+<h3>Parameter Locks</h3>
+
+<p>
+Both instruments use <em>parameter locks</em> (p-locks): any parameter on a track can
+be set differently for each sequencer step. This is the key to the Elektron sequencer's
+expressive power — a kick can be tuned to a different pitch on each step, a hi-hat can
+open on some steps and close on others, all without automation.
+</p>
+
+<p>
+For Pd recreations, this maps to: all synthesis parameters must be settable at message
+rate (not just at patch load time). Every parameter should be reachable by a
+<code>[receive]</code> object so the sequencer (in Lua or another Pd patch) can lock
+any parameter to any step value.
+</p>
+
+<h3>Common Pd Architecture for This Series</h3>
+
+<p>
+Every Pd recreation in this series follows the same top-level structure:
+</p>
+
+<pre>
+; Voice template:
+[r $0-trig]   → trigger bang
+[r $0-vel]    → velocity 0–1
+[r $0-pN]     → parameter N (message rate, p-lockable)
+
+; Synthesis section (machine-specific)
+
+; Filter section (shared for MNM, absent for MD):
+[r $0-cutoff] → VCF cutoff (0–1)
+[r $0-res]    → VCF resonance (0–1)
+[r $0-fenv]   → filter envelope amount (±1)
+
+; Amp section:
+[r $0-vol]    → output level
+→ [vline~] ADSR → [*~] → [outlet~]
+</pre>
+
+<p>
+The synthesis section varies per machine type. The filter and amplifier are identical
+across all Monomachine recreations.
+</p>
+
+<h3>Pd Patch vs Pd External</h3>
+
+<p>
+A <em>Pd patch</em> reconstruction uses only built-in Pd objects — <code>[osc~]</code>,
+<code>[noise~]</code>, <code>[lop~]</code>, <code>[vline~]</code> etc. This is fully
+portable and requires no compilation.
+</p>
+
+<p>
+A <em>Pd external</em> is a compiled C or C++ object loaded as a <code>.pd_linux</code>
+or <code>.dll</code>. An external is appropriate when:
+</p>
+
+<ul>
+<li>The algorithm requires sample-accurate state that is awkward to express in Pd dataflow</li>
+<li>Performance matters (e.g. a many-oscillator FM machine where C is 10–50× faster than Pd)</li>
+<li>The algorithm requires non-standard memory layouts (lookup tables, per-sample feedback)</li>
+</ul>
+
+<p>
+The EFM (4-operator FM) and E12 (table-based emulation) articles use a Pd external
+approach. The TRX, PI, GND, SFX, VO, and DIGI articles use vanilla Pd patches.
+</p>
+
+<h3>Parameter Naming Convention</h3>
+
+<p>
+The articles use abbreviated parameter names matching the Machinedrum and Monomachine
+front panel abbreviations. Full parameter names are given at first mention. Where
+the original parameter range is 0–127 (MIDI-style), the Pd implementation maps to 0–1
+for consistency with the rest of this site.
+</p>
+
+<h3>Series Outline</h3>
+
+<ul>
+<li><b>Part 2:</b> Machinedrum TRX-BD — bass drum synthesis</li>
+<li><b>Part 3:</b> Machinedrum TRX-SD — snare drum synthesis</li>
+<li><b>Part 4:</b> Machinedrum TRX-HH and TRX-XT — hi-hats</li>
+<li><b>Part 5:</b> Machinedrum TRX-CY and TRX-CB — cymbal and cowbell</li>
+<li><b>Part 6:</b> Machinedrum TRX-CP, TRX-RS, TRX-MA — clap, rimshot, metallic</li>
+<li><b>Part 7:</b> Machinedrum EFM — FM synthesis drum machines</li>
+<li><b>Part 8:</b> Machinedrum E12 — vector emulation machines</li>
+<li><b>Part 9:</b> Machinedrum PI — pitched instruments</li>
+<li><b>Part 9:</b> Monomachine SID — MOS6581/8580 SID chip emulation</li>
+<li><b>Part 10:</b> Monomachine VO — Virtual Operator 2-op FM</li>
+<li><b>Part 11:</b> Monomachine FM+ — extended 3-operator FM</li>
+<li><b>Part 12:</b> Monomachine SuperWave — detuned multi-oscillator unison</li>
+<li><b>Part 13:</b> Monomachine DigiPro — phase distortion and wavetable oscillators</li>
+<li><b>Part 14:</b> Monomachine Percussion Toolbox — built-in drum voices</li>
+<li><b>Part 15:</b> Effects — MD and MNM effects chains in Pd</li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="drums-01-architecture.htm">Drum Machine Synthesis Architecture</a> - the Series 9 Prok Drums implementation that preceded this series</li>
+<li><a href="dsp-16-fm-synthesis.htm">FM Synthesis</a> - the theory behind EFM and VO machines</li>
+<li><a href="libpd-01-what-is-libpd.htm">What Is libpd?</a> - embedding the Pd engine used by these recreations</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

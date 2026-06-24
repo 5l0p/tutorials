@@ -1,0 +1,336 @@
+LLM - Part 1: OpenAI API Basics
+2026-06-09
+
+
+The OpenAI API is an HTTP JSON service. Every request is a POST to an endpoint,
+every response is a JSON object. You do not need an SDK to use it - net/http
+and encoding/json are enough. This article strips away the abstraction and
+shows you exactly what is sent over the wire. Every article in this series builds on
+this foundation, so understanding it clearly matters.
+
+
+What You Will Learn
+
+
+The structure of the chat completions endpoint: authentication, request body, response format
+How to define the request and response types in Go using only the standard library
+How to make the HTTP request, decode the response, and print the model's reply
+How to select models and what the model name string controls
+How to handle API errors and rate-limit responses correctly
+
+
+
+Authentication
+
+
+You authenticate by sending your API key in the Authorization header:
+
+
+
+Authorization: Bearer sk-...your-key-here...
+
+
+
+Never hard-code the key. Read it from the environment:
+
+
+
+apiKey := os.Getenv("OPENAI_API_KEY")
+if apiKey == "" {
+    fmt.Fprintln(os.Stderr, "OPENAI_API_KEY not set")
+    os.Exit(1)
+}
+
+
+The Chat Completions Endpoint
+
+
+The primary endpoint for generating text is:
+
+
+
+POST http://localhost:8001/v1/chat/completions
+Content-Type: application/json
+Authorization: Bearer <key>
+
+
+
+The request body is a JSON object with at minimum a model field and a
+messages array. The model field names a specific OpenAI model: gpt-4o,
+gpt-4o-mini, o1, o3-mini, and so on. Model availability
+and pricing differ - for experimentation, gpt-4o-mini is fast and cheap.
+
+
+Defining the Types
+
+
+Go needs struct types to marshal and unmarshal JSON. Keep the request type minimal - only
+include fields you actually use:
+
+
+
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+)
+
+const apiURL = "http://localhost:8001/v1/chat/completions"
+
+type Message struct {
+    Role    string `json:"role"`
+    Content string `json:"content"`
+}
+
+type ChatRequest struct {
+    Model    string    `json:"model"`
+    Messages []Message `json:"messages"`
+}
+
+type Choice struct {
+    Message      Message `json:"message"`
+    FinishReason string  `json:"finish_reason"`
+}
+
+type Usage struct {
+    PromptTokens     int `json:"prompt_tokens"`
+    CompletionTokens int `json:"completion_tokens"`
+    TotalTokens      int `json:"total_tokens"`
+}
+
+type ChatResponse struct {
+    ID      string   `json:"id"`
+    Choices []Choice `json:"choices"`
+    Usage   Usage    `json:"usage"`
+    Error   *struct {
+        Message string `json:"message"`
+        Type    string `json:"type"`
+    } `json:"error"`
+}
+
+
+
+The Error field deserves attention. OpenAI returns HTTP 200 with an error body
+for some failures (particularly when the request is well-formed but the model refuses).
+For authentication failures and bad requests you get a non-200 status code instead.
+Always check both.
+
+
+Making the Request
+
+
+func chat(apiKey, model string, messages []Message) (*ChatResponse, error) {
+    reqBody := ChatRequest{
+        Model:    model,
+        Messages: messages,
+    }
+
+    data, err := json.Marshal(reqBody)
+    if err != nil {
+        return nil, fmt.Errorf("marshal: %w", err)
+    }
+
+    req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(data))
+    if err != nil {
+        return nil, fmt.Errorf("new request: %w", err)
+    }
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+apiKey)
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf("do request: %w", err)
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, fmt.Errorf("read body: %w", err)
+    }
+
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, body)
+    }
+
+    var result ChatResponse
+    if err := json.Unmarshal(body, &result); err != nil {
+        return nil, fmt.Errorf("unmarshal: %w", err)
+    }
+
+    if result.Error != nil {
+        return nil, fmt.Errorf("API error (%s): %s", result.Error.Type, result.Error.Message)
+    }
+
+    return &result, nil
+}
+
+
+
+A few things worth noting. We use io.ReadAll to buffer the full body before
+unmarshalling. This lets us log the raw response on error, which is invaluable during
+development. The alternative - json.NewDecoder(resp.Body).Decode(&result) -
+is slightly more efficient for large bodies but loses the raw bytes if decoding fails.
+For debugging, the read-all approach wins.
+
+
+Putting It Together
+
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    if apiKey == "" {
+        fmt.Fprintln(os.Stderr, "OPENAI_API_KEY not set")
+        os.Exit(1)
+    }
+
+    messages := []Message{
+        {Role: "system", Content: "You are a helpful assistant. Be concise."},
+        {Role: "user", Content: "What is the capital of France?"},
+    }
+
+    resp, err := chat(apiKey, "gpt-4o-mini", messages)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "error:", err)
+        os.Exit(1)
+    }
+
+    if len(resp.Choices) == 0 {
+        fmt.Fprintln(os.Stderr, "no choices returned")
+        os.Exit(1)
+    }
+
+    fmt.Println(resp.Choices[0].Message.Content)
+    fmt.Printf("tokens: %d prompt + %d completion = %d total\n",
+        resp.Usage.PromptTokens,
+        resp.Usage.CompletionTokens,
+        resp.Usage.TotalTokens,
+    )
+}
+
+
+
+Run it:
+
+
+
+export OPENAI_API_KEY=sk-...
+go run main.go
+
+
+
+You should see something like:
+
+
+
+Paris.
+tokens: 27 prompt + 4 completion = 31 total
+
+
+Model Selection
+
+
+The model field is a string and OpenAI releases new models regularly. A few landmarks
+as of early 2026:
+
+
+
+gpt-4o - the flagship multimodal model. Fast, capable, handles vision.
+gpt-4o-mini - smaller, cheaper, still very capable for text tasks. Good default for development.
+o1 / o3-mini - reasoning models that "think" before answering. Slower and more expensive but significantly better at complex multi-step problems.
+
+
+
+For an agentic application where the model will be calling tools in a loop,
+gpt-4o-mini is a reasonable starting point. Upgrade to gpt-4o
+or a reasoning model when you hit capability limits, not before.
+
+
+The Response Structure
+
+
+The full response has more fields than the struct above captures. The ones that matter
+most for the rest of this series:
+
+
+
+choices[0].message.role - always "assistant" for a chat completion.
+choices[0].message.content - the generated text. May be null if the model called a tool instead (covered in article 03).
+choices[0].finish_reason - why the model stopped. "stop" means it finished naturally. "tool_calls" means it wants to invoke a tool. "length" means it hit the token limit.
+usage - token counts for cost tracking and context window management.
+
+
+Error Handling in Production
+
+
+The OpenAI API returns several classes of errors worth handling explicitly:
+
+
+
+401 - invalid API key.
+429 - rate limited. Back off and retry with exponential jitter.
+500 / 503 - server-side error. Retry after a short delay.
+400 - malformed request (wrong model name, bad JSON, context window exceeded).
+
+
+
+A minimal retry wrapper:
+
+
+
+func chatWithRetry(apiKey, model string, messages []Message, maxRetries int) (*ChatResponse, error) {
+    var lastErr error
+    for i := 0; i < maxRetries; i++ {
+        resp, err := chat(apiKey, model, messages)
+        if err == nil {
+            return resp, nil
+        }
+        lastErr = err
+        // Only retry on transient errors
+        if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "500") {
+            time.Sleep(time.Duration(1<<i) * time.Second)
+            continue
+        }
+        return nil, err // non-retryable
+    }
+    return nil, fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
+}
+
+
+
+This series focuses on concepts rather than production hardening - the retry logic above
+is intentionally simple. Real production code should use a proper backoff library and
+respect the Retry-After header when it is present.
+
+
+Summary
+
+
+The OpenAI API is a POST to /v1/chat/completions with a JSON body
+containing a model name and a messages array. The response is a JSON object with
+a choices array; the model's reply is in
+choices[0].message.content. No SDK is needed — net/http
+and encoding/json handle everything. Set the API key in the
+Authorization: Bearer ... header. This pattern is the same for
+every provider that implements the OpenAI-compatible API, including llama.cpp.
+
+
+Further Reading
+
+
+OpenAI API Reference: Chat Completions
+OpenAI Model Overview
+Go net/http package documentation
+Go encoding/json package documentation
+
+
+See Also
+
+
+Chat Completions Deep Dive - roles, temperature, context window management
+Tool Calls (Function Calling) - extending the model with executable functions
+

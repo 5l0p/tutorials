@@ -1,0 +1,191 @@
+libpd - Part 7: Arrays & Tables
+2026-10-28
+
+Pd arrays (also called tables when used for wavetables) are named blocks of floating-point data stored inside a patch. From C, libpd lets you read and write this data at any time - before the patch runs, during audio processing, or between blocks. This makes Pd tables useful as shared buffers for wavetable synthesis, sample data, impulse responses, and any other large dataset your patch needs.
+
+What You Will Learn
+
+
+The difference between Pd arrays and tables at the API level (none — same storage)
+How to query array size with libpd_arraysize and validate before access
+Reading array data with libpd_read_array and writing with libpd_write_array
+Populating a wavetable with a sine wave before the audio loop starts
+Using array write to push sample buffers or impulse responses into the patch at runtime
+The limitation: arrays cannot be resized from C — plan sizes upfront
+
+
+Pd Arrays vs Tables
+
+In Pure Data, an array is created with the menu or by typing [array myTable 1024] inside a patch. The [table] object is syntactic sugar for an array intended as a wavetable - the two share the same underlying storage. From libpd's perspective they are identical: a named float array living inside a patch.
+
+Accessing an array from C requires knowing its name (set as the array's label in the patch) and its size. If you are unsure of the size, query it first.
+
+Querying Array Size
+
+
+#include <z_libpd.h>
+
+int size = libpd_arraysize("myTable");
+if (size < 0) {
+    fprintf(stderr, "Array 'myTable' not found\n");
+}
+/* Returns the number of floats in the array */
+
+
+A return value of -1 means the array does not exist in any currently-open patch. This can happen if the array name is misspelled, or if the patch has not been opened yet.
+
+Reading Array Data
+
+
+float buf[1024];
+int result = libpd_read_array(buf,       /* destination C buffer */
+                              "myTable", /* array name in patch  */
+                              0,         /* offset (start index) */
+                              1024);     /* number of floats     */
+if (result != 0) {
+    fprintf(stderr, "Failed to read array\n");
+}
+
+
+The offset and count let you read a sub-range. Reading beyond the array bounds returns an error. Reading happens synchronously - it does not interact with the audio thread in any special way, so you should avoid calling it from within libpd_process_float unless you know the array is not being written by the patch simultaneously.
+
+Writing Array Data
+
+
+#include <math.h>
+
+/* Fill a 2048-sample sine wavetable */
+float sine_table[2048];
+for (int i = 0; i < 2048; i++) {
+    sine_table[i] = sinf(2.0f * 3.14159265f * (float)i / 2048.0f);
+}
+
+int result = libpd_write_array(sine_table, /* source C buffer   */
+                               "sinewave", /* array name        */
+                               0,          /* offset            */
+                               2048);      /* count             */
+if (result != 0) {
+    fprintf(stderr, "Failed to write array\n");
+}
+
+
+After writing, the patch's [tabread4~] or [tabosc4~] objects will immediately use the new data on the next audio tick. No restart needed.
+
+Use Case: Wavetable Oscillator
+
+A common pattern is to compute a custom waveform in C and load it into a Pd [tabosc4~] object. The Pd patch only needs:
+
+
+[table osc_wave 4096]
+[tabosc4~ osc_wave]
+
+
+Your C code fills the table with any waveform before audio starts:
+
+
+#define TABLESIZE 4096
+
+static float make_additive_wave(int n_harmonics) {
+    /* Already declared as static so we can write it back */
+}
+
+static void load_waveform(int harmonics) {
+    float wave[TABLESIZE];
+    float norm = 0.0f;
+
+    /* Additive synthesis: sum sine harmonics */
+    for (int h = 1; h <= harmonics; h++) {
+        float amp = 1.0f / (float)h;
+        norm += amp;
+        for (int i = 0; i < TABLESIZE; i++) {
+            wave[i] += amp * sinf(2.0f * 3.14159265f *
+                                  (float)h * (float)i / TABLESIZE);
+        }
+    }
+
+    /* Normalise to [-1, 1] */
+    for (int i = 0; i < TABLESIZE; i++) {
+        wave[i] /= norm;
+    }
+
+    libpd_write_array(wave, "osc_wave", 0, TABLESIZE);
+}
+
+
+Call load_waveform(8) for an 8-harmonic wave before the audio callback starts, or call it again any time to morph the timbre.
+
+Sharing Large Data Buffers
+
+Pd arrays work as shared memory between your C application and the patch. This is useful for:
+
+
+Sample playback: Load a WAV file into a C buffer, write it to a Pd array. [tabplay~] or [tabread4~] plays it.
+Convolution reverb: Write an impulse response into a table; the patch applies it with [partconv~] (from the cyclone library).
+Envelope data: Write a multi-segment envelope curve into a table; [tabread4~] reads it at envelope speed.
+Spectral data: Feed FFT bins or a spectral frame into a table for resynthesis.
+
+
+Updating Arrays in Real Time
+
+You can write arrays between audio blocks to animate the wavetable in real time (wavetable morphing). The safe place to do this is at the top of the audio callback, before calling libpd_process_float:
+
+
+static float morphed[2048];
+
+void audio_callback(float *out, int frames) {
+    /* Recompute the wave once per block (expensive; tune as needed) */
+    float t = (float)block_count / 441.0f; /* time in seconds */
+    for (int i = 0; i < 2048; i++) {
+        float phase = 2.0f * 3.14159265f * (float)i / 2048.0f;
+        morphed[i] = sinf(phase) * (1.0f - t) +
+                     sinf(2.0f * phase) * t; /* morph sine -> square */
+    }
+    libpd_write_array(morphed, "osc_wave", 0, 2048);
+    libpd_process_float(frames / 64, NULL, out);
+    block_count++;
+}
+
+
+Reading Patch Output via Arrays
+
+Arrays also work in the other direction: a Pd patch can write to a table using [tabwrite~], and your C code reads it back. This is useful for visualising waveforms or extracting analysis data:
+
+
+/* Pd patch writes the output signal into "scope_buf" table */
+/* C side reads it back for oscilloscope display */
+
+float scope[512];
+libpd_read_array(scope, "scope_buf", 0, 512);
+ui_draw_oscilloscope(scope, 512);
+
+
+Resizing Arrays
+
+libpd does not currently expose an API to resize arrays from C at runtime. To change an array size, recreate it in the patch (or reload the patch with a modified size). Plan your array sizes upfront and allocate them generously.
+
+Summary
+
+
+Query an array's size with libpd_arraysize("name") — a negative return means
+the array does not exist. Read with libpd_read_array(dest, "name", offset, n)
+and write with libpd_write_array("name", offset, src, n). Both functions copy
+between C memory and Pd's internal storage; calling them outside the audio callback is
+safe but you must ensure the patch is open. Pre-populate wavetables and sample buffers
+before starting the audio loop so the patch's first block sees valid data.
+
+
+Further Reading
+
+
+Pure Data: arrays and tables
+z_libpd.h array API
+Miller Puckette's Pd Manual: Chapter 3 (arrays)
+
+
+See Also
+
+
+Initialising libpd & Loading a Patch
+Sending Messages to Pd
+The Audio Render Loop
+

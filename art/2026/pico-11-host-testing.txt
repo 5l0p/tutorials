@@ -1,0 +1,492 @@
+RPIPicoDSP - Part 11: Testing Pico Code on the Host
+2026-11-17
+
+
+The RP2040 has no operating system, no standard test runner, and no easy way to run
+code without plugging in a board. But the DSP algorithms in this series — biquad
+filters, oscillators, ADSR envelopes, FM synthesis — are pure C functions that depend
+on math.h and nothing else. With a small set of hardware stubs, you can
+compile and test them on any x86 or ARM Linux machine before touching the Pico at all.
+
+
+What You Will Learn
+
+
+Why host testing embedded code is valuable and what it cannot cover
+Writing a stub pico/stdlib.h and hardware register shims for hardware/pwm.h and hardware/adc.h
+A CMake PLATFORM variable that switches between the Pico SDK and stubs
+Running DSP unit tests with Unity on the host and reading output over UART on the board
+Testing biquad filters with impulse response, oscillators with zero-crossing counts, and ADSR with sample-level timing assertions
+Limitations: what host tests cannot catch
+
+
+Why Host Testing Is Valuable
+
+
+The RP2040 runs at 133 MHz. Compiling to the Pico, copying the .uf2 file
+to the board, and reading serial output takes 30–60 seconds per iteration. An x86
+compilation and test run takes under a second. For algorithms that are pure math,
+this is a 60× faster feedback loop.
+
+
+
+Host testing cannot verify:
+
+
+
+Timing: DMA callbacks, interrupt latency, PWM audio output glitches.
+Hardware peripherals: ADC accuracy, I2S framing, UART at hardware baud rates.
+Multicore interactions: sio_hw spinlocks, FIFO between cores.
+Fixed-point overflow at the specific word width of the RP2040.
+
+
+
+Host tests cover the DSP math and business logic. Hardware tests on the real board
+cover timing, peripherals, and integration. Both are necessary.
+
+
+The Stub Header Strategy
+
+
+Pico SDK code includes headers like pico/stdlib.h,
+hardware/pwm.h, and hardware/adc.h. On the host, these do
+not exist. The fix is a stubs/ directory that shadows the SDK headers
+with minimal no-op implementations.
+
+
+
+stubs/
+  pico/
+    stdlib.h
+    time.h
+    multicore.h
+  hardware/
+    pwm.h
+    adc.h
+    gpio.h
+    irq.h
+    dma.h
+  pico_sdk_version.h
+
+
+
+Tell CMake to put stubs/ first in the include path when building for the
+host. The compiler finds the stub headers before looking in the system path.
+
+
+Writing the Stubs
+
+stubs/pico/stdlib.h — the most-included Pico header:
+
+
+#pragma once
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Pico SDK types used in DSP code */
+typedef uint8_t  uint8;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+typedef int16_t  int16;
+typedef int32_t  int32;
+
+/* No-op implementations of Pico stdlib functions */
+static inline void stdio_init_all(void) {}
+static inline void sleep_ms(uint32_t ms) { (void)ms; }
+static inline void sleep_us(uint32_t us) { (void)us; }
+static inline uint32_t time_us_32(void)  { return 0; }
+static inline bool     gpio_get(uint gpio) { (void)gpio; return false; }
+
+
+stubs/hardware/pwm.h — stubs for PWM audio output:
+
+
+#pragma once
+#include <stdint.h>
+
+typedef struct {
+    volatile uint32_t csr;
+    volatile uint32_t div;
+    volatile uint32_t ctr;
+    volatile uint32_t cc;
+    volatile uint32_t top;
+} pwm_hw_t;
+
+static pwm_hw_t _stub_pwm_hw;
+#define pwm_hw (&_stub_pwm_hw)
+
+static inline uint pwm_gpio_to_slice_num(uint gpio) { (void)gpio; return 0; }
+static inline uint pwm_gpio_to_channel(uint gpio)   { (void)gpio; return 0; }
+static inline void pwm_set_wrap(uint slice, uint16_t wrap) {
+    (void)slice; (void)wrap;
+}
+static inline void pwm_set_chan_level(uint slice, uint chan, uint16_t level) {
+    (void)slice; (void)chan; (void)level;
+}
+static inline void pwm_set_enabled(uint slice, bool enabled) {
+    (void)slice; (void)enabled;
+}
+static inline void pwm_set_irq_enabled(uint slice, bool enabled) {
+    (void)slice; (void)enabled;
+}
+static inline void pwm_clear_irq(uint slice) { (void)slice; }
+
+
+stubs/hardware/adc.h — stubs for ADC input:
+
+
+#pragma once
+#include <stdint.h>
+
+static uint16_t _stub_adc_value = 2048; /* mid-scale */
+
+static inline void     adc_init(void) {}
+static inline void     adc_gpio_init(uint gpio) { (void)gpio; }
+static inline void     adc_select_input(uint input) { (void)input; }
+static inline uint16_t adc_read(void) { return _stub_adc_value; }
+
+/* Test helper: set the ADC return value */
+static inline void stub_adc_set_value(uint16_t v) { _stub_adc_value = v; }
+
+
+
+The ADC stub includes a test helper — stub_adc_set_value — so tests can
+drive the ADC with a known input and assert on the DSP output. This is the embedded
+equivalent of dependency injection.
+
+
+CMake Platform Switch
+
+
+cmake_minimum_required(VERSION 3.22)
+
+option(PLATFORM "Target platform: pico or host" "pico")
+
+if(PLATFORM STREQUAL "host")
+    # Host build: plain C, no Pico SDK
+    project(pico_dsp_host C)
+    set(CMAKE_C_STANDARD 11)
+
+    add_library(dsp_logic STATIC
+        src/biquad.c
+        src/oscillator.c
+        src/envelope.c
+        src/fm_synth.c
+    )
+    target_include_directories(dsp_logic PUBLIC
+        src
+        stubs   # stubs come before any system path
+    )
+
+    add_executable(run_tests
+        test/test_main.c
+        test/test_biquad.c
+        test/test_oscillator.c
+        test/test_envelope.c
+    )
+    target_link_libraries(run_tests PRIVATE dsp_logic m)
+    target_include_directories(run_tests PRIVATE
+        third_party/unity
+        stubs
+    )
+
+    enable_testing()
+    add_test(NAME dsp_tests COMMAND run_tests)
+
+else()
+    # Pico build: pull in the SDK
+    include(pico_sdk_import.cmake)
+    project(pico_dsp C CXX ASM)
+    pico_sdk_init()
+
+    add_executable(pico_dsp
+        src/main.c
+        src/biquad.c
+        src/oscillator.c
+        src/envelope.c
+        src/fm_synth.c
+    )
+    target_link_libraries(pico_dsp pico_stdlib hardware_pwm hardware_adc)
+    pico_add_extra_outputs(pico_dsp)
+endif()
+
+
+
+Build for the host:
+
+
+
+cmake -S . -B build_host -DPLATFORM=host
+cmake --build build_host
+ctest --test-dir build_host --output-on-failure
+
+
+
+Build for the Pico:
+
+
+
+cmake -S . -B build_pico -DPICO_BOARD=pico -DPICO_SDK_PATH=~/pico-sdk
+cmake --build build_pico
+# Copy build_pico/pico_dsp.uf2 to the Pico's USB drive
+
+
+DSP Tests with Unity
+
+
+The Unity test framework (Part 28 of the DSP series) works unchanged on the host.
+Here are the key test patterns for the Pico DSP code:
+
+
+
+/* test/test_biquad.c */
+#include "unity.h"
+#include "biquad.h"
+
+void setUp(void)    {}
+void tearDown(void) {}
+
+void test_lowpass_attenuates_above_cutoff(void) {
+    BiquadFilter f;
+    biquad_lowpass(&f, 500.0f, 0.707f, 44100.0f);
+
+    /* Drive with 10 kHz — should be heavily attenuated */
+    float phase = 0.0f;
+    float max_out = 0.0f;
+    for (int i = 0; i < 4410; i++) {
+        float in = sinf(phase);
+        phase += 2.0f * 3.14159265f * 10000.0f / 44100.0f;
+        float out = fabsf(biquad_process(&f, in));
+        if (out > max_out) max_out = out;
+    }
+    /* 10 kHz is 20× the 500 Hz cutoff — should be < -40 dB = 0.01 */
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, max_out);
+}
+
+void test_lowpass_passes_dc(void) {
+    BiquadFilter f;
+    biquad_lowpass(&f, 500.0f, 0.707f, 44100.0f);
+    float out = 0.0f;
+    for (int i = 0; i < 1000; i++) out = biquad_process(&f, 1.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, out);
+}
+
+
+
+/* test/test_oscillator.c */
+#include "unity.h"
+#include "oscillator.h"
+#include <math.h>
+
+void test_sine_oscillator_frequency(void) {
+    Oscillator osc;
+    osc_init(&osc, OSC_SINE, 440.0f, 44100.0f);
+
+    int crossings = 0;
+    float prev = osc_tick(&osc);
+    for (int i = 1; i < 44100; i++) {
+        float s = osc_tick(&osc);
+        if ((prev < 0.0f && s >= 0.0f) || (prev >= 0.0f && s < 0.0f))
+            crossings++;
+        prev = s;
+    }
+    /* 440 Hz × 2 crossings/cycle = 880 ±5% */
+    TEST_ASSERT_INT_WITHIN(44, 880, crossings);
+}
+
+void test_sine_amplitude_within_bounds(void) {
+    Oscillator osc;
+    osc_init(&osc, OSC_SINE, 1000.0f, 44100.0f);
+    for (int i = 0; i < 44100; i++) {
+        float s = osc_tick(&osc);
+        TEST_ASSERT_TRUE(s >= -1.0f - 1e-5f);
+        TEST_ASSERT_TRUE(s <=  1.0f + 1e-5f);
+    }
+}
+
+
+
+/* test/test_envelope.c */
+#include "unity.h"
+#include "envelope.h"
+
+void test_adsr_reaches_peak_after_attack(void) {
+    const float fs = 44100.0f;
+    ADSR env;
+    adsr_init(&env, 10.0f, 50.0f, 0.7f, 100.0f, fs);
+    adsr_note_on(&env);
+
+    int attack_samples = (int)(0.010f * fs);
+    float peak = 0.0f;
+    for (int i = 0; i <= attack_samples + 5; i++) {
+        float v = adsr_tick(&env);
+        if (v > peak) peak = v;
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 1.0f, peak);
+}
+
+void test_adsr_sustain_holds_correct_level(void) {
+    const float fs = 44100.0f;
+    ADSR env;
+    adsr_init(&env, 1.0f, 1.0f, 0.7f, 10.0f, fs);
+    adsr_note_on(&env);
+
+    int skip = (int)(0.002f * fs);
+    for (int i = 0; i < skip; i++) adsr_tick(&env);
+    float sustain = adsr_tick(&env);
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 0.7f, sustain);
+}
+
+void test_adsr_releases_to_zero(void) {
+    const float fs = 44100.0f;
+    ADSR env;
+    adsr_init(&env, 1.0f, 1.0f, 0.7f, 10.0f, fs);
+    adsr_note_on(&env);
+
+    int sustain_samples = (int)(0.005f * fs);
+    for (int i = 0; i < sustain_samples; i++) adsr_tick(&env);
+
+    adsr_note_off(&env);
+
+    int release_samples = (int)(0.020f * fs);
+    float final_level = 0.0f;
+    for (int i = 0; i < release_samples; i++) {
+        final_level = adsr_tick(&env);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 0.0f, final_level);
+}
+
+
+Driving Tests from the ADC Stub
+
+
+To test code that reads the ADC (e.g. a tremolo that reads an LFO depth from a
+potentiometer), drive the stub value and assert on the DSP output:
+
+
+
+/* test/test_tremolo.c */
+#include "unity.h"
+#include "pico/stdlib.h"   /* resolves to stubs/pico/stdlib.h on host */
+#include "hardware/adc.h"  /* resolves to stubs/hardware/adc.h */
+#include "tremolo.h"
+
+void test_tremolo_depth_from_adc(void) {
+    /* ADC at 0 → depth 0 → signal passes through unchanged */
+    stub_adc_set_value(0);
+    Tremolo t;
+    tremolo_init(&t, 5.0f, 44100.0f); /* 5 Hz LFO */
+    tremolo_update_depth_from_adc(&t); /* reads ADC internally */
+
+    float out = tremolo_process(&t, 1.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, out); /* depth=0, no attenuation */
+
+    /* ADC at 4095 → maximum depth */
+    stub_adc_set_value(4095);
+    tremolo_update_depth_from_adc(&t);
+    /* With full depth, output should be modulated (check it is less than input) */
+    float modulated = tremolo_process(&t, 1.0f);
+    TEST_ASSERT_TRUE(modulated < 1.0f);
+}
+
+
+Running Tests on the Real Board with Unity over UART
+
+
+For tests that genuinely need the hardware (timing, ADC accuracy, DMA audio), run
+Unity on the Pico itself and read results over UART:
+
+
+
+/* test/pico_test_runner.c — compiled for the Pico target */
+#include "pico/stdlib.h"
+#include "unity.h"
+
+/* Unity output hook — send to UART instead of printf */
+void UnityOutputChar(char c) {
+    uart_putc(uart0, c);
+}
+
+int main(void) {
+    stdio_init_all();
+
+    /* Give host time to open serial monitor */
+    sleep_ms(2000);
+
+    UNITY_BEGIN();
+    RUN_TEST(test_lowpass_attenuates_above_cutoff);
+    RUN_TEST(test_lowpass_passes_dc);
+    RUN_TEST(test_sine_oscillator_frequency);
+    RUN_TEST(test_adsr_reaches_peak_after_attack);
+    return UNITY_END();
+}
+
+
+
+Unity's output character function is user-provided. Redirecting it to UART means all
+test results appear in the serial terminal (minicom -b 115200 -D /dev/ttyACM0
+or screen /dev/ttyACM0 115200).
+
+
+
+For automated board testing in CI, combine a Raspberry Pi as a controller board with
+the Pico as the device under test. The Pi programs the Pico via SWD (OpenOCD),
+resets it, reads UART output, and fails the CI step if "FAIL" appears:
+
+
+
+#!/bin/bash
+# ci/run_board_tests.sh
+openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
+    -c "program build_pico/pico_dsp.elf verify reset exit"
+
+# Wait for tests to complete, capture UART output
+output=$(timeout 10 cat /dev/ttyACM0)
+echo "$output"
+echo "$output" | grep -q "FAIL" && exit 1 || exit 0
+
+
+Limitations of Host Testing
+
+
+Host tests verify the algorithm, not the implementation on the hardware. Things host
+tests will not catch:
+
+
+
+Integer overflow at RP2040 word width — the host's int may be wider.
+Fixed-point precision — if you use Q15 or Q31 arithmetic, verify on the target.
+Audio glitches from DMA underruns — no DMA on the host.
+PWM resolution limits — the 12-bit DAC via PWM has a different noise floor than a floating-point simulation.
+Flash read latency — large lookup tables in flash can stall the CPU on the Pico in ways that are invisible on the host.
+
+
+
+The rule: run host tests on every commit (fast, catches algorithm bugs). Run board
+tests on hardware before each release (slow, catches integration and timing issues).
+
+
+Summary
+
+
+Write stub headers in a stubs/ directory that shadow the Pico SDK headers
+with no-op implementations of hardware functions. Include test helpers (like
+stub_adc_set_value) in the stubs to inject controlled inputs. Use a
+CMake PLATFORM variable to switch between the Pico SDK and stub headers
+at configure time. Test biquad filters, oscillators, and envelopes with Unity's
+TEST_ASSERT_FLOAT_WITHIN — the same patterns from Part 28 of the DSP
+series apply directly. For hardware-dependent tests, redirect Unity output to UART and
+read it from a host machine with a serial terminal or an automated test script.
+
+
+See Also
+
+
+The Audio Render Loop on Bare Metal - the loop whose DSP functions are tested here
+Porting DSP Code from the Desktop - the code that benefits most from host testing
+Testing DSP Code - the Unity patterns used in this article
+Complete Synthesiser Voice - the assembled voice tested with these techniques
+

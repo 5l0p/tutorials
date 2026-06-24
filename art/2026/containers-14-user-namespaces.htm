@@ -1,0 +1,489 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Containers - Part 14: User Namespaces & Rootless Containers</title>
+    <meta name="description" content="User namespaces map unprivileged UIDs to fake root inside a container - the kernel primitive that makes rootless containers possible without a setuid binary.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="linux, containers">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="containers-14-user-namespaces.txt">plain/text</a> | <i>2026-08-12</i> | <i><a href="../../linux.htm">linux</a>, <a href="../../containers.htm">containers</a></i>
+        <h2>Containers - Part 14: User Namespaces & Rootless Containers</h2>
+        <p>
+Every other namespace type covered in this series requires root privileges to
+create. User namespaces are different: an unprivileged process can create one.
+Inside a user namespace the process can appear to be UID 0 - root - with a
+full set of capabilities, while outside the namespace it remains the same
+unprivileged user it always was. This is the kernel primitive that makes
+rootless containers possible. Podman uses it. <code>bubblewrap</code> uses it. It is
+also how Chrome's sandboxing works on Linux. Understanding user namespaces means
+understanding both their power and their limits.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How the kernel maintains separate UID and GID spaces per user namespace</li>
+<li>How <code>/proc/PID/uid_map</code> and <code>/proc/PID/gid_map</code> define the mapping</li>
+<li>How to create a user namespace from C and from Go without root privileges</li>
+<li>How capabilities work inside a user namespace</li>
+<li>How Podman uses user namespaces for rootless containers</li>
+<li>Security limitations: what user namespace root cannot do on the host</li>
+</ul>
+
+<h3>The UID and GID Map</h3>
+
+<p>
+When the kernel creates a user namespace it does not automatically know how to
+translate UIDs between the new namespace and its parent. That mapping is written
+by the parent process into two virtual files in <code>/proc</code> immediately after the
+namespace is created, before the child is allowed to do anything interesting.
+</p>
+
+<p>
+The format of <code>/proc/PID/uid_map</code> (and <code>gid_map</code>) is three
+space-separated columns per line:
+</p>
+
+<pre>
+&lt;start-in-new-ns&gt;  &lt;start-in-parent-ns&gt;  &lt;count&gt;
+</pre>
+
+<p>
+For example, the line <code>0 1000 1</code> means: UID 0 in the new namespace maps to
+UID 1000 in the parent namespace, and only one UID is in this range. A process
+running as UID 0 inside the namespace is actually UID 1000 on the host - the
+kernel translates automatically when performing credential checks.
+</p>
+
+<pre>
+# Create a user namespace (no root required)
+unshare --user --pid --mount --fork bash
+
+# Inside: we appear to be nobody (mapping not yet written)
+id
+# uid=65534(nobody) gid=65534(nogroup) ...
+
+# In another terminal, write the mapping for the shell's PID
+CPID=$(pgrep -n bash)
+echo "0 1000 1" | sudo tee /proc/$CPID/uid_map
+echo "deny"     | sudo tee /proc/$CPID/setgroups
+echo "0 1000 1" | sudo tee /proc/$CPID/gid_map
+
+# Back inside the namespace
+id
+# uid=0(root) gid=0(root) groups=0(root)
+</pre>
+
+<p>
+The <code>setgroups</code> file must be written before <code>gid_map</code>. Writing
+<code>deny</code> to it prevents the process from calling <code>setgroups()</code> to drop
+supplementary groups - a security measure that prevents an unprivileged user
+from using the namespace to remove group write restrictions. Only when
+<code>setgroups</code> is set to <code>allow</code> can <code>gid_map</code> be written without root.
+</p>
+
+<h3>Creating a User Namespace from C</h3>
+
+<p>
+The standard pattern is: fork a child with <code>CLONE_NEWUSER</code>, have the child
+pause (by reading from a pipe), write the UID/GID maps from the parent, then
+signal the child to continue. The child can then do things that require root
+within the namespace.
+</p>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;fcntl.h&gt;
+#include &lt;sched.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;unistd.h&gt;
+
+static int pipe_fd[2];  /* parent writes, child reads */
+
+static int child_main(void *arg) {
+    (void)arg;
+    char buf[1];
+
+    /* Wait for parent to write uid_map / gid_map */
+    read(pipe_fd[0], buf, 1);
+    close(pipe_fd[0]);
+
+    printf("[child] uid  = %d\n", getuid());
+    printf("[child] gid  = %d\n", getgid());
+    printf("[child] euid = %d\n", geteuid());
+
+    /* We can now perform privileged operations within the namespace */
+    /* e.g. mount a tmpfs (requires CLONE_NEWMNT too) */
+
+    return 0;
+}
+
+static void write_map(pid_t pid, const char *file,
+                      int inner, int outer, int count) {
+    char path[256], buf[64];
+    snprintf(path, sizeof(path), "/proc/%d/%s", pid, file);
+    snprintf(buf,  sizeof(buf),  "%d %d %d\n", inner, outer, count);
+
+    int fd = open(path, O_WRONLY);
+    if (fd == -1) { perror(path); exit(1); }
+    write(fd, buf, strlen(buf));
+    close(fd);
+}
+
+static void deny_setgroups(pid_t pid) {
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/setgroups", pid);
+    int fd = open(path, O_WRONLY);
+    if (fd == -1) { perror(path); exit(1); }
+    write(fd, "deny", 4);
+    close(fd);
+}
+
+int main(void) {
+    if (pipe(pipe_fd) == -1) { perror("pipe"); return 1; }
+
+    const int STACK_SIZE = 1024 * 1024;
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) { perror("malloc"); return 1; }
+
+    pid_t pid = clone(child_main,
+                      stack + STACK_SIZE,
+                      CLONE_NEWUSER | SIGCHLD,
+                      NULL);
+    if (pid == -1) { perror("clone"); return 1; }
+
+    /* Write the mappings: child UID 0 = our real UID */
+    uid_t real_uid = getuid();
+    gid_t real_gid = getgid();
+
+    deny_setgroups(pid);
+    write_map(pid, "uid_map", 0, real_uid, 1);
+    write_map(pid, "gid_map", 0, real_gid, 1);
+
+    /* Tell the child it can proceed */
+    write(pipe_fd[1], "x", 1);
+    close(pipe_fd[1]);
+
+    waitpid(pid, NULL, 0);
+    free(stack);
+    return 0;
+}
+</pre>
+
+<p>
+Compile without root: <code>gcc -o userns userns.c &amp;&amp; ./userns</code>. The child
+prints UID 0 and GID 0, yet the whole program ran without any elevated
+privileges on the host.
+</p>
+
+<h3>Capabilities Inside a User Namespace</h3>
+
+<p>
+When a process enters a new user namespace in which it is mapped to UID 0, the
+kernel grants it a full capability set within that namespace. This sounds
+alarming, but the capabilities are scoped: they only grant power over resources
+owned by that namespace. Specifically:
+</p>
+
+<ul>
+<li><code>CAP_SYS_ADMIN</code> inside a user namespace lets you mount filesystems that are safe for unprivileged users (tmpfs, proc, sysfs) within a new mount namespace. It does not let you mount block devices from the host.</li>
+<li><code>CAP_NET_ADMIN</code> inside a network namespace created by the user namespace lets you configure that network namespace's interfaces. It does not let you change host interfaces.</li>
+<li>Operations that would affect resources outside the namespace - such as loading kernel modules - still fail with <code>EPERM</code>.</li>
+</ul>
+
+<p>
+The kernel checks capabilities relative to the namespace in which the resource
+being operated on lives. A file on the host filesystem is owned by the initial
+user namespace; capability checks against it use the initial namespace's
+credential mapping. Fake root inside an inner user namespace does not help there.
+</p>
+
+<pre>
+# Verify: inside a user namespace, try to read /etc/shadow
+unshare --user bash -c "id; cat /etc/shadow"
+# uid=0(root) gid=0(root) ...
+# cat: /etc/shadow: Permission denied
+# Host kernel still enforces file permissions using the real UID.
+</pre>
+
+<h3>Combining User Namespaces with Other Namespaces</h3>
+
+<p>
+The real power of user namespaces is that they allow creating other namespace
+types without root. If <code>CLONE_NEWUSER</code> is passed together with other
+<code>CLONE_NEW*</code> flags, the kernel creates the user namespace first and grants
+the child the capabilities it needs to set up the other namespaces. This is how
+<code>unshare --user --pid --net --mount</code> works without sudo.
+</p>
+
+<pre>
+/* No root needed - CLONE_NEWUSER is included */
+pid_t pid = clone(child_main,
+                  stack + STACK_SIZE,
+                  CLONE_NEWUSER | CLONE_NEWPID |
+                  CLONE_NEWNET  | CLONE_NEWNS  | SIGCHLD,
+                  NULL);
+</pre>
+
+<p>
+After writing the UID/GID maps, the child has full capabilities in its user
+namespace, which allows it to perform the mount operations and network
+configuration that those other namespaces require.
+</p>
+
+<h3>User Namespaces in Go</h3>
+
+<p>
+Go's <code>os/exec</code> and <code>syscall</code> packages expose user namespace creation through
+<code>SysProcAttr</code>. The <code>UidMappings</code> and <code>GidMappings</code> fields cause the
+runtime to write the maps automatically, avoiding the pipe-synchronisation dance.
+</p>
+
+<pre>
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+    "os/exec"
+    "syscall"
+)
+
+func main() {
+    // When re-exec'd as the child, print credentials and exit.
+    if len(os.Args) &gt; 1 &amp;&amp; os.Args[1] == "child" {
+        fmt.Printf("[child] uid  = %d\n", os.Getuid())
+        fmt.Printf("[child] gid  = %d\n", os.Getgid())
+        fmt.Printf("[child] euid = %d\n", os.Geteuid())
+        return
+    }
+
+    // Re-exec ourselves in a new user namespace.
+    cmd := exec.Command("/proc/self/exe", "child")
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.SysProcAttr = &amp;syscall.SysProcAttr{
+        Cloneflags: syscall.CLONE_NEWUSER,
+        UidMappings: []syscall.SysProcIDMap{
+            {ContainerID: 0, HostID: os.Getuid(), Size: 1},
+        },
+        GidMappings: []syscall.SysProcIDMap{
+            {ContainerID: 0, HostID: os.Getgid(), Size: 1},
+        },
+        // GidMappingsEnableSetgroups false means "deny" is written first.
+        GidMappingsEnableSetgroups: false,
+    }
+
+    if err := cmd.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+</pre>
+
+<p>
+Build and run without root: <code>go build -o userns_go . &amp;&amp; ./userns_go</code>.
+The child prints UID 0 and GID 0. The Go runtime handles the synchronisation
+(it uses a pipe internally in the <code>forkAndExecInChild</code> path).
+</p>
+
+<h3>Subuid and Subgid: Multiple UID Ranges</h3>
+
+<p>
+A mapping of <code>0 1000 1</code> gives the container only one UID (fake root). To give
+a container a full range of UIDs - so that it can have an internal user database
+with different UIDs - you need a wider mapping. The system administrator grants
+users ownership of subranges of UIDs by adding entries to <code>/etc/subuid</code> and
+<code>/etc/subgid</code>:
+</p>
+
+<pre>
+# /etc/subuid
+alice:100000:65536
+
+# /etc/subgid
+alice:100000:65536
+</pre>
+
+<p>
+This grants alice UIDs 100000 through 165535 for her containers. The mapping
+written to <code>uid_map</code> can then be:
+</p>
+
+<pre>
+0     1000   1       # UID 0 in container = alice's real UID
+1     100000 65535   # UIDs 1-65535 in container = host UIDs 100000-165534
+</pre>
+
+<p>
+The tool <code>newuidmap</code> (from <code>shadow-utils</code>) writes these multi-range maps
+atomically. Podman calls it automatically. This is why Podman needs
+<code>/etc/subuid</code> and <code>/etc/subgid</code> set up for each user.
+</p>
+
+<h3>How Podman Uses User Namespaces</h3>
+
+<p>
+Podman's rootless mode creates a user namespace for each container. The
+sequence is roughly:
+</p>
+
+<ul>
+<li>Read the user's subuid/subgid ranges from <code>/etc/subuid</code> and <code>/etc/subgid</code>.</li>
+<li>Create a new user namespace with <code>CLONE_NEWUSER</code>.</li>
+<li>Write a multi-range UID/GID map via <code>newuidmap</code> and <code>newgidmap</code>.</li>
+<li>Inside the user namespace, create PID, mount, network, and UTS namespaces (these no longer require real root because the user namespace grants capabilities).</li>
+<li>Perform <code>pivot_root</code> into the container image (which Podman has already fetched and stored under <code>~/.local/share/containers/</code>).</li>
+</ul>
+
+<p>
+The container process sees itself as root. The host sees it as UID 100000+N.
+The container image files owned by root are stored on disk owned by UID 100000.
+<code>ls -la ~/.local/share/containers/storage/</code> reveals layers whose files are
+owned by UIDs in the subuid range.
+</p>
+
+<h3>Security Implications and Limitations</h3>
+
+<p>
+User namespaces significantly increase the attack surface of the kernel. They
+allow unprivileged users to exercise many more kernel code paths that were
+previously only reachable by root. Several kernel privilege-escalation
+vulnerabilities have been found in namespace-related code. Distributions differ
+in their approach:
+</p>
+
+<ul>
+<li>Ubuntu: user namespaces are enabled by default but AppArmor profiles restrict them. From Ubuntu 23.10 onward, <code>kernel.apparmor_restrict_unprivileged_userns = 1</code> limits creation to processes with a permitting AppArmor profile.</li>
+<li>Debian: off by default for unprivileged users (<code>kernel.unprivileged_userns_clone = 0</code>), on for root.</li>
+<li>RHEL/Fedora: controlled via <code>/proc/sys/user/max_user_namespaces</code>.</li>
+</ul>
+
+<p>
+What user namespace root cannot do:
+</p>
+
+<ul>
+<li>Load or unload kernel modules.</li>
+<li>Access raw block devices.</li>
+<li>Read files on the host that the real UID cannot read.</li>
+<li>Change the system time (requires <code>CAP_SYS_TIME</code> in the initial user namespace).</li>
+<li>Gain capabilities in an ancestor user namespace.</li>
+</ul>
+
+<h3>Summary</h3>
+
+<p>
+User namespaces give an unprivileged process a fake root identity mapped from
+its real host UID. The mapping is defined by writing to
+<code>/proc/PID/uid_map</code> and <code>/proc/PID/gid_map</code>. Inside the namespace the
+process holds a full capability set, but those capabilities are scoped to the
+namespace - they cannot affect host resources that the real UID cannot access.
+Combined with other namespace types, user namespaces enable completely rootless
+container runtimes like Podman. The <code>/etc/subuid</code> and <code>/etc/subgid</code> files,
+along with <code>newuidmap</code>/<code>newgidmap</code>, allow wide UID ranges to be delegated
+to unprivileged users safely.
+</p>
+
+<p>
+The next article moves to resource control: cgroups v1, the virtual filesystem
+at <code>/sys/fs/cgroup/</code>, and how to enforce hard limits on CPU, memory, and
+process count.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://man7.org/linux/man-pages/man7/user_namespaces.7.html">user_namespaces(7) - Linux man page</a></li>
+<li><a href="https://man7.org/linux/man-pages/man5/subuid.5.html">subuid(5) - Linux man page</a></li>
+<li><a href="https://lwn.net/Articles/532593/">Namespaces in operation, part 5: User namespaces (LWN)</a></li>
+<li><a href="https://rootlesscontaine.rs/">Rootless Containers - rootlesscontaine.rs</a></li>
+<li><a href="https://github.com/containers/podman">Podman - rootless container engine (GitHub)</a></li>
+<li><a href="https://man7.org/linux/man-pages/man1/newuidmap.1.html">newuidmap(1) - Linux man page</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="containers-02-namespaces-overview.htm">Linux Namespaces Overview</a></li>
+<li><a href="containers-13-network-namespaces.htm">Network Namespaces</a></li>
+<li><a href="containers-17-capabilities.htm">Linux Capabilities</a></li>
+<li><a href="containers-19-mini-runtime.htm">Building a Mini Container Runtime in Go</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

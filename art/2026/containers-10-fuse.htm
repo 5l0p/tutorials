@@ -1,0 +1,445 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Containers - Part 10: FUSE: Writing a Userspace Filesystem</title>
+    <meta name="description" content="How the FUSE kernel module works, implementing a passthrough filesystem with libfuse in C, and the same filesystem in Go using bazil.org/fuse.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="linux, containers">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="containers-10-fuse.txt">plain/text</a> | <i>2026-08-08</i> | <i><a href="../../linux.htm">linux</a>, <a href="../../containers.htm">containers</a></i>
+        <h2>Containers - Part 10: FUSE: Writing a Userspace Filesystem</h2>
+        <p>
+FUSE (Filesystem in Userspace) lets you write a filesystem driver as an
+ordinary process rather than a kernel module. The kernel's FUSE module bridges
+VFS calls to your process via a device node, your process answers them, and the
+kernel presents the result to the caller. This is how SSHFS, S3FS, and many
+container volume drivers work. This article explains the architecture, shows a
+complete passthrough filesystem in C with <code>libfuse</code>, and then builds the
+same thing in Go with <code>bazil.org/fuse</code>.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How the FUSE kernel module bridges VFS calls to a userspace process via <code>/dev/fuse</code></li>
+<li>A complete passthrough filesystem in C using libfuse3, covering getattr, readdir, open, read, write, and create</li>
+<li>The most commonly implemented <code>fuse_operations</code> function pointers and what happens when one is left NULL</li>
+<li>The same passthrough filesystem in Go using <code>bazil.org/fuse</code> interfaces</li>
+<li>Why FUSE adds latency and how to mitigate it for high-throughput workloads</li>
+<li>How FUSE is used in container contexts (sshfs, s3fs, fuse-overlayfs) and what capabilities a container needs</li>
+</ul>
+
+<h3>How FUSE Works</h3>
+
+<p>
+When a process accesses a path on a FUSE-mounted filesystem:
+</p>
+
+<ul>
+<li>The kernel's VFS layer calls the FUSE module with the operation (open, read, write, readdir, etc.).</li>
+<li>The FUSE module writes the request as a message to <code>/dev/fuse</code>.</li>
+<li>The userspace filesystem process reads from <code>/dev/fuse</code>, processes the request, and writes a reply.</li>
+<li>The FUSE module receives the reply and returns it to the original caller.</li>
+</ul>
+
+<p>
+Each VFS operation corresponds to a message type defined in
+<code>&lt;linux/fuse.h&gt;</code>. The <code>libfuse</code> library hides the message protocol
+behind a struct of function pointers (<code>struct fuse_operations</code>).
+</p>
+
+<h3>Installing libfuse</h3>
+
+<pre>
+# Debian/Ubuntu
+apt-get install libfuse-dev fuse3
+
+# Fedora/RHEL
+dnf install fuse3-devel
+
+# Check the kernel module is loaded
+lsmod | grep fuse
+# fuse                  180224  3
+</pre>
+
+<h3>C: A Passthrough Filesystem with libfuse3</h3>
+
+<p>
+A passthrough filesystem maps every operation on the mount point to the
+corresponding operation on a real directory (the "source"). This is the
+simplest non-trivial FUSE filesystem:
+</p>
+
+<pre>
+#define FUSE_USE_VERSION 31
+#include &lt;errno.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;fuse3/fuse.h&gt;
+#include &lt;limits.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;unistd.h&gt;
+
+static const char *source_path;
+
+static const char *real_path(const char *path) {
+    static char buf[PATH_MAX];
+    snprintf(buf, sizeof(buf), "%s%s", source_path, path);
+    return buf;
+}
+
+static int pt_getattr(const char *path, struct stat *st,
+                      struct fuse_file_info *fi) {
+    (void)fi;
+    if (lstat(real_path(path), st) == -1) return -errno;
+    return 0;
+}
+
+static int pt_readdir(const char *path, void *buf,
+                      fuse_fill_dir_t filler,
+                      off_t off, struct fuse_file_info *fi,
+                      enum fuse_readdir_flags flags) {
+    (void)off; (void)fi; (void)flags;
+    DIR *dp = opendir(real_path(path));
+    if (!dp) return -errno;
+
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        struct stat st = { .st_ino = de-&gt;d_ino, .st_mode = de-&gt;d_type &lt;&lt; 12 };
+        if (filler(buf, de-&gt;d_name, &amp;st, 0, 0)) break;
+    }
+    closedir(dp);
+    return 0;
+}
+
+static int pt_open(const char *path, struct fuse_file_info *fi) {
+    int fd = open(real_path(path), fi-&gt;flags);
+    if (fd == -1) return -errno;
+    fi-&gt;fh = fd;
+    return 0;
+}
+
+static int pt_read(const char *path, char *buf, size_t size,
+                   off_t offset, struct fuse_file_info *fi) {
+    (void)path;
+    ssize_t n = pread(fi-&gt;fh, buf, size, offset);
+    if (n == -1) return -errno;
+    return (int)n;
+}
+
+static int pt_write(const char *path, const char *buf, size_t size,
+                    off_t offset, struct fuse_file_info *fi) {
+    (void)path;
+    ssize_t n = pwrite(fi-&gt;fh, buf, size, offset);
+    if (n == -1) return -errno;
+    return (int)n;
+}
+
+static int pt_release(const char *path, struct fuse_file_info *fi) {
+    (void)path;
+    close(fi-&gt;fh);
+    return 0;
+}
+
+static int pt_create(const char *path, mode_t mode,
+                     struct fuse_file_info *fi) {
+    int fd = open(real_path(path), fi-&gt;flags, mode);
+    if (fd == -1) return -errno;
+    fi-&gt;fh = fd;
+    return 0;
+}
+
+static int pt_unlink(const char *path) {
+    if (unlink(real_path(path)) == -1) return -errno;
+    return 0;
+}
+
+static int pt_mkdir(const char *path, mode_t mode) {
+    if (mkdir(real_path(path), mode) == -1) return -errno;
+    return 0;
+}
+
+static const struct fuse_operations pt_ops = {
+    .getattr = pt_getattr,
+    .readdir = pt_readdir,
+    .open    = pt_open,
+    .read    = pt_read,
+    .write   = pt_write,
+    .release = pt_release,
+    .create  = pt_create,
+    .unlink  = pt_unlink,
+    .mkdir   = pt_mkdir,
+};
+
+int main(int argc, char *argv[]) {
+    if (argc &lt; 3) {
+        fprintf(stderr, "usage: passthrough &lt;source&gt; &lt;mountpoint&gt;\n");
+        return 1;
+    }
+    source_path = argv[1];
+
+    /* Shift argv so fuse_main sees [mountpoint] */
+    argv[1] = argv[2];
+    argc = 2;
+
+    return fuse_main(argc, argv, &amp;pt_ops, NULL);
+}
+</pre>
+
+<p>
+Compile and run:
+</p>
+
+<pre>
+gcc -o passthrough passthrough.c $(pkg-config --cflags --libs fuse3)
+mkdir /tmp/source /tmp/mnt
+echo hello &gt; /tmp/source/test.txt
+./passthrough /tmp/source /tmp/mnt
+cat /tmp/mnt/test.txt      # hello
+fusermount3 -u /tmp/mnt
+</pre>
+
+<h3>The fuse_operations Struct</h3>
+
+<p>
+<code>struct fuse_operations</code> has over 40 function pointers. The most commonly
+implemented ones are:
+</p>
+
+<ul>
+<li><code>getattr</code> - <code>stat()</code>. Called before almost every other operation.</li>
+<li><code>readdir</code> - enumerate directory contents.</li>
+<li><code>open</code> / <code>release</code> - open and close a file handle.</li>
+<li><code>read</code> / <code>write</code> - read and write file data.</li>
+<li><code>create</code> / <code>unlink</code> / <code>mkdir</code> / <code>rmdir</code> - filesystem mutation.</li>
+<li><code>rename</code> / <code>link</code> / <code>symlink</code> / <code>readlink</code> - path operations.</li>
+<li><code>truncate</code> / <code>chmod</code> / <code>chown</code> / <code>utimens</code> - metadata.</li>
+</ul>
+
+<p>
+Any pointer left <code>NULL</code> causes the kernel to return <code>ENOSYS</code> to callers
+of the corresponding syscall.
+</p>
+
+<h3>Go: bazil.org/fuse</h3>
+
+<p>
+<code>bazil.org/fuse</code> is the idiomatic Go FUSE library. It uses Go interfaces
+rather than function pointers:
+</p>
+
+<pre>
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+    "syscall"
+
+    "bazil.org/fuse"
+    "bazil.org/fuse/fs"
+)
+
+type FS struct{ root string }
+
+func (f FS) Root() (fs.Node, error) {
+    return &amp;Dir{path: f.root}, nil
+}
+
+type Dir struct{ path string }
+
+func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) error {
+    info, err := os.Stat(d.path)
+    if err != nil {
+        return syscall.ENOENT
+    }
+    a.Inode = 1
+    a.Mode  = info.Mode()
+    return nil
+}
+
+func (d *Dir) Lookup(ctx context.Context, name string,
+                     node *fs.LookupRequest, resp *fs.LookupResponse) (fs.Node, error) {
+    p := d.path + "/" + name
+    info, err := os.Stat(p)
+    if err != nil {
+        return nil, syscall.ENOENT
+    }
+    if info.IsDir() {
+        return &amp;Dir{path: p}, nil
+    }
+    return &amp;File{path: p}, nil
+}
+
+type File struct{ path string }
+
+func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
+    info, err := os.Stat(f.path)
+    if err != nil {
+        return syscall.ENOENT
+    }
+    a.Mode = info.Mode()
+    a.Size = uint64(info.Size())
+    return nil
+}
+
+func (f *File) ReadAll(ctx context.Context) ([]byte, error) {
+    return os.ReadFile(f.path)
+}
+
+func main() {
+    if len(os.Args) != 3 {
+        log.Fatal("usage: gofuse &lt;source&gt; &lt;mountpoint&gt;")
+    }
+    source := os.Args[1]
+    mnt    := os.Args[2]
+
+    c, err := fuse.Mount(mnt,
+        fuse.FSName("passthrough"),
+        fuse.Subtype("gopass"),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer c.Close()
+
+    log.Printf("mounted %s on %s", source, mnt)
+    if err := fs.Serve(c, FS{root: source}); err != nil {
+        log.Fatal(err)
+    }
+}
+</pre>
+
+<h3>Performance Considerations</h3>
+
+<p>
+FUSE adds at least two context switches per operation (kernel to userspace for
+the request, userspace back to kernel for the reply). For metadata-heavy
+workloads (many small files, frequent stat calls) this overhead is significant.
+libfuse3 introduced <code>-o clone_fd</code> and <code>-o max_idle_threads</code> options to
+reduce serialisation. For high-throughput use, consider kernel filesystem
+drivers (ext4, XFS, btrfs) or passthrough NFS.
+</p>
+
+<h3>FUSE in Container Contexts</h3>
+
+<p>
+FUSE filesystems are used in container environments for:
+</p>
+
+<ul>
+<li>SSHFS - mount a remote host's directory locally.</li>
+<li>S3FS, goofys - mount an S3 bucket as a filesystem.</li>
+<li>rclone mount - generic cloud storage backend.</li>
+<li>fuse-overlayfs - OverlayFS in userspace for rootless containers (where kernel OverlayFS requires privileges).</li>
+</ul>
+
+<p>
+To use FUSE inside a container the container needs <code>/dev/fuse</code> and the
+<code>CAP_SYS_ADMIN</code> capability (or a user namespace that grants it). Docker
+exposes <code>/dev/fuse</code> with <code>--device /dev/fuse</code>.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+FUSE routes VFS calls from the kernel through <code>/dev/fuse</code> to a userspace
+process that answers them. <code>libfuse</code> hides the protocol behind
+<code>struct fuse_operations</code>; <code>bazil.org/fuse</code> does the same in Go with
+interfaces. The main cost is two context switches per operation, which matters
+for metadata-heavy workloads. In container environments, FUSE enables volume
+drivers like sshfs and s3fs; rootless containers use fuse-overlayfs when kernel
+OverlayFS requires privileges.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://libfuse.github.io/doxygen/">libfuse API documentation</a></li>
+<li><a href="https://pkg.go.dev/bazil.org/fuse">bazil.org/fuse - Go documentation</a></li>
+<li><a href="https://www.kernel.org/doc/html/latest/filesystems/fuse.html">FUSE - kernel documentation</a></li>
+<li><a href="https://lwn.net/Articles/22379/">Filesystem in Userspace (LWN)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="containers-06-mount-chroot.htm">Mount Namespaces &amp; chroot</a></li>
+<li><a href="containers-08-overlayfs.htm">OverlayFS &amp; Image Layers</a></li>
+<li><a href="containers-11-9p.htm">9P: The Plan 9 Network Filesystem Protocol</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

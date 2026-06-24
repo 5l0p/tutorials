@@ -1,0 +1,293 @@
+DSP - Part 1: Audio Fundamentals
+2026-06-09
+
+
+Before writing a single line of DSP code you need a solid grip on the numbers that
+describe digital audio. Sample rate, bit depth, the Nyquist limit, and the decibel
+scale are not just terminology - they determine what your code can and cannot do, and
+they explain why bugs sound the way they do. This article builds that foundation.
+
+
+What You Will Learn
+
+
+What a digital audio signal is and how ADC quantisation works
+How sample rate determines the highest reproducible frequency (Nyquist theorem)
+What aliasing is and why it happens when input exceeds the Nyquist limit
+How bit depth controls dynamic range and the 6 dB per bit rule
+How the decibel scale works: dBFS, dBu, dBSPL, and how to convert between them in C
+The difference between integer PCM and float PCM and when to use each
+Phase, normalised frequency, clipping, headroom, and a minimal C DSP setup
+
+
+What a Digital Audio Signal Is
+
+
+A loudspeaker moves air. That movement is a continuous pressure wave varying over time.
+An analogue-to-digital converter (ADC) samples that wave at regular intervals, measuring
+the instantaneous amplitude at each moment and rounding it to the nearest representable
+integer. The result is a sequence of numbers: the digital audio signal.
+
+
+
+Two parameters govern the fidelity of that representation: how often we sample (the
+sample rate), and how precisely we quantise each measurement (the bit depth).
+
+
+Sample Rate and the Nyquist Theorem
+
+
+The sample rate (also called sampling frequency, Fs) is the number of samples
+captured per second, measured in hertz. Common rates are 44100 Hz (audio CD), 48000 Hz
+(broadcast and most consumer hardware), 96000 Hz and 192000 Hz (high-resolution audio).
+
+
+
+Harry Nyquist and Claude Shannon established the fundamental limit: a sampled system can
+faithfully represent any frequency strictly below half the sample rate. That ceiling
+is called the Nyquist frequency or Nyquist limit.
+
+
+
+Nyquist frequency = sample_rate / 2
+
+At 44100 Hz:  Nyquist = 22050 Hz
+At 48000 Hz:  Nyquist = 24000 Hz
+
+
+
+Human hearing extends to roughly 20 kHz, so 44100 Hz has a comfortable margin above the
+audible range. Real hardware adds an anti-aliasing low-pass filter before the ADC to
+suppress frequencies that would otherwise violate the Nyquist limit.
+
+
+Aliasing
+
+
+When a frequency f is present in the signal but f > Fs/2, the sampler cannot
+distinguish it from a lower frequency. The energy folds back into the audible range and
+appears as a false tone called an alias. The alias frequency is:
+
+
+
+alias = |f - round(f / Fs) * Fs|
+
+
+
+For example, a 30000 Hz tone sampled at 44100 Hz appears at |30000 - 44100| = 14100 Hz
+- well inside the audible range and completely unrelated to any harmonic of the original.
+In synthesis this matters enormously: a naive sawtooth wave has infinitely many harmonics,
+all of which alias unless you band-limit the waveform before sampling. That is the topic
+of the PolyBLEP article.
+
+
+Bit Depth and Dynamic Range
+
+
+Bit depth determines how many distinct amplitude levels can be represented. With
+n bits there are 2n levels, giving a theoretical signal-to-noise ratio of
+approximately 6.02 dB per bit.
+
+
+
+Dynamic range (dB) ≈ 6.02 * bit_depth + 1.76
+
+16-bit:  ~96 dB
+24-bit:  ~144 dB
+32-bit float:  ~144 dB usable, but no clipping until ±3.4e38
+
+
+
+16-bit integer audio (CD quality) gives about 96 dB of dynamic range - adequate for
+playback but tight for intermediate processing, where quantisation errors accumulate.
+Professional DAWs therefore process in 32-bit or 64-bit floating point internally, only
+converting to integer at the final output stage.
+
+
+
+32-bit float is the standard representation in most DSP code today. Samples are stored
+as IEEE 754 single-precision floats, normalised so that full-scale is 1.0 (or -1.0 for
+negative peak). Values outside [-1.0, 1.0] represent digital clipping.
+
+
+The Decibel Scale
+
+
+Audio levels are almost always expressed in decibels because the human ear perceives
+loudness logarithmically. There are two related formulas depending on whether you are
+measuring amplitude (voltage, sample value) or power (watts, energy).
+
+
+
+/* Amplitude (voltage-like quantities) */
+dB = 20.0 * log10(amplitude / reference)
+
+/* Power */
+dB = 10.0 * log10(power / reference)
+
+
+
+In audio code we almost always deal with amplitude, so the factor is 20. Some key
+reference points:
+
+
+
+ 0 dBFS  =  linear 1.0       (full scale, digital ceiling)
+-6 dBFS  ≈  linear 0.5
+-20 dBFS ≈  linear 0.1
+-60 dBFS ≈  linear 0.001
+-∞ dBFS  =  linear 0.0       (silence)
+
+
+
+Converting between linear and dB in C:
+
+
+
+#include <math.h>
+
+/* linear amplitude [0..1] to dBFS */
+float linear_to_db(float linear) {
+    if (linear <= 0.0f) return -144.0f;  /* silence floor */
+    return 20.0f * log10f(linear);
+}
+
+/* dBFS to linear amplitude */
+float db_to_linear(float db) {
+    return powf(10.0f, db / 20.0f);
+}
+
+
+
+Always guard the log against zero or negative inputs - a silent buffer passed to
+log10f(0) gives negative infinity, which will propagate silently through
+your signal chain as NaN once you start multiplying.
+
+
+Practical Number Representation in C
+
+
+The typical type choices in audio C code:
+
+
+
+typedef float  sample_t;   /* 32-bit float, normalised -1..+1 */
+typedef double sample64_t; /* 64-bit double for accumulation */
+
+#define SAMPLE_RATE   48000
+#define BLOCK_SIZE    512
+#define NYQUIST       (SAMPLE_RATE / 2)
+
+
+
+Using float throughout keeps cache pressure low and matches the native width
+of SIMD instructions on x86 (SSE, AVX) and ARM (NEON). Use double when
+accumulating many terms - for example, in an FFT twiddle-factor computation - and convert
+back to float for the audio buffer.
+
+
+Phase, Frequency and Normalised Frequency
+
+
+Frequency in Hz is the human-meaningful unit, but internally DSP algorithms often use
+normalised frequency, expressed as a fraction of the sample rate or as radians
+per sample. The two common normalisations:
+
+
+
+/* Normalised to [0, 1), where 1.0 = Fs */
+float f_norm = freq_hz / (float)SAMPLE_RATE;
+
+/* Angular frequency in radians per sample, range [0, π) */
+float omega = 2.0f * M_PI * freq_hz / (float)SAMPLE_RATE;
+
+
+
+Filter coefficient formulas (biquads, one-poles) always take omega or f_norm as input,
+not raw Hz. Getting this wrong is one of the most common mistakes when porting DSP
+equations from a textbook.
+
+
+Clipping, Headroom and the Signal Chain
+
+
+Digital clipping occurs the moment a sample exceeds ±1.0 in floating-point processing.
+Unlike analogue tape saturation it is abrupt and harsh. Leave headroom throughout the
+signal chain - individual oscillators and synthesis stages should run well below 0 dBFS
+so that when you mix multiple sources the sum does not clip before the output limiter.
+
+
+
+A rough rule: a single oscillator at -12 dBFS (linear 0.25) leaves comfortable headroom.
+Four such oscillators summed linearly reach -6 dBFS (linear 1.0 if they phase-align in
+the worst case). Normalise or limit at the master bus.
+
+
+A Minimal DSP Setup in C
+
+
+#include <stdio.h>
+#include <math.h>
+#include <stdint.h>
+
+#define SAMPLE_RATE  48000
+#define BLOCK_SIZE   512
+#define M_PI         3.14159265358979323846
+
+/* Normalise a 16-bit signed integer to float [-1, +1] */
+float s16_to_float(int16_t s) {
+    return s / 32768.0f;
+}
+
+/* Clip float to [-1, +1] and convert to 16-bit */
+int16_t float_to_s16(float f) {
+    if (f >  1.0f) f =  1.0f;
+    if (f < -1.0f) f = -1.0f;
+    return (int16_t)(f * 32767.0f);
+}
+
+int main(void) {
+    printf("Sample rate : %d Hz\n", SAMPLE_RATE);
+    printf("Nyquist     : %d Hz\n", SAMPLE_RATE / 2);
+    printf("Block size  : %d samples (%.2f ms latency)\n",
+           BLOCK_SIZE,
+           1000.0f * BLOCK_SIZE / SAMPLE_RATE);
+    printf("-6 dBFS     : %.4f linear\n",
+           powf(10.0f, -6.0f / 20.0f));
+    return 0;
+}
+
+
+
+Compile with cc -o fundamentals fundamentals.c -lm and you will see the
+numbers that govern everything else in this series.
+
+
+Summary
+
+
+Digital audio is a sequence of amplitude samples taken at a fixed rate. Sample
+rate sets the Nyquist limit — the highest frequency that can be represented
+without aliasing. Bit depth sets dynamic range: 16-bit gives roughly 96 dB,
+32-bit float gives around 144 dB. The decibel scale is logarithmic; 0 dBFS is
+the maximum digital value. Float arithmetic between −1.0 and +1.0 is the
+standard for processing. These fundamentals constrain every design decision in
+DSP code.
+
+
+Further Reading
+
+
+Mathematics of the DFT - Julius O. Smith III (CCRMA)
+Physical Audio Signal Processing - Julius O. Smith III
+ITU-R BS.1770 Loudness measurement standard
+Xiph: Digital Show and Tell (video - excellent aliasing demonstration)
+
+
+See Also
+
+
+The Audio Callback Model
+Oscillators: Basic Waveforms
+Biquad Filters
+

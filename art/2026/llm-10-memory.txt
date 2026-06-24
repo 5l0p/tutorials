@@ -1,0 +1,354 @@
+LLM - Part 10: Adding Memory to Agents
+2026-06-19
+
+
+The agent loop from article 04 is stateless between runs - restart the binary and the
+model has no memory of previous conversations. This article adds two kinds of memory:
+short-term (the in-session message history managed carefully to avoid hitting the context
+window) and long-term (a persistent key-value store that survives restarts). It also
+implements a summarisation strategy for compressing history when it grows too large.
+
+
+What You Will Learn
+
+
+Short-term memory: managing the in-session message history to stay within the context window
+How to detect when the context window is near capacity and trigger summarisation
+Summarisation strategy: asking the model to compress old history into a single summary message
+Long-term memory: a file-backed key-value store that persists across agent restarts
+Exposing memory operations as agent tools: remember, recall, and forget
+
+
+Two Kinds of Memory
+
+
+Short-term memory is the message history sent in every API request. The model has
+full access to it but it costs tokens on every call. It disappears when the program exits.
+The challenge is managing its size.
+
+
+
+Long-term memory is persistent storage outside the model's context window. The agent
+can write facts to it (using a tool) and retrieve them (using another tool) in future
+sessions. The model does not see this memory unless it explicitly fetches it.
+
+
+Short-Term Memory: The History Manager
+
+
+Wrap the message slice in a type that tracks token usage and trims when needed:
+
+
+
+package memory
+
+import (
+    "encoding/json"
+    "fmt"
+    "strings"
+)
+
+const defaultContextLimit = 128000
+const defaultTargetUsage  = 0.80
+
+type HistoryManager struct {
+    System       string
+    Messages     []Message
+    ContextLimit int
+    TargetUsage  float64
+}
+
+type Message struct {
+    Role       string     `json:"role"`
+    Content    string     `json:"content,omitempty"`
+    ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+    ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+func New(systemPrompt string) *HistoryManager {
+    return &HistoryManager{
+        System:       systemPrompt,
+        ContextLimit: defaultContextLimit,
+        TargetUsage:  defaultTargetUsage,
+    }
+}
+
+// All returns the complete history for an API request
+func (h *HistoryManager) All() []Message {
+    full := []Message{{Role: "system", Content: h.System}}
+    return append(full, h.Messages...)
+}
+
+func (h *HistoryManager) Add(m Message) {
+    h.Messages = append(h.Messages, m)
+}
+
+// TrimIfNeeded removes old messages when total tokens approach the limit.
+// totalTokens is the value from the last API response's usage field.
+func (h *HistoryManager) TrimIfNeeded(totalTokens int) {
+    threshold := int(float64(h.ContextLimit) * h.TargetUsage)
+    if totalTokens < threshold {
+        return
+    }
+    // Drop oldest user+assistant pair (indices 0 and 1 of Messages)
+    if len(h.Messages) >= 2 {
+        h.Messages = h.Messages[2:]
+    }
+}
+
+
+Summarisation Strategy
+
+
+Trimming drops context. A better strategy: when history grows large, ask the model to
+summarise what has happened so far, then replace the history with a single "assistant"
+message containing the summary. Future turns continue from the compressed state.
+
+
+
+func (h *HistoryManager) Summarise(callAPI func([]Message) (string, error)) error {
+    if len(h.Messages) < 6 {
+        return nil // nothing worth summarising
+    }
+
+    // Ask the model to summarise the conversation so far
+    summaryPrompt := []Message{
+        {Role: "system", Content: "You are a summarisation assistant. Be concise."},
+        {
+            Role: "user",
+            Content: "Summarise the following conversation in 3-5 bullet points. " +
+                "Keep all important facts, decisions, and outcomes:\n\n" +
+                formatHistory(h.Messages),
+        },
+    }
+
+    summary, err := callAPI(summaryPrompt)
+    if err != nil {
+        return fmt.Errorf("summarise: %w", err)
+    }
+
+    // Replace history with a single context message
+    h.Messages = []Message{
+        {
+            Role:    "assistant",
+            Content: "[Summary of previous conversation]\n" + summary,
+        },
+    }
+    return nil
+}
+
+func formatHistory(msgs []Message) string {
+    var sb strings.Builder
+    for _, m := range msgs {
+        if m.Content != "" {
+            sb.WriteString(m.Role)
+            sb.WriteString(": ")
+            sb.WriteString(m.Content)
+            sb.WriteString("\n")
+        }
+    }
+    return sb.String()
+}
+
+
+Long-Term Memory: File-Backed Key-Value Store
+
+
+A simple JSON file stores the agent's persistent memory. The agent can write facts and
+retrieve them across sessions.
+
+
+
+package memory
+
+import (
+    "encoding/json"
+    "os"
+    "sync"
+)
+
+type Store struct {
+    path string
+    mu   sync.Mutex
+    data map[string]string
+}
+
+func NewStore(path string) (*Store, error) {
+    s := &Store{path: path, data: make(map[string]string)}
+    data, err := os.ReadFile(path)
+    if err == nil {
+        json.Unmarshal(data, &s.data)
+    }
+    return s, nil
+}
+
+func (s *Store) Set(key, value string) error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.data[key] = value
+    return s.save()
+}
+
+func (s *Store) Get(key string) (string, bool) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    v, ok := s.data[key]
+    return v, ok
+}
+
+func (s *Store) All() map[string]string {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    copy := make(map[string]string, len(s.data))
+    for k, v := range s.data {
+        copy[k] = v
+    }
+    return copy
+}
+
+func (s *Store) save() error {
+    data, err := json.MarshalIndent(s.data, "", "  ")
+    if err != nil {
+        return err
+    }
+    return os.WriteFile(s.path, data, 0644)
+}
+
+
+Memory as Tools
+
+
+Expose the store to the agent as two tools: remember (write a fact) and
+recall (read facts). The model calls these when it wants to persist or
+retrieve information.
+
+
+
+type RememberSkill struct{ Store *Store }
+
+func (s *RememberSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name: "remember",
+            Description: "Store a piece of information for later retrieval. " +
+                "Use this to save important facts, user preferences, or decisions " +
+                "that should persist across sessions.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "key":   {Type: "string", Description: "A short identifier for this memory"},
+                    "value": {Type: "string", Description: "The information to store"},
+                },
+                Required: []string{"key", "value"},
+            },
+        },
+    }
+}
+
+func (s *RememberSkill) Execute(argsJSON string) (string, error) {
+    var args struct {
+        Key   string `json:"key"`
+        Value string `json:"value"`
+    }
+    json.Unmarshal([]byte(argsJSON), &args)
+    if err := s.Store.Set(args.Key, args.Value); err != nil {
+        return "", err
+    }
+    return fmt.Sprintf(`{"stored": "%s"}`, args.Key), nil
+}
+
+type RecallSkill struct{ Store *Store }
+
+func (s *RecallSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name: "recall",
+            Description: "Retrieve stored memories. Pass a key to get a specific value, " +
+                "or omit the key to list all stored memories.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "key": {Type: "string", Description: "Key to retrieve (optional - omit to list all)"},
+                },
+            },
+        },
+    }
+}
+
+func (s *RecallSkill) Execute(argsJSON string) (string, error) {
+    var args struct{ Key string `json:"key"` }
+    json.Unmarshal([]byte(argsJSON), &args)
+
+    if args.Key != "" {
+        v, ok := s.Store.Get(args.Key)
+        if !ok {
+            return `{"found": false}`, nil
+        }
+        data, _ := json.Marshal(map[string]string{"key": args.Key, "value": v})
+        return string(data), nil
+    }
+
+    all := s.Store.All()
+    data, _ := json.Marshal(all)
+    return string(data), nil
+}
+
+
+Injecting Memory into the System Prompt
+
+
+A complementary approach: load all stored memories at startup and inject them into the
+system prompt. The model then has the memories in context without needing to explicitly
+call recall. This works well when memories are few and small.
+
+
+
+func buildSystemPrompt(base string, store *Store) string {
+    memories := store.All()
+    if len(memories) == 0 {
+        return base
+    }
+    var sb strings.Builder
+    sb.WriteString(base)
+    sb.WriteString("\n\nPreviously stored memories:\n")
+    for k, v := range memories {
+        fmt.Fprintf(&sb, "- %s: %s\n", k, v)
+    }
+    return sb.String()
+}
+
+
+
+Use one approach or the other, not both. Injecting all memories into the system prompt
+is simpler but does not scale to hundreds of memories. Tool-based retrieval scales but
+requires the model to know it should call recall proactively.
+
+
+Summary
+
+
+Short-term memory is the messages array; manage it by tracking total tokens
+and summarising when you approach the context limit. Ask the model to compress
+the oldest N messages into a single summary message, then replace them. Long-
+term memory is a JSON file on disk mapping string keys to string values;
+protect concurrent access with a mutex. Expose both as tools so the agent can
+decide what to store and retrieve without explicit hardcoding.
+
+
+Further Reading
+
+
+OpenAI: Prompt Caching
+MemGPT: Towards LLMs as Operating Systems (2023)
+Go sync.Mutex - protecting concurrent access to the store
+
+
+See Also
+
+
+Chat Completions Deep Dive - context window and token management fundamentals
+RAG: Retrieval-Augmented Generation - semantic memory retrieval for larger knowledge bases
+CAG: Cache-Augmented Generation - prompt caching as an alternative memory strategy
+

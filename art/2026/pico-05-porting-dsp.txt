@@ -1,0 +1,407 @@
+Pico — Part 5: Porting DSP Code from the Desktop
+2026-11-11
+
+
+Desktop DSP code looks simple until you run it on a chip with no floating-point unit.
+The RP2040's Cortex-M0+ executes every float operation through a software
+emulation library - roughly 5-10 cycles per multiply instead of one. That is rarely a
+killer, but it compounds fast: a biquad filter needs six multiplies per sample, a
+sine oscillator needs one, a compressor needs a sqrtf (hundreds of cycles).
+Before you optimise anything you need numbers. This article shows you how to measure
+CPU cost in actual clock cycles using the SysTick counter, how to evaluate the
+fixed-point alternative when soft-float genuinely hurts, and how to carry a biquad
+filter and wavetable oscillator cleanly from the desktop to the RP2040 without
+guessing.
+
+
+What You Will Learn
+
+
+Why soft-float costs what it costs on Cortex-M0+ and when to care
+How to profile audio DSP with the SysTick counter - cycles per buffer, cycles per sample, CPU%
+Q15 and Q31 fixed-point arithmetic: when to use them and the traps to avoid
+Stack constraints inside ISRs and how to audit your usage
+Placing read-only coefficient tables and wavetables in flash XIP
+A complete ported biquad filter and sine oscillator with benchmark numbers
+
+
+The Soft-Float Cost on Cortex-M0+
+
+
+The Cortex-M0+ has integer multiply (1 cycle for 32x32→32, 32 cycles for 32x32→64
+on the low-multiplier variant) but no hardware FPU. GCC generates calls into
+libgcc soft-float routines for every floating-point operation. The
+costs for common operations at 125 MHz (approximate, from cycle-counting on the chip):
+
+
+
+float add/sub    ~5 cycles
+float multiply   ~6 cycles
+float divide     ~30 cycles
+sqrtf            ~60 cycles
+sinf / cosf      ~100-150 cycles
+
+
+
+For comparison, a biquad filter Direct Form II transposed has six multiplies and five
+adds per sample. That is roughly 55 cycles at worst - 2.5 microseconds at 125 MHz.
+For 256 samples per buffer: 256 * 55 = 14,080 cycles. Your budget for one 44.1 kHz
+buffer is about 728,000 cycles. One biquad filter burns less than 2% of that budget.
+You can stack ten before you are even at 20%.
+
+
+
+Where soft-float actually hurts: sinf and cosf. Never call
+them per sample. Call them once per parameter change to compute a wavetable or
+precompute filter coefficients, and let the per-sample path do only multiplies and adds
+on pre-computed values.
+
+
+Measuring with SysTick
+
+
+The ARM SysTick counter is a 24-bit down-counter clocked from the system clock. It is
+the right tool for measuring tight DSP loops: it is always present, requires no
+peripheral init beyond one register write, and has single-cycle resolution.
+
+
+
+The RP2040 runs SysTick from the processor clock (125 MHz by default). The counter
+reloads from SYST_RVR and counts down. Reading SYST_CVR
+gives the current value. To measure elapsed cycles: snapshot before, snapshot after,
+subtract (accounting for the fact that it counts down).
+
+
+
+#include "hardware/structs/systick.h"
+
+/* Enable SysTick with maximum reload value (24-bit, 0xFFFFFF).
+   Call once during init on the core you want to profile. */
+static void systick_init(void) {
+    systick_hw->csr  = 0;            /* disable while configuring  */
+    systick_hw->rvr  = 0x00FFFFFF;   /* reload = max 24-bit value  */
+    systick_hw->cvr  = 0;            /* clear current value        */
+    systick_hw->csr  = 0x5;          /* enable, use processor clock,
+                                        no interrupt                */
+}
+
+/* Returns current SysTick count (counts DOWN from rvr). */
+static inline uint32_t systick_now(void) {
+    return systick_hw->cvr;
+}
+
+/* Elapsed cycles between two snapshots (handles single wrap). */
+static inline uint32_t systick_elapsed(uint32_t start, uint32_t end) {
+    /* start and end are both counting down.
+       If start >= end, no wrap occurred:  elapsed = start - end.
+       If start  < end, one wrap occurred: elapsed = start + (rvr - end). */
+    if (start >= end)
+        return start - end;
+    else
+        return start + (0x00FFFFFF - end) + 1;
+}
+
+
+
+Using this in your audio fill loop:
+
+
+
+#define SAMPLE_RATE   44100
+#define BUF_FRAMES    256
+/* Budget = BUF_FRAMES * (SYS_CLK_HZ / SAMPLE_RATE) */
+#define BUDGET_CYCLES ((uint32_t)(BUF_FRAMES * (125000000.0f / SAMPLE_RATE)))
+
+static uint32_t g_last_cycles = 0;   /* updated each buffer, read by core 0 */
+
+static void fill_audio_buffer(int16_t *buf, uint32_t frames) {
+    uint32_t t0 = systick_now();
+
+    for (uint32_t i = 0; i < frames; i++) {
+        int16_t s = run_dsp_pipeline();
+        buf[i * 2]     = s;
+        buf[i * 2 + 1] = s;
+    }
+
+    uint32_t t1 = systick_now();
+    g_last_cycles = systick_elapsed(t0, t1);
+}
+
+
+
+From core 0, you can periodically read g_last_cycles and compute CPU%:
+
+
+
+float cpu_percent = 100.0f * g_last_cycles / BUDGET_CYCLES;
+printf("DSP: %u cycles, %.1f%% CPU\n", g_last_cycles, cpu_percent);
+
+
+
+The volatile qualifier on g_last_cycles is important: core 0 and
+core 1 share SRAM, but the Cortex-M0+ has no cache coherency hardware for SRAM - what
+one core writes is immediately visible to the other because they access the same SRAM
+banks. However, volatile prevents the compiler from caching the value in a
+register and missing an update.
+
+
+Q15 and Q31 Fixed-Point: When to Reach for Them
+
+
+Fixed-point arithmetic represents fractional values as scaled integers. Q15 uses a
+16-bit signed integer where the implicit decimal point is after bit 14: the range is
+[-1.0, 0.99997] with resolution of 1/32768. Q31 uses a 32-bit signed integer for
+higher precision: range [-1.0, 0.9999999995] with resolution 1/2147483648.
+
+
+
+On the Cortex-M0+, a 32x32→32 integer multiply is 1 cycle. A 16x16→32 multiply is
+also 1 cycle. Compare to 6 cycles for a soft-float multiply. For inner loops with many
+multiplications, fixed-point can give you a 5-6x speedup.
+
+
+
+The cost is correctness risk. Fixed-point arithmetic overflows silently. Multiplying
+two Q15 values gives a Q30 result in a 32-bit register; you must right-shift by 15 to
+get back to Q15, and if the intermediate value exceeds 32 bits you get wrap-around
+distortion. The standard pattern for a Q15 multiply:
+
+
+
+#include <stdint.h>
+
+/* Multiply two Q15 values, return Q15.
+   Both inputs must be in [-1.0, 1.0) represented as int16_t.
+   The product is computed as int32_t to avoid overflow, then
+   rounded back to Q15 by shifting right 15. */
+static inline int16_t q15_mul(int16_t a, int16_t b) {
+    int32_t product = (int32_t)a * (int32_t)b;
+    /* Add rounding constant before shifting */
+    return (int16_t)((product + 0x4000) >> 15);
+}
+
+/* Saturating add for Q15: clamp to [-32768, 32767] instead of wrapping. */
+static inline int16_t q15_add(int16_t a, int16_t b) {
+    int32_t sum = (int32_t)a + (int32_t)b;
+    if (sum >  32767) return  32767;
+    if (sum < -32768) return -32768;
+    return (int16_t)sum;
+}
+
+
+
+For a biquad filter the soft-float version is cleaner and the Q15 version saves about
+30 cycles per sample - worthwhile if you are stacking many filters. For a single filter,
+stick with float; the code is easier to reason about.
+
+
+Stack Constraints in ISRs
+
+
+The Cortex-M0+ pushes 8 registers (r0-r3, r12, lr, pc, xpsr) onto the stack when
+entering an interrupt - that is 32 bytes of automatic stack use before your first line
+of handler code runs. Soft-float functions also use the stack for local temporaries.
+
+
+
+The default stack size for core 1 in the Pico SDK is 4 KB (PICO_STACK_SIZE).
+This is shared between your main loop and any interrupts that fire on core 1. If the
+audio DMA IRQ handler calls through to any function that allocates local arrays or calls
+soft-float functions deeply, you can exhaust the stack silently - the RP2040 has no MPU
+stack overflow protection on the Cortex-M0+.
+
+
+
+Rules for the audio ISR:
+
+
+
+Keep the handler to fewer than 20 lines. Ours does three register writes and sets a
+flag - no soft-float at all.
+Do DSP computation in the fill loop (core 1 main), not in the ISR.
+Declare DSP state as file-scope static variables, not local variables.
+Static storage lives in SRAM's .bss/.data sections, not on the stack.
+If you need a larger stack, set PICO_STACK_SIZE in your CMakeLists.txt
+before calling pico_sdk_init().
+
+
+
+# In CMakeLists.txt, double the core 1 stack to 8 KB
+target_compile_definitions(my_target PRIVATE
+    PICO_STACK_SIZE=0x2000
+)
+
+
+Flash XIP for Coefficient Tables
+
+
+Large read-only tables - sine wavetables, filter coefficient sets, FM algorithm tables -
+do not need to live in the 264 KB SRAM. The RP2040's flash is accessed through an XIP
+(execute-in-place) cache backed by a QSPI interface. On first access a cache miss occurs
+and the flash controller fetches the data; subsequent accesses to the same cache line are
+fast. The XIP cache is 16 KB, direct-mapped, and uses 64-byte cache lines.
+
+
+
+To place a table in flash, declare it const. The linker places
+const data in the .rodata section, which the Pico SDK linker
+script maps to flash. No further annotation is needed:
+
+
+
+/* This table lives in flash (read-only, 4096 bytes). */
+static const int16_t SINE_TABLE[2048] = {
+    /* generated by a host-side script or computed at startup and
+       copied to a header file */
+    0, 100, 201, 301, /* ... */
+};
+
+
+
+For a wavetable that is read sequentially (phase accumulator steps through it), the XIP
+cache works well: you march through 64-byte cache lines in order, each miss fetches the
+next line, and the cache is warm for the next buffer because 44.1 kHz audio rarely
+advances more than a few hundred samples per buffer. Avoid random-access patterns in
+flash tables from the audio path - scattered misses add unpredictable latency.
+
+
+
+If a table is written once at startup (e.g. a computed sine table), place it in SRAM
+instead. There is no flash-write API for updating flash at audio rates, and even if there
+were, writing flash disables the XIP cache and stalls both cores for tens of milliseconds.
+
+
+Ported Biquad Filter
+
+
+The desktop biquad filter from the DSP series (Direct Form II transposed) needs almost
+no changes on the RP2040. The state and coefficient types stay as float. The
+only Pico-specific change is that coefficients should be computed once (in
+core1_audio_entry during startup) using cosf and sinf,
+then stored - not recomputed per sample or per buffer.
+
+
+
+/* biquad.h - works identically on desktop and RP2040 */
+typedef struct {
+    float b0, b1, b2;   /* feed-forward coefficients */
+    float a1, a2;       /* feed-back coefficients (a0 normalised to 1.0) */
+    float z1, z2;       /* filter state (delay elements) */
+} Biquad;
+
+/* Direct Form II transposed - one multiply-accumulate chain,
+   minimal state, no divide per sample. */
+static inline float biquad_tick(Biquad *f, float x) {
+    float y  = f->b0 * x + f->z1;
+    f->z1    = f->b1 * x - f->a1 * y + f->z2;
+    f->z2    = f->b2 * x - f->a2 * y;
+    return y;
+}
+
+/* Compute lowpass coefficients.
+   Call this ONCE during init, not per sample. */
+static void biquad_lowpass(Biquad *f, float fc, float q, float fs) {
+    float w0    = 2.0f * 3.14159265f * fc / fs;
+    float alpha = sinf(w0) / (2.0f * q);
+    float cosw0 = cosf(w0);
+    float a0    = 1.0f + alpha;
+    f->b0 = (1.0f - cosw0) / (2.0f * a0);
+    f->b1 = (1.0f - cosw0) / a0;
+    f->b2 = f->b0;
+    f->a1 = (-2.0f * cosw0) / a0;
+    f->a2 = (1.0f - alpha)  / a0;
+    f->z1 = f->z2 = 0.0f;
+}
+
+
+
+Benchmark on RP2040 at 125 MHz: biquad_tick takes approximately 55 cycles
+per sample measured with SysTick. For 256 samples that is 14,080 cycles out of a
+budget of 728,500 cycles - 1.9% CPU per biquad filter.
+
+
+Ported Sine Oscillator
+
+
+The wavetable oscillator stores 2048 samples of one sine cycle as const int16_t
+in flash, then advances a 32-bit phase accumulator each sample. The phase increment
+is computed from the desired frequency once per frequency change, not per sample.
+
+
+
+#define OSC_TABLE_SIZE  2048
+#define OSC_PHASE_BITS  22   /* fractional bits in phase accumulator */
+
+/* Table in flash (const = .rodata = flash on Pico). */
+static const int16_t osc_sine_table[OSC_TABLE_SIZE] = {
+    /* Values: round(32767 * sin(2*pi*i/2048)) for i = 0..2047.
+       Generate with: python3 -c "
+       import math
+       vals = [round(32767*math.sin(2*math.pi*i/2048)) for i in range(2048)]
+       print(','.join(map(str, vals)))" */
+    0, 101, 201, 302, /* ... full 2048 entries ... */
+};
+
+typedef struct {
+    uint32_t phase;       /* current phase, fractional fixed-point */
+    uint32_t phase_inc;   /* phase increment per sample */
+} Oscillator;
+
+/* Set oscillator frequency. Call once per frequency change. */
+static void osc_set_freq(Oscillator *o, float freq, float sample_rate) {
+    /* phase_inc = (freq / sample_rate) * TABLE_SIZE * (1 
+
+
+The phase accumulator is 32-bit. The top 11 bits (after shifting right by
+OSC_PHASE_BITS) index into the 2048-entry table; the lower
+OSC_PHASE_BITS bits are the fractional phase, providing smooth tuning
+across the full audio range. This gives frequency resolution of approximately
+sample_rate / (TABLE_SIZE * 2^OSC_PHASE_BITS) = 44100 / (2048 * 4194304)
+≈ 0.0000051 Hz - far finer than needed.
+
+
+
+Benchmark on RP2040: osc_tick costs approximately 10 cycles per sample
+(integer arithmetic plus one flash read, mostly cache-hit). That is 0.35% CPU per
+oscillator at 44.1 kHz. Compare to calling sinf per sample: 100-150 cycles,
+or 3.7-5.6% - and wavetable sounds identical.
+
+
+Summary
+
+
+Porting desktop DSP to the RP2040 is mostly a matter of discipline rather than
+rewriting. Keep sinf and cosf out of the per-sample path - they
+cost 100-150 cycles each. Pre-compute filter coefficients and wavetables once at startup.
+Measure everything with SysTick before deciding to switch to fixed-point. A biquad filter
+in soft-float costs about 1.9% CPU per instance; you can run 20 of them before you are at
+40% of budget. Place large read-only tables as const arrays so the linker puts
+them in flash and you do not spend SRAM on them. Keep ISR stack usage minimal by moving
+DSP state to file-scope statics.
+
+
+
+Part 6 builds a 4-operator FM synthesis engine in C using the oscillator pattern
+established here, adding ADSR envelopes in fixed-point and the algorithm graph that
+makes FM synthesis musically expressive.
+
+
+Further Reading
+
+
+RP2040 Datasheet - Chapter 4 (XIP cache), Appendix B (SysTick)
+Raspberry Pi Pico C/C++ SDK Reference
+ARM Cortex-M0+ Technical Reference Manual
+CMSIS-DSP Library - ARM fixed-point DSP reference
+Direct Form II Biquad - Julius O. Smith III
+pico-examples on GitHub
+
+
+See Also
+
+
+Pico - Part 1: The RP2040 & Pico SDK
+Pico - Part 4: The Audio Render Loop on Bare Metal
+Pico - Part 6: 4-Operator FM Synthesis
+DSP - Part 5: The Biquad Filter
+

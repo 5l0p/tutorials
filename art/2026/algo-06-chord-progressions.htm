@@ -1,0 +1,361 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Algorithmic Composition - Part 6: Generating Chord Progressions</title>
+    <meta name="description" content="A Markov chain over harmonic function (T, S, D) rather than individual chords, mapping functions to chord degree choices, generating 4-bar progressions, and modal interchange for colour without key change.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="lua, puredata, audio, music-theory, generative">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="algo-06-chord-progressions.txt">plain/text</a> | <i>2026-01-16</i> | <i><a href="../../lua.htm">lua</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../music-theory.htm">music-theory</a>, <a href="../../generative.htm">generative</a></i>
+        <h2>Algorithmic Composition - Part 6: Generating Chord Progressions</h2>
+        <p>
+The Markov chain in Part 4 generated melodies by transitioning between scale degrees.
+The same technique applies to harmony, but there is a level of abstraction that makes
+it more powerful: instead of transitioning between specific chords (I → IV → V → I),
+transition between harmonic functions (tonic → subdominant → dominant → tonic) and then
+choose which specific chord to play within each function.
+</p>
+
+<p>
+This separation means the grammar of tension and resolution is independent of the
+specific chords used. A tonic function can be expressed as I, iii, or vi; a dominant
+can be V or vii°. The same function-level Markov chain generates progressions that
+vary in their specific chord choices while always following the logic of tonal motion.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why operating on harmonic function rather than chord degree produces more musical progressions</li>
+<li>The function-level Markov transition matrix and what each entry means</li>
+<li>Mapping functions to chord choices and why multiple chords per function matter</li>
+<li>Generating 4-bar progressions and converting degrees to MIDI chord tones</li>
+<li>Modal interchange: borrowing chords from the parallel minor for colour</li>
+<li>Sending chord tones from Lua to Pure Data as a list message</li>
+</ul>
+
+<h3>The Function-Level Markov Chain</h3>
+
+<p>
+Three harmonic functions: T (tonic), S (subdominant), D (dominant). The transition
+matrix encodes which function is likely to follow which:
+</p>
+
+<pre>
+-- Function indices: 1=Tonic, 2=Subdominant, 3=Dominant
+-- Each row: weights for {T, S, D} as the next function.
+
+local function_chain = {
+    [1] = {1, 4, 4},   -- Tonic → usually departs to S or D (equal probability)
+    [2] = {1, 1, 7},   -- Subdominant → strongly to Dominant
+    [3] = {8, 0, 2},   -- Dominant → usually resolves to Tonic; sometimes stays
+}
+</pre>
+
+<p>
+The chain encodes the asymmetry of tonal motion:
+</p>
+
+<ul>
+<li><b>T → S or D:</b> the tonic can depart in either direction with similar probability.</li>
+<li><b>S → D:</b> subdominant almost always moves to dominant. S → T is the "plagal cadence" (amen cadence) — valid but far less common, hence the low weight of 1.</li>
+<li><b>D → T:</b> the dominant's strong pull toward resolution. D → D extends tension; D → S is the "deceptive cadence" (V → vi), encoded here as D→T followed by choosing vi as the tonic chord.</li>
+</ul>
+
+<h3>Chord Choices Per Function</h3>
+
+<p>
+Map each function to the degrees that can express it. Use the <code>chord_db</code>
+table from Part 5, which includes both diatonic chords and borrowed chords:
+</p>
+
+<pre>
+-- Chord database indices: 1=I, 2=ii, 3=iii, 4=IV, 5=V, 6=vi, 7=vii°,
+--                         8=bVII (borrowed), 9=bVI (borrowed), 10=iv (borrowed)
+local chord_db = {
+    [1]  = {root_offset=0,  type="major",      function_="T"},
+    [2]  = {root_offset=2,  type="minor",      function_="S"},
+    [3]  = {root_offset=4,  type="minor",      function_="T"},
+    [4]  = {root_offset=5,  type="major",      function_="S"},
+    [5]  = {root_offset=7,  type="major",      function_="D"},
+    [6]  = {root_offset=9,  type="minor",      function_="T"},
+    [7]  = {root_offset=11, type="diminished", function_="D"},
+    [8]  = {root_offset=10, type="major",      function_="D", borrowed=true},
+    [9]  = {root_offset=8,  type="major",      function_="S", borrowed=true},
+    [10] = {root_offset=5,  type="minor",      function_="S", borrowed=true},
+}
+
+-- Weighted list of chord indices per function
+-- Higher weight = more likely to be chosen for that function
+local function_chords = {
+    T = { {id=1, w=6}, {id=3, w=2}, {id=6, w=4} },           -- I, iii, vi
+    S = { {id=4, w=5}, {id=2, w=4}, {id=9, w=2}, {id=10, w=1} }, -- IV, ii, bVI, iv
+    D = { {id=5, w=7}, {id=7, w=2}, {id=8,  w=2} },           -- V, vii°, bVII
+}
+
+local function_names = {[1]="T", [2]="S", [3]="D"}
+</pre>
+
+<p>
+The borrowed chords (bVI, iv, bVII) have lower weights than their diatonic equivalents,
+so they appear occasionally for colour rather than dominating the output.
+</p>
+
+<h3>Generating a Progression</h3>
+
+<pre>
+local pitch = require("pitch")
+
+local triad_offsets = {
+    major      = {0, 4, 7},
+    minor      = {0, 3, 7},
+    diminished = {0, 3, 6},
+    augmented  = {0, 4, 8},
+}
+
+local function sample(items)
+    local total = 0
+    for _, item in ipairs(items) do total = total + item.w end
+    local r = math.random() * total
+    local cum = 0
+    for _, item in ipairs(items) do
+        cum = cum + item.w
+        if r &lt;= cum then return item.id end
+    end
+    return items[#items].id
+end
+
+local function sample_weights(weights)
+    local total = 0
+    for _, w in ipairs(weights) do total = total + w end
+    local r = math.random() * total
+    local cum = 0
+    for i, w in ipairs(weights) do
+        cum = cum + w
+        if r &lt;= cum then return i end
+    end
+    return #weights
+end
+
+-- Build MIDI pitches for one chord
+local function build_chord(chord_id, root)
+    local entry = chord_db[chord_id]
+    local chord_root = root + entry.root_offset
+    local offsets = triad_offsets[entry.type]
+    return {chord_root + offsets[1], chord_root + offsets[2], chord_root + offsets[3]}
+end
+
+-- Generate n chords, starting on tonic function
+local function generate_progression(n, root)
+    local func_state = 1   -- start on Tonic
+    local progression = {}
+
+    for i = 1, n do
+        local func_name  = function_names[func_state]
+        local chord_id   = sample(function_chords[func_name])
+        local chord_midi = build_chord(chord_id, root)
+        progression[i]   = {func=func_name, id=chord_id, notes=chord_midi}
+        func_state = sample_weights(function_chain[func_state])
+    end
+
+    return progression
+end
+
+-- Example: 8-chord progression in C major, root C4 = 60
+math.randomseed(7)
+local prog = generate_progression(8, 60)
+
+local chord_names = {"I","ii","iii","IV","V","vi","vii°","bVII","bVI","iv"}
+for i, chord in ipairs(prog) do
+    print(string.format("[%s] %s: %s %s %s",
+        chord.func, chord_names[chord.id],
+        pitch.name(chord.notes[1]),
+        pitch.name(chord.notes[2]),
+        pitch.name(chord.notes[3])))
+end
+</pre>
+
+<p>
+Sample output:
+</p>
+
+<pre>
+[T] I:    C4 E4 G4
+[D] V:    G4 B4 D5
+[T] vi:   A4 C5 E5
+[S] IV:   F4 A4 C5
+[D] V:    G4 B4 D5
+[T] I:    C4 E4 G4
+[S] ii:   D4 F4 A4
+[D] bVII: Bb4 D5 F5
+</pre>
+
+<p>
+The function logic is correct throughout: every S is followed by D, every D resolves to
+T. The bVII at position 8 is a borrowed chord that creates unexpected colour while still
+performing a dominant function.
+</p>
+
+<h3>Locking Progressions to a Period</h3>
+
+<p>
+A 4-bar progression should start and end on a tonic chord to sound complete. The simplest
+approach: generate the progression until the chain reaches tonic, then stop if you have
+at least 3 chords; repeat if the chain stays on tonic too long or never returns.
+</p>
+
+<p>
+A more reliable approach: generate a fixed 4-chord block, force the first chord to tonic
+function, force the last chord to tonic function (V→I cadence), and allow the middle
+two to vary:
+</p>
+
+<pre>
+local function four_bar_progression(root)
+    -- chord 1: forced tonic
+    local c1 = build_chord(sample(function_chords.T), root)
+    -- chord 2: S or D
+    local f2  = ({1,2,3,2,3,3,1})[math.random(7)]  -- bias toward S
+    local fn2 = function_names[f2] == "T" and "S" or function_names[f2]
+    fn2 = (math.random(2) == 1) and "S" or "D"
+    local c2  = build_chord(sample(function_chords[fn2]), root)
+    -- chord 3: D (pre-cadential dominant)
+    local c3  = build_chord(sample(function_chords.D), root)
+    -- chord 4: forced tonic (resolution)
+    local c4  = build_chord(1, root)  -- always I for clarity
+
+    return {
+        {notes=c1, func="T"},
+        {notes=c2, func=fn2},
+        {notes=c3, func="D"},
+        {notes=c4, func="T"},
+    }
+end
+</pre>
+
+<h3>Sending Chords to Pure Data</h3>
+
+<p>
+Send each chord as a three-float list to a Pd receiver. The Pd patch routes each float
+to one voice in the Monomachine SuperWave engine:
+</p>
+
+<pre>
+-- In Lua:
+local function send_chord(notes)
+    -- Pd [list] message: "chord pitch1 pitch2 pitch3"
+    pd.send("algo-chord", notes[1], notes[2], notes[3])
+end
+
+-- In Pure Data:
+-- [receive algo-chord]
+-- |
+-- [unpack f f f]
+-- |  |  |
+-- [mtof] [mtof] [mtof]
+-- voice1 voice2 voice3
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+Operating on harmonic function (T, S, D) rather than specific chord degrees produces
+progressions that follow tonal logic while varying in their specific chord choices.
+The function-level Markov chain encodes asymmetric motion: S almost always goes to D,
+D almost always resolves to T. Within each function, a weighted list chooses which
+chord to play — diatonic chords with high weight, borrowed chords with low weight.
+The result is a 4-bar progression generator that sounds coherent in any key by
+changing only the root parameter. Chord tones go to Pure Data as list messages,
+one float per voice.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://www.musictheory.net/lessons/57">musictheory.net — Harmonic Progression</a></li>
+<li><a href="https://dmitri.mycpanel.princeton.edu/geometry-of-music.html">Tymoczko — A Geometry of Music (harmonic function chapters)</a></li>
+<li><a href="https://link.springer.com/book/10.1007/978-3-211-75540-2">Nierhaus — Algorithmic Composition, Ch. 5: Harmony</a></li>
+<li><a href="https://musictheory.pugetsound.edu/mt21c/PartIII.html">Music Theory for the 21st-Century Classroom — Diatonic Harmony</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="algo-05-harmony-fundamentals.htm">Part 5: Harmony Fundamentals</a> - the chord_db and triad types used here</li>
+<li><a href="algo-07-voice-leading.htm">Part 7: Voice Leading</a> - choosing smooth voicings between consecutive chords</li>
+<li><a href="algo-04-markov-chains.htm">Part 4: Markov Chains for Melody</a> - the same Markov technique for pitch sequences</li>
+<li><a href="elektron-12-mnm-superwave.htm">Monomachine SuperWave</a> - the multi-voice engine driven by chord output</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

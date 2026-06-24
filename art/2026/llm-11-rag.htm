@@ -1,0 +1,452 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 11: RAG: Retrieval-Augmented Generation</title>
+    <meta name="description" content="Generate embeddings with OpenAI, implement cosine similarity in Go, build a JSON-backed vector store, and wire retrieval into the agent loop.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-11-rag.txt">plain/text</a> | <i>2026-06-20</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 11: RAG: Retrieval-Augmented Generation</h2>
+        <p>
+Retrieval-Augmented Generation (RAG) solves a fundamental problem: the model's context
+window is finite, but your knowledge base may be arbitrarily large. Instead of trying to
+fit everything into the prompt, you convert documents and queries to vectors (embeddings),
+find the most relevant documents by vector similarity, and inject only those into the
+context. The model answers with access to relevant information it was not trained on.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What embeddings are: dense vector representations of semantic meaning</li>
+<li>How to generate embeddings with the OpenAI embeddings API in Go</li>
+<li>Cosine similarity: why it measures semantic closeness and how to implement it in Go</li>
+<li>A JSON-backed vector store: indexing documents and querying by similarity</li>
+<li>How to wire retrieval into the agent loop as a tool</li>
+<li>Chunking strategies: how to split documents before embedding them</li>
+</ul>
+
+<h3>What Are Embeddings?</h3>
+
+<p>
+An embedding is a dense vector of floating-point numbers that represents the semantic
+meaning of a piece of text. Two pieces of text with similar meaning produce vectors that
+are close together in vector space; unrelated text produces vectors that are far apart.
+OpenAI's <code>text-embedding-3-small</code> model produces vectors of 1536 dimensions.
+</p>
+
+<p>
+You do not need to understand the mathematics to use embeddings effectively. The key
+intuition: similar meaning → similar vectors → high cosine similarity score.
+</p>
+
+<h3>Generating Embeddings</h3>
+
+<p>
+The embeddings endpoint is separate from chat completions:
+</p>
+
+<pre>
+const embeddingURL = "http://localhost:8001/v1/embeddings"
+
+type EmbedRequest struct {
+    Model string `json:"model"`
+    Input string `json:"input"`
+}
+
+type EmbedResponse struct {
+    Data []struct {
+        Embedding []float64 `json:"embedding"`
+        Index     int       `json:"index"`
+    } `json:"data"`
+    Usage struct {
+        PromptTokens int `json:"prompt_tokens"`
+    } `json:"usage"`
+}
+
+func embed(apiKey, text string) ([]float64, error) {
+    req := EmbedRequest{Model: "text-embedding-3-small", Input: text}
+    data, _ := json.Marshal(req)
+
+    r, _ := http.NewRequest(http.MethodPost, embeddingURL, bytes.NewReader(data))
+    r.Header.Set("Content-Type", "application/json")
+    r.Header.Set("Authorization", "Bearer "+apiKey)
+
+    resp, err := http.DefaultClient.Do(r)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("embed API %d: %s", resp.StatusCode, body)
+    }
+
+    var result EmbedResponse
+    json.Unmarshal(body, &amp;result)
+    if len(result.Data) == 0 {
+        return nil, fmt.Errorf("no embeddings returned")
+    }
+    return result.Data[0].Embedding, nil
+}
+</pre>
+
+<h3>Cosine Similarity in Go</h3>
+
+<p>
+Cosine similarity measures the angle between two vectors. A score of 1.0 means identical
+direction (maximally similar), 0.0 means perpendicular (unrelated), -1.0 means opposite.
+For text embeddings, scores typically range from 0.7 to 1.0 for related content.
+</p>
+
+<pre>
+import "math"
+
+func cosineSimilarity(a, b []float64) float64 {
+    if len(a) != len(b) {
+        return 0
+    }
+    var dot, normA, normB float64
+    for i := range a {
+        dot  += a[i] * b[i]
+        normA += a[i] * a[i]
+        normB += b[i] * b[i]
+    }
+    if normA == 0 || normB == 0 {
+        return 0
+    }
+    return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+</pre>
+
+<h3>The Vector Store</h3>
+
+<p>
+For a local knowledge base of up to a few thousand documents, a JSON file is sufficient.
+Each document has its text and its embedding vector. Loading the file at startup gives
+you everything you need for similarity search.
+</p>
+
+<pre>
+type Document struct {
+    ID        string    `json:"id"`
+    Text      string    `json:"text"`
+    Source    string    `json:"source,omitempty"`
+    Embedding []float64 `json:"embedding"`
+}
+
+type VectorStore struct {
+    path string
+    docs []Document
+}
+
+func LoadVectorStore(path string) (*VectorStore, error) {
+    vs := &amp;VectorStore{path: path}
+    data, err := os.ReadFile(path)
+    if err != nil {
+        if os.IsNotExist(err) {
+            return vs, nil // start with empty store
+        }
+        return nil, err
+    }
+    return vs, json.Unmarshal(data, &amp;vs.docs)
+}
+
+func (vs *VectorStore) Add(doc Document) error {
+    vs.docs = append(vs.docs, doc)
+    return vs.save()
+}
+
+func (vs *VectorStore) save() error {
+    data, _ := json.MarshalIndent(vs.docs, "", "  ")
+    return os.WriteFile(vs.path, data, 0644)
+}
+
+type SearchResult struct {
+    Document  Document
+    Score     float64
+}
+
+func (vs *VectorStore) Search(queryEmbedding []float64, topK int) []SearchResult {
+    var results []SearchResult
+    for _, doc := range vs.docs {
+        score := cosineSimilarity(queryEmbedding, doc.Embedding)
+        results = append(results, SearchResult{Document: doc, Score: score})
+    }
+    // Sort by score descending
+    sort.Slice(results, func(i, j int) bool {
+        return results[i].Score &gt; results[j].Score
+    })
+    if topK &lt; len(results) {
+        results = results[:topK]
+    }
+    return results
+}
+</pre>
+
+<h3>Indexing Documents</h3>
+
+<p>
+Before the agent can search, you need to embed your knowledge base. Build an indexer:
+</p>
+
+<pre>
+func indexDocuments(apiKey string, store *VectorStore, docs []struct{ ID, Text, Source string }) error {
+    for _, d := range docs {
+        fmt.Printf("Indexing %s...\n", d.ID)
+        emb, err := embed(apiKey, d.Text)
+        if err != nil {
+            return fmt.Errorf("embed %s: %w", d.ID, err)
+        }
+        if err := store.Add(Document{
+            ID:        d.ID,
+            Text:      d.Text,
+            Source:    d.Source,
+            Embedding: emb,
+        }); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+</pre>
+
+<p>
+Run the indexer once whenever your knowledge base changes. The embeddings are saved to
+disk and do not need to be recomputed unless the text changes.
+</p>
+
+<h3>The RAG Tool</h3>
+
+<p>
+Expose retrieval as a tool so the agent can search the knowledge base:
+</p>
+
+<pre>
+type SearchKBSkill struct {
+    APIKey string
+    Store  *VectorStore
+    TopK   int
+}
+
+func (s *SearchKBSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name: "search_knowledge_base",
+            Description: "Search the knowledge base for information relevant to a query. " +
+                "Returns the top matching documents with their content and relevance score. " +
+                "Use this whenever you need factual information that may be in the knowledge base.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "query": {
+                        Type:        "string",
+                        Description: "The search query describing what information you need",
+                    },
+                },
+                Required: []string{"query"},
+            },
+        },
+    }
+}
+
+func (s *SearchKBSkill) Execute(argsJSON string) (string, error) {
+    var args struct{ Query string `json:"query"` }
+    json.Unmarshal([]byte(argsJSON), &amp;args)
+
+    queryEmb, err := embed(s.APIKey, args.Query)
+    if err != nil {
+        return "", fmt.Errorf("embed query: %w", err)
+    }
+
+    topK := s.TopK
+    if topK == 0 {
+        topK = 3
+    }
+    results := s.Store.Search(queryEmb, topK)
+
+    type result struct {
+        ID    string  `json:"id"`
+        Score float64 `json:"score"`
+        Text  string  `json:"text"`
+    }
+    var out []result
+    for _, r := range results {
+        out = append(out, result{
+            ID:    r.Document.ID,
+            Score: math.Round(r.Score*1000) / 1000,
+            Text:  r.Document.Text,
+        })
+    }
+    data, _ := json.Marshal(out)
+    return string(data), nil
+}
+</pre>
+
+<h3>A Complete RAG Example</h3>
+
+<pre>
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    store, _ := LoadVectorStore("knowledge.json")
+
+    // Index some documents (only needed once)
+    if len(store.docs) == 0 {
+        indexDocuments(apiKey, store, []struct{ ID, Text, Source string }{
+            {"go-goroutines", "A goroutine is a lightweight thread managed by the Go runtime. "+
+                "Goroutines are multiplexed onto OS threads. You start one with the go keyword.", "go docs"},
+            {"go-channels", "Channels are the pipes that connect concurrent goroutines. "+
+                "You can send values into channels and receive values from them.", "go docs"},
+            {"go-interfaces", "An interface type is defined as a set of method signatures. "+
+                "A value of interface type can hold any value that implements those methods.", "go docs"},
+        })
+    }
+
+    agent := NewAgent(apiKey, "gpt-4o-mini",
+        "You are a Go programming assistant. Use search_knowledge_base to look up information before answering.",
+        []Skill{&amp;SearchKBSkill{APIKey: apiKey, Store: store, TopK: 2}},
+    )
+
+    result, _ := agent.Run("How do goroutines differ from OS threads?")
+    fmt.Println(result)
+}
+</pre>
+
+<h3>Chunking Strategy</h3>
+
+<p>
+For large documents, splitting into chunks before embedding improves retrieval precision.
+A query about a specific function will match a small chunk about that function more
+reliably than a large chunk covering the entire file. Common strategies:
+</p>
+
+<ul>
+<li><b>Fixed-size chunks</b> - split every N characters with overlap. Simple but may cut across sentence boundaries.</li>
+<li><b>Sentence-level chunks</b> - split at sentence boundaries. Preserves meaning but chunks vary in size.</li>
+<li><b>Semantic chunks</b> - split at paragraph or section boundaries. Best for structured documents.</li>
+</ul>
+
+<p>
+For code: split at function or method boundaries. A function is a natural semantic unit.
+</p>
+
+<h3>Scaling Beyond a JSON File</h3>
+
+<p>
+A JSON file works for hundreds of documents. For thousands or more, consider:
+</p>
+
+<ul>
+<li><a href="https://github.com/pgvector/pgvector">pgvector</a> - PostgreSQL extension for vector similarity search.</li>
+<li><a href="https://weaviate.io">Weaviate</a> - purpose-built vector database with a Go client.</li>
+<li><a href="https://qdrant.tech">Qdrant</a> - high-performance vector search engine with a REST API.</li>
+</ul>
+
+<p>
+The retrieval interface (embed query → search → inject results) stays the same regardless
+of backend. Swap the <code>VectorStore</code> implementation without changing the agent.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Embeddings map text to a high-dimensional vector where similar texts are
+nearby. Call the embeddings API to get a vector for each document chunk and
+for the query; rank chunks by cosine similarity; inject the top-k into the
+context. A JSON file of <code>[]ChunkRecord{text, vector, metadata}</code>
+is a sufficient vector store for thousands of documents. Expose retrieval as
+an agent tool so the model can decide when to search the knowledge base.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://platform.openai.com/docs/guides/embeddings">OpenAI: Embeddings Guide</a></li>
+<li><a href="https://arxiv.org/abs/2005.11401">RAG Paper: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks (2020)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Cosine_similarity">Wikipedia: Cosine Similarity</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-10-memory.htm">Adding Memory to Agents</a> - simpler key-value memory for small knowledge bases</li>
+<li><a href="llm-12-cag.htm">CAG: Cache-Augmented Generation</a> - when static context fits in the prompt instead of requiring retrieval</li>
+<li><a href="llm-14-full-agent.htm">Putting It Together: A Full Agent</a> - RAG integrated into a complete agent binary</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

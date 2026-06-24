@@ -1,0 +1,496 @@
+Lua - Part 3: Running Lua from C
+2026-11-24
+
+
+The payoff of embedding Lua is being able to run Lua code from your C application.
+That means loading files, evaluating strings, calling Lua functions by name, and
+getting results back into C variables. It also means handling failures cleanly -
+Lua errors are a normal part of the interface, not exceptional failures of the
+embedding infrastructure, and your C code must deal with them without crashing.
+This article covers the complete workflow: creating and initialising a Lua state,
+loading and executing code, calling Lua functions from C, reading multiple return
+values, and using protected calls so that a Lua error never kills your host process.
+
+
+What You Will Learn
+
+
+How to create a Lua state and choose which standard libraries to open.
+The difference between lua_pcall and lua_call and why you always use lua_pcall.
+How to load and execute a Lua file or a Lua string from C.
+How to call a named Lua function from C and read its return values.
+How to handle multiple return values correctly.
+A complete worked example: a C host that loads a config file and calls a Lua function.
+
+
+Creating a State and Opening Libraries
+
+
+A Lua state is created with luaL_newstate(). This allocates and initialises
+a lua_State - the interpreter instance. A freshly created state has no
+standard libraries loaded; it can run Lua code but has no access to print,
+math, string, table, io, or any of
+the other built-in modules.
+
+
+
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+
+lua_State *L = luaL_newstate();
+if (!L) {
+    /* Memory allocation failure - extremely rare, but must be checked */
+    fprintf(stderr, "failed to create Lua state\n");
+    return 1;
+}
+
+
+
+To load all standard libraries at once, call luaL_openlibs(L). This
+opens: base (print, pairs, ipairs, type, etc.), coroutine,
+table, io, os, string,
+math, utf8, debug, and package.
+
+
+
+luaL_openlibs(L);   /* open all standard libraries */
+
+
+
+For sandboxed embeddings - running untrusted scripts, for example - you may not
+want all libraries. The io library can read and write files. The
+os library can execute shell commands with os.execute.
+The package library can load arbitrary C modules with
+require. You can open libraries selectively:
+
+
+
+/* Open only the safe libraries */
+luaL_requiref(L, "_G",        luaopen_base,      1); lua_pop(L, 1);
+luaL_requiref(L, "math",      luaopen_math,      1); lua_pop(L, 1);
+luaL_requiref(L, "string",    luaopen_string,    1); lua_pop(L, 1);
+luaL_requiref(L, "table",     luaopen_table,     1); lua_pop(L, 1);
+luaL_requiref(L, "coroutine", luaopen_coroutine, 1); lua_pop(L, 1);
+/* io, os, package, debug are NOT opened */
+
+
+
+luaL_requiref loads a library by calling its open function and registers
+it in package.loaded under the given name. The third argument (1) means
+"also set the global with that name". The lua_pop(L, 1) after each call
+removes the library table that luaL_requiref leaves on the stack.
+
+
+Protected vs Unprotected Calls
+
+
+Lua code can raise errors. An error terminates execution of the current chunk or
+function and propagates up the call stack looking for an error handler. In C, a Lua
+error that propagates all the way out of a C-to-Lua call without an error handler will
+call abort() and kill your process. This is never what you want.
+
+
+
+The solution is lua_pcall - protected call. It executes Lua in a
+protected environment: if an error occurs, Lua catches it, leaves an error message
+on the stack, and returns an error code to C. Your C code never sees a longjmp;
+execution continues normally.
+
+
+
+/* lua_pcall(L, nargs, nresults, msgh) */
+/*   nargs:    number of arguments on the stack above the function */
+/*   nresults: number of return values to leave on the stack */
+/*   msgh:     stack index of a message handler function, or 0 for none */
+
+int rc = lua_pcall(L, nargs, nresults, 0);
+if (rc != LUA_OK) {
+    /* Error: the error message is on top of the stack */
+    fprintf(stderr, "Lua error: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);  /* pop the error message */
+}
+
+
+
+Return codes:
+
+
+
+LUA_OK (0) - success. Return values are on the stack.
+LUA_ERRRUN - a runtime error in the Lua code. Error message on the stack.
+LUA_ERRMEM - memory allocation failure during the call.
+LUA_ERRERR - error in the error handler itself (rare).
+
+
+
+lua_call is the unprotected version. It propagates Lua errors as C
+longjmps. Never use it unless you are inside a function that is itself called
+via lua_pcall - in which case the outer protected call catches the error.
+In top-level C code that calls into Lua, always use lua_pcall.
+
+
+Loading and Running a Lua File
+
+
+Loading a file is a two-step process: load (compile) the file into a Lua function,
+then call that function.
+
+
+
+/* Step 1: load - compiles the file to a Lua function, leaves it on the stack */
+int rc = luaL_loadfile(L, "config.lua");
+if (rc != LUA_OK) {
+    /* Syntax error or file not found */
+    fprintf(stderr, "load error: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+    return;
+}
+
+/* Step 2: call the chunk - it runs the top-level code in the file */
+/* nargs=0, nresults=0: the chunk takes no arguments and we discard any return values */
+rc = lua_pcall(L, 0, 0, 0);
+if (rc != LUA_OK) {
+    fprintf(stderr, "runtime error: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+    return;
+}
+
+
+
+The convenience wrapper luaL_dofile(L, "config.lua") does both steps.
+Use the two-step version when you need to distinguish load errors (syntax, file not
+found) from runtime errors.
+
+
+
+luaL_loadfile reads and compiles the file but does not run it.
+The compiled chunk is left as a function on top of the stack. Running it with
+lua_pcall executes the top-level statements: variable definitions,
+function definitions, module initialisation code. After the call succeeds, any
+globals or functions defined in the file are available.
+
+
+Loading and Running a Lua String
+
+
+For embedding short Lua snippets, loading from a C string is convenient:
+
+
+
+const char *code = "x = 10 * 20  print('x is', x)";
+
+int rc = luaL_loadstring(L, code);
+if (rc != LUA_OK) {
+    fprintf(stderr, "syntax error: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+    return;
+}
+
+rc = lua_pcall(L, 0, 0, 0);
+if (rc != LUA_OK) {
+    fprintf(stderr, "runtime error: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+}
+
+
+
+luaL_dostring(L, code) combines both steps, same as luaL_dofile.
+Use it for fire-and-forget evaluation; use the two-step version when you need to
+distinguish errors or pass arguments.
+
+
+Calling a Named Lua Function
+
+
+After loading a Lua file that defines functions, you call them from C by:
+
+
+
+Getting the function from Lua's globals onto the stack.
+Pushing the arguments.
+Calling with lua_pcall.
+Reading the return values off the stack.
+Popping the return values.
+
+
+
+/* Suppose config.lua contains:
+ *   function greet(name)
+ *     return "Hello, " .. name .. "!"
+ *   end
+ */
+
+/* Step 1: get the function */
+lua_getglobal(L, "greet");   /* stack: [greet_func] */
+
+/* Step 2: push arguments */
+lua_pushstring(L, "Alice");  /* stack: [greet_func, "Alice"] */
+
+/* Step 3: call - 1 argument, 1 return value */
+int rc = lua_pcall(L, 1, 1, 0);
+if (rc != LUA_OK) {
+    fprintf(stderr, "error calling greet: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+    return;
+}
+
+/* Step 4: read the return value */
+/* stack: ["Hello, Alice!"] */
+const char *result = lua_tostring(L, -1);
+printf("%s\n", result);     /* Hello, Alice! */
+
+/* Step 5: pop the return value */
+lua_pop(L, 1);              /* stack: [] */
+
+
+
+The function goes on the stack before the arguments. This is the calling
+convention the Lua VM expects. Push the callable first, then the arguments in order
+(first argument on the bottom, last on top), then call.
+
+
+
+If lua_getglobal does not find the name, it pushes nil. Calling nil
+produces a runtime error that lua_pcall catches. Always check that
+the value is a function before calling:
+
+
+
+lua_getglobal(L, "greet");
+if (!lua_isfunction(L, -1)) {
+    fprintf(stderr, "greet is not a function (got %s)\n",
+            lua_typename(L, lua_type(L, -1)));
+    lua_pop(L, 1);
+    return;
+}
+/* safe to push args and call */
+
+
+Handling Multiple Return Values
+
+
+Lua functions can return any number of values. The nresults argument
+to lua_pcall controls how many are collected:
+
+
+
+/* Suppose:
+ *   function minmax(t)
+ *     local min, max = t[1], t[1]
+ *     for _, v in ipairs(t) do
+ *       if v < min then min = v end
+ *       if v > max then max = v end
+ *     end
+ *     return min, max
+ *   end
+ */
+
+/* We will pass a Lua table argument built from C - see Part 5 for that.
+ * For now, call it by running inline Lua to set up the table: */
+luaL_dostring(L, "values = {3, 1, 4, 1, 5, 9, 2, 6}");
+
+lua_getglobal(L, "minmax");
+lua_getglobal(L, "values");    /* push the table as argument */
+
+/* Ask for exactly 2 return values */
+int rc = lua_pcall(L, 1, 2, 0);
+if (rc != LUA_OK) {
+    fprintf(stderr, "error: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+    return;
+}
+
+/* Return values are on the stack, first return value deepest */
+/* stack: [min, max] */
+lua_Integer min_val = lua_tointeger(L, -2);  /* first return: min */
+lua_Integer max_val = lua_tointeger(L, -1);  /* second return: max */
+printf("min=%lld max=%lld\n", (long long)min_val, (long long)max_val);
+
+lua_pop(L, 2);  /* pop both return values */
+
+
+
+If nresults is LUA_MULTRET, all return values are left on
+the stack and you use lua_gettop to find out how many there were.
+If nresults is greater than the actual number of values returned, the
+remaining slots are filled with nil. If it is less, excess return values are discarded.
+
+
+Adding a Message Handler
+
+
+The fourth argument to lua_pcall is the stack index of a message handler
+function. If non-zero, Lua calls this function when an error occurs, passing the
+error object as an argument. The handler can add a traceback, reformat the message,
+or do any other processing. This is how you get Lua stack tracebacks in C:
+
+
+
+/* Push the message handler before the function */
+int handler_idx = lua_gettop(L) + 1;
+lua_getglobal(L, "debug");
+lua_getfield(L, -1, "traceback");  /* debug.traceback */
+lua_remove(L, -2);                 /* remove the debug table */
+/* handler_idx now points to debug.traceback */
+
+lua_getglobal(L, "my_function");
+lua_pushstring(L, "arg");
+
+/* Pass handler_idx to lua_pcall */
+int rc = lua_pcall(L, 1, 1, handler_idx);
+if (rc != LUA_OK) {
+    /* Error message now includes a Lua stack traceback */
+    fprintf(stderr, "%s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+}
+
+lua_pop(L, 1);  /* pop the handler */
+
+
+
+This pattern is used in production embeddings when debugging Lua errors in a running
+application. The traceback shows exactly which Lua function was executing and the
+chain of calls that led there.
+
+
+Complete Worked Example
+
+
+A complete C program that loads a Lua config file, calls a greet
+function defined in it, and handles all errors:
+
+
+
+/* host.c - embed Lua and call a function defined in a config file */
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/* call_greet: call greet(name) defined in the currently loaded Lua state.
+ * Returns the greeting string (caller must free), or NULL on error. */
+static char *call_greet(lua_State *L, const char *name) {
+    /* push debug.traceback as message handler */
+    lua_getglobal(L, "debug");
+    lua_getfield(L, -1, "traceback");
+    lua_remove(L, -2);
+    int msgh = lua_gettop(L);
+
+    /* push the function and argument */
+    lua_getglobal(L, "greet");
+    if (!lua_isfunction(L, -1)) {
+        fprintf(stderr, "greet is not a function\n");
+        lua_pop(L, 2);  /* pop nil + handler */
+        return NULL;
+    }
+    lua_pushstring(L, name);
+
+    /* call: 1 arg, 1 return value */
+    int rc = lua_pcall(L, 1, 1, msgh);
+    if (rc != LUA_OK) {
+        fprintf(stderr, "error calling greet: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 2);  /* pop error message + handler */
+        return NULL;
+    }
+
+    /* copy the return value before popping */
+    const char *s = lua_tostring(L, -1);
+    char *result = s ? strdup(s) : NULL;
+    lua_pop(L, 2);  /* pop result + handler */
+    return result;
+}
+
+int main(int argc, char *argv[]) {
+    const char *script = argc > 1 ? argv[1] : "config.lua";
+    const char *name   = argc > 2 ? argv[2] : "World";
+
+    lua_State *L = luaL_newstate();
+    if (!L) {
+        fprintf(stderr, "failed to create Lua state\n");
+        return 1;
+    }
+    luaL_openlibs(L);
+
+    /* load and run the config file */
+    if (luaL_loadfile(L, script) != LUA_OK) {
+        fprintf(stderr, "load error: %s\n", lua_tostring(L, -1));
+        lua_close(L);
+        return 1;
+    }
+    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+        fprintf(stderr, "runtime error: %s\n", lua_tostring(L, -1));
+        lua_close(L);
+        return 1;
+    }
+
+    /* call greet(name) */
+    char *greeting = call_greet(L, name);
+    if (greeting) {
+        printf("%s\n", greeting);
+        free(greeting);
+    }
+
+    lua_close(L);
+    return greeting ? 0 : 1;
+}
+
+
+
+The Lua config file config.lua:
+
+
+
+-- config.lua
+local prefix = "Hello"
+
+function greet(name)
+    return prefix .. ", " .. name .. "! Welcome."
+end
+
+
+
+gcc -o host host.c $(pkg-config --cflags --libs lua5.4)
+./host config.lua Alice
+# Hello, Alice! Welcome.
+./host config.lua
+# Hello, World! Welcome.
+
+
+Summary
+
+
+Creating a Lua state with luaL_newstate gives you an interpreter
+instance. luaL_openlibs populates it with standard libraries, or you
+can open them selectively for sandboxed embeddings. Always use lua_pcall
+for calling Lua code from top-level C - it catches Lua errors and returns an error
+code rather than killing your process. Load files with luaL_loadfile
+and run them with lua_pcall. Call named Lua functions by pushing them
+from globals, pushing arguments, and calling with the appropriate nargs and nresults.
+Use debug.traceback as a message handler to get stack traces in error
+messages.
+
+
+
+The next article flips the direction: making C functions callable from Lua, building
+a C module that Lua code can call as if it were written in Lua.
+
+
+Further Reading
+
+
+luaL_loadfile - Lua 5.4 Reference
+lua_pcall - Lua 5.4 Reference
+Programming in Lua - Chapter 25: Extending your Application
+luaL_requiref - Lua 5.4 Reference
+
+
+See Also
+
+
+The Lua C API - The Stack Model
+Calling C from Lua
+Tables as Configuration
+Sandboxing Lua
+

@@ -1,0 +1,301 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Elektron Synthesis - Part 12: Monomachine SuperWave Engine</title>
+    <meta name="description" content="Recreating the Monomachine SuperWave engine in Pure Data: multiple detuned oscillators generating a super-saw or super-square sound, detune spread control, mix between centre and edge oscillators, and how to build a dense unison synthesiser voice from [osc~] instances with shared filter and amplitude envelope.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, puredata, audio, synthesis, elektron">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="elektron-12-mnm-superwave.txt">plain/text</a> | <i>2026-01-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../synthesis.htm">synthesis</a>, <a href="../../elektron.htm">elektron</a></i>
+        <h2>Elektron Synthesis - Part 12: Monomachine SuperWave Engine</h2>
+        <p>
+The Monomachine's SuperWave engine stacks multiple detuned oscillators to create an
+extraordinarily thick, wide sound — the classic "super saw" or "hypersawtooth" sound
+made famous by the Roland JP-8000. Where analogue polyphonic synthesisers achieve this
+thickness by running multiple physical oscillators in near-unison, the SuperWave
+engine implements it digitally with N oscillators pitched at calculated detune offsets.
+This article builds a complete SuperWave implementation in Pd.
+</p>
+
+<h3>SuperWave Parameters</h3>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Knob</th><th>Name</th><th>Function</th><th>Range</th></tr>
+<tr><td>1</td><td>WAVE</td><td>Oscillator waveform (SAW, SQR, TRI)</td><td>3 options</td></tr>
+<tr><td>2</td><td>DETUNE (det)</td><td>Spread between oscillators in cents</td><td>0–100 cents</td></tr>
+<tr><td>3</td><td>COUNT (cnt)</td><td>Number of active oscillators</td><td>2–7</td></tr>
+<tr><td>4</td><td>MIX</td><td>Centre vs edge oscillator level</td><td>0=centre only, 1=edge heavy</td></tr>
+<tr><td>5</td><td>PHASE</td><td>Initial phase spread between oscillators</td><td>0–1 (0=aligned, 1=random)</td></tr>
+<tr><td>6</td><td>PW</td><td>Pulse width (for SQR wave)</td><td>0–1</td></tr>
+<tr><td>7</td><td>CUTOFF</td><td>Filter cutoff</td><td>0–1</td></tr>
+<tr><td>8</td><td>LEVEL</td><td>Output level</td><td>0–1</td></tr>
+</table>
+
+<h3>Detune Spread Calculation</h3>
+
+<p>
+With N oscillators, one sits at the root pitch (centre) and the others are spread
+symmetrically above and below by multiples of the DETUNE step. For a 7-oscillator bank:
+</p>
+
+<pre>
+; 7 oscillators, DETUNE in cents:
+; osc 1: root − 3*detune
+; osc 2: root − 2*detune
+; osc 3: root − 1*detune
+; osc 4: root              (centre, always present)
+; osc 5: root + 1*detune
+; osc 6: root + 2*detune
+; osc 7: root + 3*detune
+
+; Convert cents to Hz multiplier:
+; multiplier = 2^(detune_cents / 1200)
+; e.g. detune_cents=10: multiplier = 2^(10/1200) = 1.00579
+
+freq_n = root_hz × 2^((n - centre) × detune_cents / 1200)
+</pre>
+
+<p>
+In Pd with <code>[expr]</code>:
+</p>
+
+<pre>
+[r $0-freq_hz]    → $root
+[r $0-det_cents]  → $det
+
+; Oscillator N frequency:
+[expr $root * pow(2, ($n * $det) / 1200)]
+; where $n is -3, -2, -1, 0, 1, 2, 3
+</pre>
+
+<h3>Amplitude Mix Between Centre and Edge Oscillators</h3>
+
+<p>
+The MIX parameter controls the relative amplitude between the centre oscillator and the
+outer oscillators. The JP-8000 super saw uses a specific empirically derived amplitude
+distribution — the centre oscillator is slightly louder than the edges to maintain
+a perceived centre in the stereo image:
+</p>
+
+<pre>
+; Empirical super saw amplitudes (7 oscillators):
+; Centre (n=0): 1.0
+; n=±1:         0.776
+; n=±2:         0.664
+; n=±3:         0.537
+
+; MIX parameter morphs between equal mix (mix=0) and this empirical distribution (mix=1):
+; amp_n = 1 × (1-mix) + empirical_n × mix
+</pre>
+
+<pre>
+; In Pd, store amplitude weights as an array and use [tabread]:
+[array sw_amps 7]    ; fill with [0.537, 0.664, 0.776, 1.0, 0.776, 0.664, 0.537]
+                      ; or lerp based on MIX
+
+; Per oscillator gain:
+[tabread sw_amps]  ← n + 3   ; index 0–6
+|
+[*~ $mix_weight]
+</pre>
+
+<h3>Phase Randomisation</h3>
+
+<p>
+When all oscillators start with the same phase, the initial burst of the note sounds
+phasey and comb-filtered. Randomising the initial phase of each oscillator prevents
+this and creates a smoother, more organic onset:
+</p>
+
+<pre>
+; PHASE parameter: amount of initial phase randomisation per oscillator
+; phase_n = n × $phase / count  (linear spread)  OR
+; phase_n = random() × $phase   (random spread)
+
+; In Pd, set the initial phase when triggering each oscillator.
+; [osc~] does not accept a phase offset directly, but you can
+; add a fixed DC phase using [+~] before the oscillator lookup,
+; or use [tabread4~] with a phase offset:
+
+[phasor~ $freq_n]
+|
+[+~ $phase_offset_n]    ; fixed offset per oscillator
+|
+[wrap~]                 ; keep 0–1
+|
+[*~ 2][-~ 1]            ; → sawtooth wave
+</pre>
+
+<h3>Waveform Variants</h3>
+
+<p><b>SuperSaw (WAVE=SAW):</b> Each oscillator outputs a sawtooth. This is the most
+common SuperWave form — the stacked sawtooth sound heard in most EDM synth stabs,
+supersaws, and pad sounds.</p>
+
+<p><b>SuperSquare (WAVE=SQR):</b> Each oscillator outputs a square/pulse wave. The
+PW parameter adjusts all oscillators' pulse widths simultaneously. Narrower pulses
+create a sharper, nasal quality; 50% duty cycle produces the classic hollow square
+character.</p>
+
+<p><b>SuperTriangle (WAVE=TRI):</b> Each oscillator outputs a triangle wave. Softer
+than saw or square; produces a warm, slightly padded texture. Often used for softer
+lead sounds or gentle pads.</p>
+
+<h3>Complete SuperWave Pd Patch (7 oscillators, Sawtooth)</h3>
+
+<pre>
+; 7 oscillators, detuned sawtooth:
+[r $0-freq]     → root_hz
+[r $0-det]      → detune_cents (0–100)
+[r $0-mix]      → mix (0–1)
+
+; Per oscillator (n = -3 to +3):
+[expr root_hz * pow(2, $n * $det / 1200)]    ; freq_n
+|
+[phasor~]
+|
+[+ phase_n]
+|
+[wrap~]
+|
+[*~ 2][-~ 1]                                  ; sawtooth
+|
+[*~ amp_weight_n]                             ; per-osc amplitude
+|
+[*~ 1/7]                                      ; normalise (7 oscillators)
+
+; Sum all 7:
+[+~] ...
+
+; Filter (MNM shared filter — 2-pole multimode):
+[lop~ cutoff_hz] OR [vcf~ cutoff_hz res_q]
+|
+; Amplitude ADSR:
+[*~] ← [vline~] ADSR envelope
+|
+[*~ level * vel]
+|
+[outlet~]
+</pre>
+
+<h3>2-Pole Multimode Filter</h3>
+
+<p>
+The Monomachine's filter is shared across all engines — a 2-pole state variable filter
+(SVF) supporting LP, BP, and HP simultaneously. Implement in Pd with two integrators
+in feedback:
+</p>
+
+<pre>
+; State variable filter (SVF), 2-pole:
+; Inputs: x (audio), f (cutoff: 0–1, maps to 2*sin(π*fc/sr)), q (resonance: 0–1)
+
+; States: LP (lowpass), BP (bandpass), HP (highpass)
+; Update per sample:
+; LP[n] = LP[n-1] + f * BP[n-1]
+; HP[n] = x[n] - LP[n] - q*BP[n-1]
+; BP[n] = f * HP[n] + BP[n-1]
+
+; In Pd, implement with [+~], [*~], and unit delay [z-1]:
+; Each unit delay is one sample (can't do in pure vanilla Pd without external)
+
+; Approximation using [lop~] and [hip~] in feedback:
+; The [vcf~] object in Pd is a 2-pole resonant filter that implements SVF-like
+; behavior — use [vcf~] for a quality SVF:
+[vcf~ $cutoff_hz $q]     ; two outputs: bandpass, lowpass
+; highpass = input - lowpass - bandpass
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+The Monomachine SuperWave engine stacks 2–7 detuned oscillators (sawtooth, square, or
+triangle) with per-oscillator amplitude weighting, initial phase randomisation, and
+all sharing a 2-pole multimode filter and a common ADSR. The detune spread (in cents)
+controls the chorus width; the MIX parameter controls centre/edge amplitude balance.
+Seven oscillators at 10 cents spread with JP-8000-style amplitude distribution produces
+the canonical super saw sound. Narrower detune (1–3 cents) produces subtle ensemble
+thickness; wider detune (20+ cents) produces obvious vibrato/chorus character.
+</p>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="elektron-11-mnm-fmplus.htm">Monomachine FM+ Engine</a> - FM-based thickness as an alternative to detuned unison</li>
+<li><a href="elektron-13-mnm-digipro.htm">Monomachine DigiPro Engine</a> - phase distortion and wavetable oscillators</li>
+<li><a href="dsp-03-oscillators.htm">Oscillators</a> - phasor-based oscillator construction used for each SuperWave voice</li>
+<li><a href="algo-11-putting-it-together.htm">Putting It All Together</a> - three instances of this engine driven by voice-led chord progressions</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

@@ -1,0 +1,194 @@
+Algorithmic Composition - Part 1: What Is Algorithmic Composition?
+2026-01-11
+
+
+Building a drum machine from first principles (Series 9) and recreating Elektron synthesis
+engines in Pure Data (Series 10) answers one question: how do you produce a sound? It
+leaves the deeper question open: what sound do you produce, and when? Choosing notes by
+hand works for a composed piece. For a generative instrument — something that runs
+unattended, evolves over time, and never repeats exactly — you need to compose the rules
+that choose the notes, not the notes themselves.
+
+
+
+That shift, from composing notes to composing rule systems, is algorithmic composition.
+It ranges from loosely probabilistic (throw a coin to decide whether to play a note) to
+tightly structured (derive every pitch from a cellular automaton seeded at startup). Most
+musically interesting work sits in the middle: systems with enough randomness to be
+unpredictable and enough structure to be coherent.
+
+
+
+This series builds that middle ground. By the end you will have a self-generating patch
+in Pure Data, driven by Lua scripts, that produces melodies, chord progressions, and
+rhythms using six techniques: random walks, Markov chains, harmonic voice leading,
+L-system grammars, cellular automata, and Euclidean rhythm distribution. All of them
+feed the synthesis engines from Series 9 and 10 with note data.
+
+
+What You Will Learn
+
+
+The spectrum from stochastic to deterministic composition and where each technique sits
+Why historical systems (ILLIAC, Krell, Music for Airports) matter as reference architectures
+The three problems every generative system must solve: pitch, rhythm, and harmonic coherence
+Why Lua handles generation logic and Pure Data handles synthesis, and where the boundary sits
+An overview of the six techniques developed across Parts 2–11
+
+
+The Spectrum: Stochastic to Deterministic
+
+
+Fully stochastic composition picks every parameter independently at random. The result is
+statistically flat — no phrase shapes, no tendency for resolution, no sense of direction.
+It is unpredictable because nothing constrains consecutive choices, which is also why it
+is uninteresting to listen to for long.
+
+
+
+Fully deterministic composition derives everything from a fixed rule with no randomness.
+A strict canon is deterministic: the second voice is an exact transposition of the first
+at a fixed delay. Predictable, but not generative in the sense of producing varied output.
+
+
+
+Between those poles:
+
+
+
+Constrained random — random choices within a harmonic or rhythmic framework
+(e.g. random pitches, but only from a major pentatonic scale).
+Stochastic process — random but with memory or momentum (Brownian motion,
+Markov chains), so consecutive outputs are correlated.
+Grammar-based — a rule system (L-system, cellular automaton) that expands a
+seed deterministically into complex output, but where the seed itself can be random.
+
+
+
+The most musically useful systems combine all three: a grammar generates large-scale
+structure, a stochastic process generates melodic contour within that structure,
+and harmonic constraints filter the output to in-key pitches.
+
+
+Three Historical Reference Points
+
+
+ILLIAC Suite (1957) — Hiller and Isaacson programmed the ILLIAC I computer at
+the University of Illinois to compose string quartet music using Markov chains and
+rule-based filtering. The system generated candidate notes and rejected those that
+violated species counterpoint rules (no parallel fifths, stepwise bass motion, and so
+on). This is still the clearest demonstration that style can be encoded as a set of
+acceptance/rejection rules applied to stochastic output.
+
+
+
+Music for Airports (1978) — Brian Eno recorded individual notes and looped them on
+tape at different lengths. Because the loop lengths are mutually incommensurable (no
+common period), the combinations never exactly repeat. This is the simplest generative
+system imaginable: no algorithm, just the arithmetic of coprime loop lengths. It
+demonstrates that perceived complexity can emerge from very simple rules, and that
+"generative" does not require a computer.
+
+
+
+The Krell Patch (1967) — Morton Subotnick's Buchla modular patch for "Silver
+Apples of the Moon" used the output envelope of one oscillator to gate a second,
+which in turn gated a third. The system had no clock: each sound triggered the next
+with a delay determined by its own envelope time. Randomness entered via the
+voltage-controlled oscillators drifting over time. The result was self-sustaining and
+constantly evolving. Part 11 of this series implements a Krell-style architecture in
+Pure Data.
+
+
+Three Problems Every Generative System Must Solve
+
+
+Pitch selection — what note to play. The system must choose pitches that form
+coherent melodic phrases and stay within a harmonic framework. Parts 2–4 address this:
+encoding pitch as MIDI numbers, building scale tables, generating melodies with Brownian
+walks and Markov chains.
+
+
+
+Harmonic coherence — how simultaneous or successive pitches relate. A sequence of
+random pitches from a major scale sounds in-key but not harmonically structured. Parts 5–7
+address chord construction, progression generation with Markov chains over harmonic
+functions, and voice leading to move smoothly between chords.
+
+
+
+Rhythm — when to play notes and for how long. Parts 9–10 address Euclidean rhythm
+distribution (which produces asymmetric patterns found in world music) and cellular
+automaton rhythms (which produce evolving patterns from a fixed rule).
+
+
+Why Lua for Generation, Pure Data for Synthesis
+
+
+The drum machine in Series 9 already established this split. Lua holds the pattern data
+and parameter presets; Pure Data holds the signal graph. The same boundary works here.
+
+
+
+Generation logic — Markov chains, L-system rewriters, Euclidean patterns, voice leading
+calculations — is table manipulation and arithmetic. Lua handles this cleanly with no
+overhead.
+
+
+
+Synthesis and real-time audio — oscillators, filters, envelopes, MIDI I/O — runs
+sample-accurately in Pure Data. Lua cannot run at audio rate. The two communicate via
+[send] / [receive] pairs: Lua sends a list of MIDI note numbers
+at note-event rate; Pure Data routes them to the correct synthesis voice.
+
+
+
+The interface between the two is always a Pd message: a bang, a float, or a list. The
+Lua script produces note data; a Pd [receive] object picks it up and routes
+it to an oscillator or sequencer.
+
+
+Series Overview
+
+
+Part 2 — Pitch as Numbers: MIDI note numbers, equal temperament, scale tables in Lua, the quantise function that maps any pitch to the nearest in-scale note.
+Part 3 — Random Walks and Brownian Motion: Why pure random pitch is musically useless; Brownian motion as a walk through pitch space; step size, boundaries, and fractional Brownian motion with the Hurst exponent.
+Part 4 — Markov Chains for Melody: Transition probability matrices over scale degrees; sampling from a distribution; rhythm chains; combining pitch and rhythm into a melody generator.
+Part 5 — Harmony Fundamentals: The overtone series and why certain intervals are consonant; triads as stacked scale degrees; tonic, subdominant, and dominant function.
+Part 6 — Generating Chord Progressions: Markov chains over harmonic function rather than individual chords; modal interchange for colour.
+Part 7 — Voice Leading: Choosing voicings that minimise pitch movement between chords; nearest-neighbour assignment; detecting and avoiding parallel fifths and octaves.
+Part 8 — L-Systems: String-rewriting grammars as melody generators; self-similar structure at multiple time scales; turtle-graphics interpretation of symbol strings.
+Part 9 — Cellular Automata: 1D elementary automata (Rule 30, Rule 110) as pitch and rhythm generators; Conway's Game of Life for evolving harmonic density.
+Part 10 — Euclidean Rhythms: Bjorklund's algorithm for distributing beats evenly; connections to world-music rhythmic patterns; polyrhythms from coprime period lengths.
+Part 11 — Putting It All Together: A Krell-style self-generating patch wiring the Monomachine VO and SuperWave engines (from Series 10) and the drum machine (from Series 9) into a single autonomous system.
+
+
+Summary
+
+
+Algorithmic composition replaces hand-chosen notes with rule systems that generate note
+data. The spectrum runs from pure stochastic (memoryless random) to fully deterministic
+(strict rule, no randomness); musically useful systems combine both. The three core
+problems are pitch selection, harmonic coherence, and rhythm. In this series, Lua solves
+all three algorithmically and delivers results to Pure Data via messages; Pure Data
+synthesises the audio using the engines built in Series 9 and 10.
+
+
+Further Reading
+
+
+Gerhard Nierhaus — Algorithmic Composition (Springer, 2009)
+Iannis Xenakis — Formalized Music (Pendragon, 1992)
+Heinrich Taube — Algorithmic Composition: A Gentle Introduction
+Brian Eno on Generative Music (in full, 1996 lecture)
+Csound Reference Manual — algorithmic composition chapters
+
+
+See Also
+
+
+Assembling the Drum Machine - the Lua + Pd pattern system this series extends
+Monomachine VO - the melodic FM engine driven by the melody generator in Part 11
+Lua in an Audio App - how Lua scripts drive Pd via libpd message passing
+Part 2: Pitch as Numbers - MIDI encoding and scale quantisation
+

@@ -1,0 +1,458 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 4: Building a Simple Agent Loop</title>
+    <meta name="description" content="Implement the think→act→observe cycle as a Go for-loop, with termination conditions, error handling, and a file-system agent example.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="llm-04-agent-loop.txt">plain/text</a> | <i>2026-06-13</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 4: Building a Simple Agent Loop</h2>
+        <p>
+An agent is a program that uses a language model to decide what to do next, executes that
+decision, observes the result, and repeats until the task is complete. The previous article
+showed one iteration of this cycle. This article wraps it into a proper loop with
+termination conditions, maximum iteration guards, and structured error handling - and
+builds a simple file-system agent that can read and write files.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The think→act→observe cycle as a Go <code>for</code> loop with a maximum iteration guard</li>
+<li>An <code>Agent</code> type with system prompt, history, tool registry, and a <code>Run()</code> method</li>
+<li>How to detect the stop condition: <code>finish_reason: "stop"</code> with no tool calls</li>
+<li>Structured error handling: API errors, tool execution errors, and loop termination</li>
+<li>File-system tools: read file, write file, list directory</li>
+<li>Testing the agent with a task that requires multiple tool-call iterations</li>
+</ul>
+
+
+<h3>The Think → Act → Observe Cycle</h3>
+
+<p>
+Each iteration of the loop has three phases:
+</p>
+
+<ul>
+<li><b>Think</b> - send the current conversation history to the model. The model produces a response: either text (the task is done or it needs to say something) or a set of tool calls.</li>
+<li><b>Act</b> - execute each tool call your code receives. This is your code running, not the model's - the model only specifies what to call and with what arguments.</li>
+<li><b>Observe</b> - append the tool results to the message history as <code>role: "tool"</code> messages, then loop back to Think.</li>
+</ul>
+
+<p>
+The loop terminates when <code>finish_reason</code> is <code>"stop"</code> (the model wrote
+a response without calling any tools), or when a maximum iteration count is reached.
+</p>
+
+<h3>The Agent Type</h3>
+
+<pre>
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+)
+
+const apiURL = "http://localhost:8001/v1/chat/completions"
+const maxIterations = 20
+
+type Agent struct {
+    APIKey  string
+    Model   string
+    Tools   []Tool
+    History []Message
+}
+
+func NewAgent(apiKey, model, systemPrompt string, tools []Tool) *Agent {
+    return &amp;Agent{
+        APIKey: apiKey,
+        Model:  model,
+        Tools:  tools,
+        History: []Message{
+            {Role: "system", Content: systemPrompt},
+        },
+    }
+}
+
+func (a *Agent) Run(userMessage string) (string, error) {
+    a.History = append(a.History, Message{Role: "user", Content: userMessage})
+
+    for i := 0; i &lt; maxIterations; i++ {
+        resp, err := a.think()
+        if err != nil {
+            return "", fmt.Errorf("iteration %d think: %w", i, err)
+        }
+
+        if len(resp.Choices) == 0 {
+            return "", fmt.Errorf("no choices returned")
+        }
+
+        choice := resp.Choices[0]
+        a.History = append(a.History, choice.Message)
+
+        if choice.FinishReason == "stop" || len(choice.Message.ToolCalls) == 0 {
+            return choice.Message.Content, nil
+        }
+
+        if err := a.act(choice.Message.ToolCalls); err != nil {
+            return "", fmt.Errorf("iteration %d act: %w", i, err)
+        }
+    }
+
+    return "", fmt.Errorf("agent exceeded %d iterations without finishing", maxIterations)
+}
+</pre>
+
+<h3>The Think Step</h3>
+
+<pre>
+func (a *Agent) think() (*ChatResponse, error) {
+    req := ChatRequest{
+        Model:    a.Model,
+        Messages: a.History,
+        Tools:    a.Tools,
+    }
+
+    data, err := json.Marshal(req)
+    if err != nil {
+        return nil, err
+    }
+
+    r, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(data))
+    if err != nil {
+        return nil, err
+    }
+    r.Header.Set("Content-Type", "application/json")
+    r.Header.Set("Authorization", "Bearer "+a.APIKey)
+
+    resp, err := http.DefaultClient.Do(r)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("API %d: %s", resp.StatusCode, body)
+    }
+
+    var result ChatResponse
+    if err := json.Unmarshal(body, &amp;result); err != nil {
+        return nil, fmt.Errorf("unmarshal: %w, body: %s", err, body)
+    }
+    return &amp;result, nil
+}
+</pre>
+
+<h3>The Act Step</h3>
+
+<pre>
+func (a *Agent) act(calls []ToolCall) error {
+    for _, tc := range calls {
+        result, err := a.dispatch(tc.Function.Name, tc.Function.Arguments)
+        if err != nil {
+            // Don't abort the loop - return the error as a tool result
+            // so the model can handle it gracefully
+            result = fmt.Sprintf(`{"error": "%s"}`, err.Error())
+        }
+
+        a.History = append(a.History, Message{
+            Role:       "tool",
+            Content:    result,
+            ToolCallID: tc.ID,
+        })
+    }
+    return nil
+}
+</pre>
+
+<p>
+Note that tool execution errors are returned to the model as JSON error objects rather
+than aborting the loop. The model can then decide to retry with different arguments,
+explain the failure to the user, or try a different approach. Hard-stopping the loop on
+every tool error makes agents brittle.
+</p>
+
+<h3>File System Tools</h3>
+
+<p>
+A practical set of tools for a coding agent: read a file, write a file, list a directory.
+</p>
+
+<pre>
+func (a *Agent) dispatch(name, argsJSON string) (string, error) {
+    switch name {
+    case "read_file":
+        return toolReadFile(argsJSON)
+    case "write_file":
+        return toolWriteFile(argsJSON)
+    case "list_dir":
+        return toolListDir(argsJSON)
+    default:
+        return "", fmt.Errorf("unknown tool: %s", name)
+    }
+}
+
+func toolReadFile(argsJSON string) (string, error) {
+    var args struct {
+        Path string `json:"path"`
+    }
+    if err := json.Unmarshal([]byte(argsJSON), &amp;args); err != nil {
+        return "", err
+    }
+    data, err := os.ReadFile(args.Path)
+    if err != nil {
+        return "", err
+    }
+    return string(data), nil
+}
+
+func toolWriteFile(argsJSON string) (string, error) {
+    var args struct {
+        Path    string `json:"path"`
+        Content string `json:"content"`
+    }
+    if err := json.Unmarshal([]byte(argsJSON), &amp;args); err != nil {
+        return "", err
+    }
+    if err := os.WriteFile(args.Path, []byte(args.Content), 0644); err != nil {
+        return "", err
+    }
+    return `{"status": "written"}`, nil
+}
+
+func toolListDir(argsJSON string) (string, error) {
+    var args struct {
+        Path string `json:"path"`
+    }
+    if err := json.Unmarshal([]byte(argsJSON), &amp;args); err != nil {
+        return "", err
+    }
+    entries, err := os.ReadDir(args.Path)
+    if err != nil {
+        return "", err
+    }
+    var names []string
+    for _, e := range entries {
+        names = append(names, e.Name())
+    }
+    data, _ := json.Marshal(names)
+    return string(data), nil
+}
+</pre>
+
+<h3>Tool Definitions</h3>
+
+<pre>
+var fsTools = []Tool{
+    {
+        Type: "function",
+        Function: ToolFunction{
+            Name:        "read_file",
+            Description: "Read the contents of a file at the given path. Returns the file contents as a string.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "path": {Type: "string", Description: "Relative or absolute path to the file"},
+                },
+                Required: []string{"path"},
+            },
+        },
+    },
+    {
+        Type: "function",
+        Function: ToolFunction{
+            Name:        "write_file",
+            Description: "Write content to a file at the given path. Creates the file if it does not exist.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "path":    {Type: "string", Description: "Path to write to"},
+                    "content": {Type: "string", Description: "Content to write"},
+                },
+                Required: []string{"path", "content"},
+            },
+        },
+    },
+    {
+        Type: "function",
+        Function: ToolFunction{
+            Name:        "list_dir",
+            Description: "List files and directories in the given directory path.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "path": {Type: "string", Description: "Directory path to list"},
+                },
+                Required: []string{"path"},
+            },
+        },
+    },
+}
+</pre>
+
+<h3>Running the Agent</h3>
+
+<pre>
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    agent := NewAgent(
+        apiKey,
+        "gpt-4o-mini",
+        "You are a helpful coding assistant with access to the local filesystem. "+
+            "When asked to create files or explore the codebase, use the available tools.",
+        fsTools,
+    )
+
+    result, err := agent.Run("List the current directory, then create a file called hello.txt with 'Hello, agent!' in it.")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "agent error:", err)
+        os.Exit(1)
+    }
+
+    fmt.Println(result)
+}
+</pre>
+
+<h3>Termination Conditions</h3>
+
+<p>
+The loop terminates in three ways:
+</p>
+
+<ul>
+<li><b>Natural completion</b> - <code>finish_reason == "stop"</code> and no tool calls in the response. The model has decided the task is done.</li>
+<li><b>Max iterations exceeded</b> - the agent is stuck in a loop or the task is more complex than anticipated. Return an error; the caller can decide what to do.</li>
+<li><b>Unrecoverable API error</b> - authentication failure, rate limit that exhausted retries, network unreachable. Propagate the error up.</li>
+</ul>
+
+<p>
+Tool execution errors do <i>not</i> terminate the loop - they are fed back to the model
+as results, allowing it to recover.
+</p>
+
+<h3>Safety Considerations</h3>
+
+<p>
+A file-system agent with write access can do significant damage if the model behaves
+unexpectedly. For development, consider:
+</p>
+
+<ul>
+<li>Running in a temporary directory or a container.</li>
+<li>Logging every tool call before executing it.</li>
+<li>Requiring confirmation for write operations (a human-in-the-loop hook).</li>
+<li>Restricting paths with an allowlist before passing to <code>os.WriteFile</code>.</li>
+</ul>
+
+<p>
+Article 05 shows how a skills library can encapsulate these safety checks in one place.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+An agent loop calls the model, checks whether the response contains tool calls,
+executes them, appends the results to history, and loops. Termination has two
+conditions: <code>finish_reason: "stop"</code> with no tool calls (task
+complete), or the maximum iteration count (safety guard). A maximum of 20–50
+iterations is usually sufficient; beyond that the model is likely stuck.
+Structure the <code>Agent</code> type to hold history, tools, and configuration
+so it can be instantiated for different tasks with different system prompts.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://www.anthropic.com/research/building-effective-agents">Anthropic: Building Effective Agents</a></li>
+<li><a href="https://platform.openai.com/docs/guides/function-calling">OpenAI: Function Calling</a></li>
+<li><a href="https://pkg.go.dev/os">Go os package - ReadFile, WriteFile, ReadDir</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-03-tool-calls.htm">Tool Calls (Function Calling)</a> - the mechanics of tool definitions and call/response format</li>
+<li><a href="llm-05-skills.htm">Skills &amp; Structured Tool Libraries</a> - organising tools into a typed registry</li>
+<li><a href="llm-10-memory.htm">Adding Memory to Agents</a> - persisting state across agent runs</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

@@ -1,0 +1,406 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>RPIPicoDSP - Part 1: The RP2040 & Pico SDK</title>
+    <meta name="description" content="A tour of the RP2040 chip, the Raspberry Pi Pico board, and the C SDK - from toolchain setup through CMakeLists.txt to a working LED-blink and USB serial hello-world.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, embedded, audio, pico">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href="../../rss.xml">RSS</a> - 
+        <a href="../../index.htm">Home</a> - 
+        <a href="pico-01-rp2040-sdk.txt">plain/text</a> | <i>2026-06-09</i> | <i><a href="../../c.htm">c</a>, <a href="../../embedded.htm">embedded</a>, <a href="../../audio.htm">audio</a>, <a href="../../pico.htm">pico</a></i>
+        <h2>RPIPicoDSP - Part 1: The RP2040 & Pico SDK</h2>
+        <p>
+The Raspberry Pi Pico costs four dollars and contains a chip - the RP2040 - that
+embarrasses microcontrollers ten times its price. Two ARM Cortex-M0+ cores running at
+up to 133 MHz, 264 KB of on-chip SRAM, 2 MB of flash (on the standard Pico board),
+and a block of eight programmable I/O state machines that can implement arbitrary
+serial protocols in hardware. For audio DSP work specifically, the RP2040 is close to
+ideal: no operating system in the way, deterministic interrupt latency, and enough raw
+compute to run real-time biquad filters, oscillators, and FM synthesis at 44.1 kHz.
+This article gets you from zero to a working Pico project - toolchain installed,
+CMakeLists.txt understood, LED blinking, and text appearing on USB serial.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The RP2040 hardware: cores, SRAM layout, PIO, and why the lack of an FPU does not ruin audio DSP</li>
+<li>How to install the Pico C SDK and ARM toolchain on Linux</li>
+<li>The structure of a Pico CMakeLists.txt from first principles</li>
+<li>How the UF2 flashing workflow works and why it is so convenient</li>
+<li>How to write a complete hello-world that blinks the onboard LED and prints to USB serial</li>
+</ul>
+
+<h3>The RP2040 Hardware</h3>
+
+<p>
+The RP2040 is a dual-core ARM Cortex-M0+ running at up to 133 MHz. Here are the facts
+that matter most for audio work:
+</p>
+
+<ul>
+<li><b>Two cores.</b> Core 0 and core 1 are symmetric. You can dedicate one entirely to
+the audio render loop and the other to USB, MIDI parsing, and parameter updates. This
+is the fundamental trick that makes real-time audio on the Pico clean and reliable.</li>
+<li><b>264 KB SRAM.</b> Split into six independent banks (four 64KB + two 4KB scratch
+banks). The bus fabric can access multiple banks in parallel. 264 KB sounds tight, but
+a 1024-sample audio buffer at 32 bits is only 4 KB; you have plenty of room for tables
+and state.</li>
+<li><b>No FPU.</b> The Cortex-M0+ does not have a floating-point unit. Every
+<code>float</code> operation is emulated in software via the compiler's soft-float library.
+A soft-float multiply costs roughly 5–10 cycles compared to 1 cycle on an M4F. For a
+biquad filter (six multiplies and five adds per sample at 44.1 kHz) that is still well
+under 1% of core budget. You will feel the cost if you do hundreds of float ops per
+sample; for moderate DSP loads it is fine. The alternative - Q15 or Q31 fixed-point -
+is faster but harder to write correctly. We use soft-float throughout this series and
+measure CPU usage explicitly in Part 5.</li>
+<li><b>PIO state machines.</b> Eight programmable I/O state machines that run their own
+tiny instruction set independently of the cores. They are how you implement I2S audio
+output and input without any dedicated hardware peripheral. Part 2 covers this in detail.</li>
+<li><b>DMA.</b> 12 DMA channels. Audio output via I2S is entirely DMA-driven; the CPU
+touches a buffer, hands it to DMA, and the DMA streams bits to the PIO while the CPU
+does DSP on the next buffer.</li>
+<li><b>Flash XIP.</b> The 2 MB flash on the Pico board is accessed via QSPI and cached
+through an execute-in-place (XIP) cache. Large read-only tables (wavetables, filter
+coefficient arrays) can live in flash and are transparently fetched into the cache on
+first access. Subsequent reads are fast. Part 5 covers flash placement of tables.</li>
+</ul>
+
+<h3>Installing the Pico SDK and Toolchain</h3>
+
+<p>
+The Pico SDK is a CMake-based C library. You need three things: the SDK itself, the ARM
+cross-compiler, and CMake. On Ubuntu or Debian:
+</p>
+
+<pre>
+sudo apt update
+sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi \
+                   libstdc++-arm-none-eabi-newlib build-essential git
+
+# Clone the SDK (pick a stable location - it is referenced by PICO_SDK_PATH)
+cd ~
+git clone https://github.com/raspberrypi/pico-sdk.git --branch 1.5.1
+cd pico-sdk
+git submodule update --init
+
+# Export the path. Add this to ~/.bashrc for persistence.
+export PICO_SDK_PATH=~/pico-sdk
+</pre>
+
+<p>
+Verify the toolchain is present:
+</p>
+
+<pre>
+arm-none-eabi-gcc --version
+# arm-none-eabi-gcc (15:10.3-2021.07-4) 10.3.1 20210621 ...
+</pre>
+
+<p>
+The SDK version pinned above (1.5.1) is the one used throughout this series. Later
+versions may change API details but the concepts are identical.
+</p>
+
+<h3>Project Layout</h3>
+
+<p>
+Every Pico project has the same skeleton:
+</p>
+
+<pre>
+myproject/
+  CMakeLists.txt       &lt;-- build description
+  pico_sdk_import.cmake  &lt;-- boilerplate, copied from the SDK
+  main.c               &lt;-- your code
+  build/               &lt;-- created by cmake, never commit this
+</pre>
+
+<p>
+Copy the import helper from the SDK:
+</p>
+
+<pre>
+cp $PICO_SDK_PATH/external/pico_sdk_import.cmake myproject/
+</pre>
+
+<h3>The CMakeLists.txt</h3>
+
+<p>
+This is the file that most tutorials either skip over or present as magic. It is worth
+understanding each line.
+</p>
+
+<pre>
+cmake_minimum_required(VERSION 3.13)
+
+# Pull in the SDK before project() - the import file sets up the toolchain file
+# so CMake knows to compile for ARM, not the host.
+include(pico_sdk_import.cmake)
+
+project(hello_pico C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+
+# Initialise the Pico SDK. Must happen after project().
+pico_sdk_init()
+
+# Declare an executable target from main.c
+add_executable(hello_pico
+    main.c
+)
+
+# Link the SDK libraries we need.
+#   pico_stdlib      - gpio, time, printf, etc.
+#   hardware_gpio    - low-level GPIO (already implied by pico_stdlib but explicit
+#                      is better for clarity)
+target_link_libraries(hello_pico
+    pico_stdlib
+    hardware_gpio
+)
+
+# Enable USB serial output (CDC ACM). This redirects printf to USB.
+# Disable UART stdio so the two don't fight.
+pico_enable_stdio_usb(hello_pico 1)
+pico_enable_stdio_uart(hello_pico 0)
+
+# Generate the .uf2 file we flash onto the Pico.
+pico_add_extra_outputs(hello_pico)
+</pre>
+
+<p>
+A few things worth noting:
+</p>
+
+<ul>
+<li><code>include(pico_sdk_import.cmake)</code> must come <em>before</em> <code>project()</code>. The
+import file sets the CMake toolchain to the ARM cross-compiler. If you put it after
+<code>project()</code>, CMake has already configured for the host and the import does nothing
+useful.</li>
+<li><code>pico_add_extra_outputs</code> generates several output formats: <code>.elf</code>,
+<code>.hex</code>, <code>.bin</code>, <code>.map</code>, and crucially <code>.uf2</code>. You only need the UF2
+for flashing.</li>
+<li><code>pico_enable_stdio_usb</code> wires <code>printf</code> through the TinyUSB CDC ACM stack.
+There is some latency (USB is polled, not interrupt-driven), but it is invaluable for
+debugging without needing a UART adapter.</li>
+</ul>
+
+<h3>The UF2 Flashing Workflow</h3>
+
+<p>
+UF2 (USB Flashing Format) is the simplest firmware update mechanism imaginable. Hold
+the BOOTSEL button on the Pico while plugging in the USB cable. The Pico appears on
+your computer as a mass storage device called RPI-RP2. Drag or copy the
+<code>.uf2</code> file onto it. The Pico reboots and runs your firmware immediately. No
+programmer required, no OpenOCD setup, no special software.
+</p>
+
+<pre>
+# Build
+cd myproject
+mkdir -p build &amp;&amp; cd build
+cmake ..
+make -j4
+
+# Flash (adjust the mount path to wherever the Pico mounted)
+cp hello_pico.uf2 /media/$USER/RPI-RP2/
+</pre>
+
+<p>
+The Pico unmounts itself automatically after receiving the file and reboots into the
+new firmware. If you enabled USB stdio you will see the device disappear and reappear
+as a USB serial port (e.g. <code>/dev/ttyACM0</code>). Use <code>minicom</code> or
+<code>screen</code> to connect:
+</p>
+
+<pre>
+screen /dev/ttyACM0 115200
+</pre>
+
+<h3>A Complete Hello-World</h3>
+
+<p>
+The following program blinks the onboard LED at 1 Hz and prints a counter to USB
+serial every second. Read it as a checklist: by the time the Pico is running this code
+you have confirmed the toolchain, the SDK, the CMakeLists.txt, the flash workflow, and
+USB serial all work.
+</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include "pico/stdlib.h"
+
+/* The onboard LED on the standard Pico is GPIO 25.
+   On the Pico W it is connected through a CYW43 WiFi chip instead -
+   you would use cyw43_arch_gpio_put() there. We target the plain Pico. */
+#define LED_PIN 25
+
+int main(void) {
+    /* Initialise all SDK subsystems (clocks, stdio, etc.).
+       Must be called before any other SDK function. */
+    stdio_init_all();
+
+    /* Configure the LED pin as an output. */
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, GPIO_OUT);
+
+    int count = 0;
+    while (true) {
+        gpio_put(LED_PIN, 1);        /* LED on  */
+        sleep_ms(500);
+        gpio_put(LED_PIN, 0);        /* LED off */
+        sleep_ms(500);
+
+        /* printf goes to USB serial because of pico_enable_stdio_usb */
+        printf("hello from the Pico, count = %d\n", count++);
+    }
+}
+</pre>
+
+<p>
+<code>stdio_init_all()</code> sets up all enabled stdio transports. Because we enabled USB
+and disabled UART in CMakeLists.txt, it initialises the TinyUSB stack. The first
+character will not appear until a host opens the USB CDC serial port - if you see
+nothing, connect with <code>screen</code> first and then reset the Pico with the RUN pin
+or by replugging.
+</p>
+
+<p>
+<code>gpio_init</code> resets the pin to a known state and enables its digital input/output
+function. <code>gpio_set_dir</code> sets the direction. <code>gpio_put</code> drives the output
+high or low. These three calls are the foundation of all GPIO work on the Pico.
+</p>
+
+<p>
+<code>sleep_ms</code> is a busy-wait using the 64-bit hardware timer. It is perfectly adequate
+for this blinking pattern. In the audio interrupt handler you will never call it - you
+will never block at all - but in <code>main</code> on core 0 it is fine.
+</p>
+
+<h3>What the SDK Gives You</h3>
+
+<p>
+Before moving on, it is worth knowing what libraries the SDK provides, because the
+rest of the series uses them heavily:
+</p>
+
+<ul>
+<li><b>hardware_gpio</b> - digital I/O, pull-ups, drive strength, slew rate</li>
+<li><b>hardware_pwm</b> - hardware PWM (used for PWM audio in Part 2)</li>
+<li><b>hardware_adc</b> - 12-bit ADC (used in Part 3)</li>
+<li><b>hardware_dma</b> - DMA channel configuration, IRQ, chaining</li>
+<li><b>hardware_pio</b> - loading and running PIO programs (I2S in Parts 2 and 3)</li>
+<li><b>hardware_uart</b> - UART (MIDI in Part 7)</li>
+<li><b>hardware_irq</b> - interrupt priority and handler registration</li>
+<li><b>pico_multicore</b> - launching core 1, the inter-core FIFO</li>
+<li><b>pico_sync</b> - mutexes, semaphores, spinlocks</li>
+<li><b>tinyusb_device</b> - the TinyUSB stack for USB MIDI (Part 8)</li>
+</ul>
+
+<h3>Summary</h3>
+
+<p>
+The RP2040 is a dual-core Cortex-M0+ with 264 KB SRAM, 8 PIO state machines, and 12
+DMA channels. Its lack of a hardware FPU adds a soft-float overhead that is tolerable
+for moderate DSP workloads. The Pico C SDK is a CMake-based library; once
+<code>PICO_SDK_PATH</code> is set and <code>pico_sdk_import.cmake</code> is included, building a
+project is a standard CMake workflow. UF2 flashing requires no special hardware - hold
+BOOTSEL, plug in, copy the file. You can now create a new Pico project from scratch,
+build it, and flash it.
+</p>
+
+<p>
+Part 2 covers the audio output options: PWM audio for quick experiments and I2S via
+PIO for proper quality - including the DMA double-buffering pattern that keeps audio
+glitch-free.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 Datasheet - Raspberry Pi</a></li>
+<li><a href="https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf">Raspberry Pi Pico C/C++ SDK - official PDF</a></li>
+<li><a href="https://datasheets.raspberrypi.com/pico/getting-started-with-pico.pdf">Getting Started with Raspberry Pi Pico - official guide</a></li>
+<li><a href="https://github.com/raspberrypi/pico-sdk">pico-sdk on GitHub</a></li>
+<li><a href="https://github.com/raspberrypi/pico-examples">pico-examples on GitHub - official example programs</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="pico-02-audio-output.htm">Pico - Part 2: Audio Output on the Pico</a></li>
+<li><a href="pico-03-audio-input.htm">Pico - Part 3: Audio Input on the Pico</a></li>
+<li><a href="pico-04-render-loop.htm">Pico - Part 4: The Audio Render Loop on Bare Metal</a></li>
+<li><a href="dsp-01-audio-fundamentals.htm">DSP - Part 1: Audio Fundamentals</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

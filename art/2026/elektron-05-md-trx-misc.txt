@@ -1,0 +1,259 @@
+Elektron Synthesis - Part 5: Machinedrum TRX-CP Clap, TRX-RS Rimshot, TRX-MA Metallic
+2026-01-01
+
+
+Three more TRX machines complete the classic percussion toolkit: the TRX-CP clap,
+TRX-RS rimshot, and TRX-MA metallic percussion. The TRX-CP builds on the noise-burst
+roll approach from Series 9 but with the MD's characteristically sparse parameter
+set — fewer controls, more character per knob. The TRX-RS models the dual resonant
+modes of a drum rim being struck. The TRX-MA is a pitched metallic resonator useful
+for timbales, agogos, and other metallic pitched percussion.
+
+
+TRX-CP: Clap
+
+TRX-CP Parameters
+
+
+KnobNameFunctionRange
+1ROLL (rl)Number of pre-attack roll bursts1–32
+2ROLL DECAY (rdcy)Roll interval (time between bursts)1–40 ms
+3DECAY (dcy)Main body decay10–2000 ms
+4TONE (tn)Filter cutoff (brightness)500–12000 Hz
+5DIST (dst)Waveshaper drive0–1
+6VERB (vrb)Internal reverb send level0–1
+7VERB DECAY (vdcy)Reverb decay time50–3000 ms
+8LEVEL (lvl)Output level0–1
+
+
+TRX-CP Synthesis Architecture
+
+
+The TRX-CP is simpler than the Series 9 clap — it uses a single bandpass-filtered
+noise source (no multi-source white/SID/pink split), but adds a built-in reverb that
+the Machinedrum's effects bus would normally supply externally:
+
+
+
+; TRX-CP signal flow:
+
+TRIGGER
+  │
+  ├─ [ROLL generator] ──────────────────────────────────────
+  │   [metro rdcy]       ; fires 'rl' times, then main body
+  │   Each metro tick:
+  │   [noise~] → [bp~ tone 2] → fast vline~ (10ms each burst)
+  │
+  [delay rl*rdcy]        ; main body fires after roll completes
+  │
+  ├─ [BODY] ────────────────────────────────────────────────
+  │   [noise~]
+  │   → [bp~ tone 2]     ; bandpass at TONE frequency
+  │   → [hip~ tone*0.5]  ; remove very low content
+  │   → [vline~] 0→1→0 over dcy ms
+  │
+  [tanh waveshaper dst]
+  │
+  ├─ dry path → [*~ 1-vrb]
+  │
+  └─ reverb send → [rev3~ rdcy*2 vdcy 0.6] → [*~ vrb]
+                   ; reverb roomsize ≈ roll interval, decay from VDCY
+  [+~] dry + wet
+  │
+  [*~ level * vel]
+  │
+  [outlet~]
+
+
+
+The built-in reverb is what distinguishes the TRX-CP from a plain noise burst. Even
+a small VERB amount (0.1–0.3) adds significant spatial depth. With VERB=0.8 and
+VDCY=1000ms, the result is a heavily reverbed room clap.
+
+
+Roll Detail
+
+
+Unlike the Series 9 roll which uses a counter and grows in amplitude, the TRX-CP roll
+produces identical-amplitude bursts spaced by RDCY milliseconds. The simplicity makes
+each burst's spectral character consistent, which is how the original sounds:
+
+
+
+; Roll implementation:
+[r $0-trig]
+|
+[bang]
+|
+[t b f]
+|          |
+|       [* $rl]           ; total roll duration = rl × rdcy ms
+|          |
+|       [- $rdcy]         ; subtract one interval (main body is last)
+|          |
+|       [delay]           ; delay main body by (rl-1) × rdcy ms
+|          |
+|       → main body bang
+|
+[f $rl]                   ; load roll count
+|
+[metro $rdcy]             ; fire every rdcy ms
+|
+[f] [-1]                  ; decrement count
+|
+[sel 0] → [metro stop]   ; stop after rl bursts
+|
+[bang] → fire roll burst noise
+
+
+TRX-RS: Rimshot
+
+TRX-RS Parameters
+
+
+KnobNameFunctionRange
+1TONE A (tna)Primary resonator frequency200–800 Hz
+2TONE B (tnb)Secondary resonator frequency500–3000 Hz
+3DECAY (dcy)Body decay time10–500 ms
+4SNAP (sn)Click transient level0–1
+5NOISE (nse)Noise component level0–1
+6MIX (mx)Resonator A vs B balance0–1 (0=all A, 1=all B)
+7DIST (dst)Waveshaper drive0–1
+8LEVEL (lvl)Output level0–1
+
+
+TRX-RS Synthesis Architecture
+
+
+A rimshot (stick hitting the rim of a snare drum) has two acoustic components: the
+high-pitched ring of the metal rim, and the body resonance of the drum shell being
+partially excited. These are modelled as two independent resonators:
+
+
+
+; Resonator A: drum body resonance
+; — pitched sine at tna Hz with short sweep
+; — decays over dcy ms
+
+[osc~ $tna]
+|
+[*~]   ← [vline~]: 1 2, 0 $dcy 2
+|
+[*~ 1-mx]          ; mix: fully in A at mx=0
+
+; Resonator B: rim resonance (higher, shorter)
+; — pitched sine at tnb Hz, shorter decay, more click
+
+[osc~ $tnb]
+|
+[*~]   ← [vline~]: 1 2, 0 $dcy*0.3 2    ; B decays 30% as long as A
+|
+[*~ mx]
+
+; Click transient: very short noise burst
+[noise~]
+→ [hip~ tnb*2]                ; highpass, brighter than resonators
+→ [vline~] 1 0, 0 5 0        ; 5 ms transient
+→ [*~ sn]
+
+; Noise: slower-decaying filtered noise under resonators
+[noise~]
+→ [bp~ (tna+tnb)/2 3]        ; bandpass between the two resonators
+→ [vline~] 0→1→0 over dcy*0.5 ms
+→ [*~ nse]
+
+; Sum all four components:
+[+~ reson_a, reson_b, click, noise]
+|
+[tanh waveshaper dst]
+|
+[*~ level * vel]
+|
+[outlet~]
+
+
+TRX-MA: Metallic Percussion
+
+TRX-MA Parameters
+
+
+KnobNameFunctionRange
+1TUNE (tun)Base resonator frequency100–4000 Hz
+2DECAY (dcy)Amplitude decay20–8000 ms
+3METAL (met)Inharmonic spread of partials0–1
+4TONE (tn)Brightness / upper partial weight0–1
+5NOISE (nse)Noise attack transient0–1
+6DIST (dst)Waveshaper drive0–1
+7FILTER (flt)Lowpass cutoff500–20000 Hz
+8LEVEL (lvl)Output level0–1
+
+
+TRX-MA Synthesis Architecture
+
+
+The TRX-MA is a generalised metallic resonator — useful for agogos, timbales, cabasa
+hits, and any pitched metallic percussion. It uses multiple oscillators whose
+frequency spacing is controlled by the METAL parameter to sweep between harmonic
+(bell-like) and inharmonic (metallic) spectra:
+
+
+
+; Partial frequencies:
+; f_n = tune * (n ^ (1 + metal * 0.5))   for n = 1, 2, 3, 4, 5, 6
+; metal=0: f_n = tune * n          → perfectly harmonic (bell-like)
+; metal=1: f_n = tune * n^1.5      → highly inharmonic (metallic)
+
+[r $0-tun]   → $tune
+[r $0-met]   → $metal
+
+; Per-partial:
+; [expr $tune * pow($n, 1 + $metal * 0.5)]
+; → frequency for partial n
+
+; Six partials, each at signal level ∝ 1/n (natural harmonic rolloff)
+; further shaped by TONE (attenuates upper partials more at tn=0):
+; gain_n = (1/n) * (1 - (n-1)/5 * (1-tn))
+
+; Sum all six:
+[+~] ... → partial_sum
+
+; Attack noise:
+[noise~] → [hip~ tune] → fast vline~ (20 ms) → [*~ nse]
+
+partial_sum + attack_noise
+|
+[lop~ flt]
+|
+[tanh waveshaper dst]
+|
+[*~] ← [vline~] amplitude dcy
+|
+[*~ level * vel]
+|
+[outlet~]
+
+
+
+The METAL parameter is the key control. At metal=0 you get a clean bell tone; at
+metal=1 the spectrum becomes dense and inharmonic, losing its pitched quality. Most
+timbale and agogo sounds sit around metal=0.3–0.5.
+
+
+Summary
+
+
+The TRX-CP uses a metro-driven roll into a single bandpass-filtered noise source, with
+a built-in reverb (VERB + VDCY) for room character. The TRX-RS models the dual
+resonant modes of a struck rim — one low resonator (drum body) and one high resonator
+(metal rim), with independent decays and a snap click. The TRX-MA is a parametric
+metallic resonator where the METAL parameter controls partial spacing from harmonic
+(bell) to inharmonic (metallic cymbal). All three expose p-lock-compatible receivers.
+
+
+See Also
+
+
+TRX-CY and TRX-CB - cymbal ring modulation and cowbell BP filter
+Machinedrum EFM Machines - FM synthesis approach to the same drum voice roles
+Clap Synthesis (Series 9) - a more elaborate clap with three noise sources
+

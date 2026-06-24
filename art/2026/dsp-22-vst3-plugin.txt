@@ -1,0 +1,419 @@
+DSP - Part 22: Writing a VST3 Plugin
+2026-09-15
+
+
+VST3 is Steinberg's current plug-in standard, supported by Cubase, Ableton, Bitwig,
+Reaper, and most professional DAWs. It is also one of the most intimidating SDKs in
+audio: a deep C++ interface hierarchy, a mandatory CMake build system in the official
+examples, and enough boilerplate to hide the actual audio processing. This article strips
+that away. We build a stereo gain plug-in from SDK headers with no CMake, no helper
+libraries, no GUI — just the minimum interfaces a DAW will accept.
+
+
+What You Will Learn
+
+
+The VST3 IComponent / IAudioProcessor / IEditController split and why it exists.
+IPluginFactory and the three registration calls a host makes at load time.
+How ProcessData and process() carry audio buffers and parameter changes.
+How to implement a complete stereo gain plugin with one automatable parameter.
+How to build a .vst3 shared library with gcc against SDK headers only.
+
+
+SDK Layout and What You Actually Need
+
+
+Download the VST SDK from Steinberg's developer portal. The headers you need are all
+under public.sdk/source/vst/ and pluginterfaces/vst/. You do
+not need to compile the SDK itself — only include its headers. The SDK ships an enormous
+CMake build system; we will bypass it entirely and compile directly with gcc.
+
+
+
+The minimum includes:
+
+
+
+/* Required headers (adjust path to your SDK location) */
+#include "pluginterfaces/base/ipluginbase.h"   /* IPluginFactory, PClassInfo */
+#include "pluginterfaces/vst/ivstaudioprocessor.h"  /* IAudioProcessor, ProcessData */
+#include "pluginterfaces/vst/ivsteditcontroller.h"  /* IEditController */
+#include "pluginterfaces/vst/ivstcomponent.h"        /* IComponent */
+#include "pluginterfaces/vst/ivstparameterchanges.h" /* IParamValueQueue */
+#include "pluginterfaces/base/ustring.h"
+
+
+The IComponent / IAudioProcessor Split
+
+
+VST3 separates the component (I/O bus configuration) from the processor (audio
+computation) and the controller (parameter GUI). All three can be in separate objects
+or in the same object. For a simple plug-in, a single class can implement all three
+interfaces through multiple inheritance.
+
+
+
+The relevant call sequence when a host loads your plugin:
+
+
+
+1. LoadLibrary / dlopen  your .vst3 shared library
+2. Call GetPluginFactory()  — you return your IPluginFactory
+3. host calls factory.createInstance(cid, IComponent::iid, &component)
+4. host calls component.initialize(hostContext)
+5. host queries component for IAudioProcessor interface
+6. host calls processor.setupProcessing(setup)   — sample rate, max block size
+7. host calls processor.setActive(true)
+8. For each audio block: host calls processor.process(data)
+
+
+GUIDs
+
+
+Every VST3 class and interface is identified by a 16-byte GUID. You generate GUIDs for
+your own classes; the SDK provides GUIDs for all standard interfaces. For a new plugin:
+
+
+
+/* Generate with uuidgen on Linux, or any UUID tool.
+   Format as Steinberg FUID initialiser: four 32-bit hex groups */
+
+/* Processor UID */
+static const Steinberg::TUID MyGainProcessorUID = {
+    0x1A2B3C4D, 0x5E6F7A8B, 0x9C0D1E2F, 0x3A4B5C6D
+};
+
+/* Controller UID (can be same object, different UID) */
+static const Steinberg::TUID MyGainControllerUID = {
+    0xAA1B2C3D, 0x4E5F6A7B, 0x8C9D0E1F, 0x2A3B4C5D
+};
+
+
+The Plugin Class
+
+
+We implement the processor and controller in one class. The gain plugin has a single
+parameter (gain, 0.0–1.0, default 1.0) and processes stereo float32 buses.
+
+
+
+#include "pluginterfaces/base/ipluginbase.h"
+#include "pluginterfaces/vst/ivstaudioprocessor.h"
+#include "pluginterfaces/vst/ivsteditcontroller.h"
+#include "pluginterfaces/vst/ivstcomponent.h"
+#include "pluginterfaces/vst/ivstparameterchanges.h"
+#include "pluginterfaces/vst/ivstmessage.h"
+#include <math.h>
+#include <string.h>
+
+using namespace Steinberg;
+using namespace Steinberg::Vst;
+
+static const ParamID kGainId = 0;
+
+class MyGainPlugin : public IComponent,
+                     public IAudioProcessor,
+                     public IEditController {
+public:
+    MyGainPlugin() : refCount(1), gain(1.0f), sampleRate(44100.0f) {}
+
+    /* IUnknown */
+    tresult PLUGIN_API queryInterface(const TUID iid, void **obj) override {
+        if (FUnknownPrivate::iidEqual(iid, IComponent::iid) ||
+            FUnknownPrivate::iidEqual(iid, FUnknown::iid)) {
+            addRef();
+            *obj = static_cast<IComponent *>(this);
+            return kResultOk;
+        }
+        if (FUnknownPrivate::iidEqual(iid, IAudioProcessor::iid)) {
+            addRef();
+            *obj = static_cast<IAudioProcessor *>(this);
+            return kResultOk;
+        }
+        if (FUnknownPrivate::iidEqual(iid, IEditController::iid)) {
+            addRef();
+            *obj = static_cast<IEditController *>(this);
+            return kResultOk;
+        }
+        *obj = nullptr;
+        return kNoInterface;
+    }
+    uint32 PLUGIN_API addRef()  override { return ++refCount; }
+    uint32 PLUGIN_API release() override {
+        if (--refCount == 0) { delete this; return 0; }
+        return refCount;
+    }
+
+    /* IPluginBase (shared by IComponent and IEditController) */
+    tresult PLUGIN_API initialize(FUnknown *context) override { return kResultOk; }
+    tresult PLUGIN_API terminate() override { return kResultOk; }
+
+    /* IComponent */
+    tresult PLUGIN_API getControllerClassId(TUID classId) override {
+        memcpy(classId, MyGainControllerUID, sizeof(TUID));
+        return kResultOk;
+    }
+    tresult PLUGIN_API setIoMode(IoMode mode) override { return kResultOk; }
+    int32   PLUGIN_API getBusCount(MediaType type, BusDirection dir) override {
+        return (type == kAudio) ? 1 : 0;
+    }
+    tresult PLUGIN_API getBusInfo(MediaType type, BusDirection dir,
+                                  int32 index, BusInfo &bus) override {
+        if (type != kAudio || index != 0) return kInvalidArgument;
+        bus.mediaType    = kAudio;
+        bus.direction    = dir;
+        bus.channelCount = 2;   /* stereo */
+        bus.busType      = kMain;
+        bus.flags        = BusInfo::kDefaultActive;
+        UString128("Stereo").copyTo(bus.name, 128);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getRoutingInfo(RoutingInfo &inInfo,
+                                      RoutingInfo &outInfo) override { return kNotImplemented; }
+    tresult PLUGIN_API activateBus(MediaType, BusDirection, int32, TBool) override { return kResultOk; }
+    tresult PLUGIN_API setActive(TBool) override { return kResultOk; }
+    tresult PLUGIN_API setState(IBStream *) override { return kResultOk; }
+    tresult PLUGIN_API getState(IBStream *) override { return kResultOk; }
+
+    /* IAudioProcessor */
+    tresult PLUGIN_API setBusArrangements(SpeakerArrangement *inputs, int32 numIn,
+                                          SpeakerArrangement *outputs, int32 numOut) override {
+        if (numIn == 1 && numOut == 1 &&
+            inputs[0] == SpeakerArr::kStereo &&
+            outputs[0] == SpeakerArr::kStereo)
+            return kResultOk;
+        return kResultFalse;
+    }
+    tresult PLUGIN_API getBusArrangement(BusDirection dir, int32 index,
+                                         SpeakerArrangement &arr) override {
+        arr = SpeakerArr::kStereo;
+        return kResultOk;
+    }
+    tresult PLUGIN_API canProcessSampleSize(int32 symbolicSampleSize) override {
+        return (symbolicSampleSize == kSample32) ? kResultOk : kResultFalse;
+    }
+    uint32  PLUGIN_API getLatencySamples() override { return 0; }
+    tresult PLUGIN_API setupProcessing(ProcessSetup &setup) override {
+        sampleRate = (float)setup.sampleRate;
+        return kResultOk;
+    }
+    tresult PLUGIN_API setProcessing(TBool) override { return kResultOk; }
+
+    /* The actual audio processing */
+    tresult PLUGIN_API process(ProcessData &data) override {
+        /* Handle parameter changes from the host automation */
+        if (data.inputParameterChanges) {
+            int32 numQueues = data.inputParameterChanges->getParameterCount();
+            for (int32 q = 0; q < numQueues; q++) {
+                IParamValueQueue *queue =
+                    data.inputParameterChanges->getParameterData(q);
+                if (!queue) continue;
+                if (queue->getParameterId() == kGainId) {
+                    int32 numPoints = queue->getPointCount();
+                    int32 offset;
+                    ParamValue value;
+                    /* Use the last point in the block for simplicity */
+                    if (queue->getPoint(numPoints - 1, offset, value) == kResultOk)
+                        gain = (float)value;
+                }
+            }
+        }
+
+        if (data.numInputs == 0 || data.numOutputs == 0)
+            return kResultOk;
+
+        int32 numChannels = data.inputs[0].numChannels;
+        int32 numSamples  = data.numSamples;
+
+        for (int32 ch = 0; ch < numChannels && ch < 2; ch++) {
+            float *in  = (float *)data.inputs[0].channelBuffers32[ch];
+            float *out = (float *)data.outputs[0].channelBuffers32[ch];
+            for (int32 i = 0; i < numSamples; i++)
+                out[i] = in[i] * gain;
+        }
+        return kResultOk;
+    }
+
+    tresult PLUGIN_API getTailSamples(uint32 &) override { return kResultOk; }
+
+    /* IEditController */
+    tresult PLUGIN_API setComponentState(IBStream *) override { return kResultOk; }
+    int32   PLUGIN_API getParameterCount() override { return 1; }
+    tresult PLUGIN_API getParameterInfo(int32 paramIndex,
+                                        ParameterInfo &info) override {
+        if (paramIndex != 0) return kInvalidArgument;
+        info.id            = kGainId;
+        info.stepCount     = 0;         /* 0 = continuous */
+        info.defaultNormalizedValue = 1.0;
+        info.unitId        = kRootUnitId;
+        info.flags         = ParameterInfo::kCanAutomate;
+        UString128("Gain").copyTo(info.title, 128);
+        UString128("Gain").copyTo(info.shortTitle, 128);
+        UString128("").copyTo(info.units, 128);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getParamStringByValue(ParamID,
+                                              ParamValue value,
+                                              String128 string) override {
+        UString128(value).copyTo(string, 128);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getParamValueByString(ParamID, TChar *,
+                                              ParamValue &value) override {
+        value = 1.0;
+        return kResultOk;
+    }
+    ParamValue PLUGIN_API normalizedParamToPlain(ParamID, ParamValue v) override { return v; }
+    ParamValue PLUGIN_API plainParamToNormalized(ParamID, ParamValue v) override { return v; }
+    ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
+        return (id == kGainId) ? gain : 0.0;
+    }
+    tresult PLUGIN_API setParamNormalized(ParamID id, ParamValue value) override {
+        if (id == kGainId) gain = (float)value;
+        return kResultOk;
+    }
+    tresult PLUGIN_API setComponentHandler(IComponentHandler *) override { return kResultOk; }
+    IPlugView *PLUGIN_API createView(FIDString) override { return nullptr; }  /* no GUI */
+
+private:
+    int32 refCount;
+    float gain;
+    float sampleRate;
+};
+
+
+IPluginFactory
+
+
+The host discovers your plugin by calling GetPluginFactory(), a C-linkage
+function that must be exported from the shared library. It returns an
+IPluginFactory that can create both the processor and (optionally separate)
+controller instances.
+
+
+
+class MyGainFactory : public IPluginFactory {
+public:
+    tresult PLUGIN_API queryInterface(const TUID iid, void **obj) override {
+        if (FUnknownPrivate::iidEqual(iid, IPluginFactory::iid) ||
+            FUnknownPrivate::iidEqual(iid, FUnknown::iid)) {
+            addRef(); *obj = this; return kResultOk;
+        }
+        *obj = nullptr; return kNoInterface;
+    }
+    uint32 PLUGIN_API addRef()  override { return 1; }  /* singleton: never freed */
+    uint32 PLUGIN_API release() override { return 1; }
+
+    tresult PLUGIN_API getFactoryInfo(PFactoryInfo *info) override {
+        strncpy(info->vendor, "My Company",       PFactoryInfo::kNameSize);
+        strncpy(info->url,    "https://example.com", PFactoryInfo::kURLSize);
+        strncpy(info->email,  "dev@example.com",  PFactoryInfo::kEmailSize);
+        info->flags = PFactoryInfo::kUnicode;
+        return kResultOk;
+    }
+
+    int32 PLUGIN_API countClasses() override { return 1; }
+
+    tresult PLUGIN_API getClassInfo(int32 index, PClassInfo *info) override {
+        if (index != 0) return kInvalidArgument;
+        memcpy(info->cid, MyGainProcessorUID, sizeof(TUID));
+        info->cardinality = PClassInfo::kManyInstances;
+        strncpy(info->category, kVstAudioEffectClass, PClassInfo::kCategorySize);
+        strncpy(info->name, "MyGain", PClassInfo::kNameSize);
+        return kResultOk;
+    }
+
+    tresult PLUGIN_API createInstance(FIDString cid,
+                                      FIDString iid, void **obj) override {
+        if (memcmp(cid, MyGainProcessorUID, sizeof(TUID)) == 0) {
+            MyGainPlugin *p = new MyGainPlugin();
+            tresult res = p->queryInterface((const TUID)iid, obj);
+            p->release();   /* queryInterface already called addRef */
+            return res;
+        }
+        *obj = nullptr;
+        return kNoInterface;
+    }
+};
+
+static MyGainFactory gFactory;
+
+/* This is the only C-linkage symbol the host needs */
+extern "C" SMTG_EXPORT_SYMBOL IPluginFactory *PLUGIN_API GetPluginFactory() {
+    return &gFactory;
+}
+
+
+Building with GCC
+
+
+# Adjust VST3_SDK to your SDK root directory.
+# The plugin is a .so on Linux, .dylib on macOS, .dll on Windows.
+
+VST3_SDK=/path/to/vst3sdk
+
+# Linux:
+g++ -std=c++14 -O2 -shared -fPIC \
+    -I${VST3_SDK} \
+    -I${VST3_SDK}/pluginterfaces \
+    -I${VST3_SDK}/public.sdk/source \
+    -DSMTG_EXPORT_SYMBOL='__attribute__((visibility("default")))' \
+    -o MyGain.vst3/Contents/x86_64-linux/MyGain.so \
+    mygain.cpp \
+    -lm
+
+# The .vst3 bundle is just a directory:
+# MyGain.vst3/
+#   Contents/
+#     x86_64-linux/  (Linux)
+#       MyGain.so
+#     Resources/
+#       moduleinfo.json   (optional but recommended for VST3 1.0 validation)
+
+
+
+Gotcha: the SDK headers assume SMTG_EXPORT_SYMBOL is defined to mark exported symbols.
+On Linux with GCC it maps to __attribute__((visibility("default"))). Without
+it, GetPluginFactory will be hidden and the host will fail to find it.
+
+
+
+Gotcha: some DAWs (Cubase, Ableton 11+) validate the plugin bundle structure strictly.
+The moduleinfo.json is required by VST3 validators but many hosts still
+work without it. Generate one with the validator tool in the SDK.
+
+
+Summary
+
+
+A minimal VST3 plugin implements IComponent (bus configuration), IAudioProcessor
+(process() for audio), and IEditController (parameter descriptions). All three can live
+in one C++ class. The factory is a singleton returned by GetPluginFactory().
+The gain plugin adds only twelve lines of actual audio processing to this skeleton; all
+the rest is interface glue. Build with gcc against the SDK headers using -shared
+-fPIC — no CMake required.
+
+
+
+Part 23 is the series capstone: a complete monophonic synthesiser under 500 lines
+combining wavetable oscillator, biquad filter, ADSR envelope, ALSA MIDI, and SDL2 audio.
+
+
+Further Reading
+
+
+VST3 SDK Documentation - Steinberg
+VST3 Interface Reference
+VST3 SDK on GitHub
+VST3 SDK FAQ - Steinberg
+VST Development Resources - Cockos (Reaper)
+
+
+See Also
+
+
+Writing a Pure Data External
+Biquad Filters
+SDL2 as Audio Backend
+Filter Cookbook: Lowpass & Highpass
+
