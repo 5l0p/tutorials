@@ -1,0 +1,405 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Go - Part 16: Platform-Specific Code & Build Constraints</title>
+    <meta name="description" content="How to write portable Go code that compiles different implementations per OS or architecture using build tags, file-name suffixes, and interface-based platform abstractions.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="go-16-build-constraints.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../go.htm">go</a></i>
+        <h2>Go - Part 16: Platform-Specific Code & Build Constraints</h2>
+        <p>
+Production software rarely runs on exactly one platform. You might ship a Linux binary to
+production, a macOS binary to developers, and a Windows binary for the occasional desktop
+user. Some of that code is portable. Some - system calls, file paths, signal handling -
+is not. Go gives you two orthogonal mechanisms for including or excluding files from a
+build: file-name suffixes and build constraint comments. Together they let you present a
+clean, platform-independent interface to the rest of your program while hiding the
+OS-specific details inside. If you have done this in C with <code>#ifdef</code> blocks and
+in C# with conditional compilation symbols, you will appreciate how much more structured
+Go's approach is.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How <code>//go:build</code> tag expressions select files at build time.</li>
+<li>How file-name suffixes (<code>_linux.go</code>, <code>_windows_amd64.go</code>) work as an alternative to explicit tags.</li>
+<li>How to hide platform differences behind a common Go interface.</li>
+<li>How <code>syscall</code> and <code>golang.org/x/sys</code> differ across platforms.</li>
+<li>How to test platform-specific code without the real OS.</li>
+<li>Common mistakes: forgetting a platform, build tag syntax errors, and the old <code>// +build</code> format.</li>
+</ul>
+
+<h3>Build Tags: //go:build</h3>
+
+<p>
+A build constraint is a comment of the form <code>//go:build EXPR</code> placed before the
+<code>package</code> clause, separated from it by a blank line. If the expression evaluates
+to false for the current build, the entire file is excluded - as if it did not exist.
+</p>
+
+<pre>
+//go:build linux
+
+package platform
+</pre>
+
+<p>
+The expression language supports boolean operators:
+</p>
+
+<pre>
+//go:build linux || darwin          // Linux or macOS
+//go:build linux &amp;&amp; amd64           // Linux on x86-64 only
+//go:build !windows                 // anything except Windows
+//go:build (linux || darwin) &amp;&amp; cgo // Unix with CGo enabled
+</pre>
+
+<p>
+The available tag names include all <code>GOOS</code> values (<code>linux</code>,
+<code>windows</code>, <code>darwin</code>, <code>freebsd</code>, …), all <code>GOARCH</code>
+values (<code>amd64</code>, <code>arm64</code>, <code>386</code>, …), the Go version
+(<code>go1.21</code> - true if the toolchain is at least that version), and custom tags
+you define with <code>go build -tags mytag</code>. You can also use <code>ignore</code> to
+unconditionally exclude a file from builds.
+</p>
+
+<p>
+<b>The old syntax.</b> Before Go 1.17, the constraint was written as a magic comment
+<code>// +build linux</code> with a different, less readable syntax (space-separated AND,
+comma-separated OR). You will see this in older code. Since Go 1.17 the new
+<code>//go:build</code> syntax is preferred; <code>gofmt</code> automatically adds the new
+form if only the old one is present.
+</p>
+
+<p>
+In C this is <code>#ifdef __linux__</code> scattered throughout a file. In C# it is
+<code>#if LINUX</code> with symbols defined in the project file. Go's approach keeps each
+platform's code in its own file, which is far easier to read and review.
+</p>
+
+<h3>File-Name Suffixes</h3>
+
+<p>
+If a file's name (before the <code>.go</code> extension) ends with <code>_GOOS</code>,
+<code>_GOARCH</code>, or <code>_GOOS_GOARCH</code>, the Go toolchain applies the
+corresponding constraint automatically - no <code>//go:build</code> comment needed:
+</p>
+
+<pre>
+platform_linux.go           // included only on Linux
+platform_windows.go         // included only on Windows
+platform_darwin_arm64.go    // included only on macOS/Apple Silicon
+signal_unix.go              // no special suffix - always included
+</pre>
+
+<p>
+The suffix matching is exact and case-sensitive. The suffix must be the last component
+before <code>.go</code>. A file named <code>my_linux_helper.go</code> is NOT treated as
+Linux-only - the suffix must be the final part after the last underscore before
+<code>.go</code>: <code>my_helper_linux.go</code> would be.
+</p>
+
+<p>
+The suffix convention is ideal for files that are entirely platform-specific. Use
+<code>//go:build</code> tags when you need a more complex expression or when the filename
+would become unwieldy.
+</p>
+
+<h3>A Worked Example: Getting the Process's CPU Time</h3>
+
+<p>
+Consider a function that returns the CPU time consumed by the current process - a plausible
+monitoring metric. The call is <code>getrusage(RUSAGE_SELF, ...)</code> on Unix and
+<code>GetProcessTimes</code> on Windows. Here is how to structure this properly.
+</p>
+
+<p>
+Start by defining a common interface in a file with no build constraint:
+</p>
+
+<pre>
+// cpu.go - included on all platforms
+package platform
+
+import "time"
+
+// CPUTime returns the user+system CPU time used by this process so far.
+// The implementation varies by OS.
+func CPUTime() time.Duration {
+    return cpuTime() // calls the platform-specific function
+}
+</pre>
+
+<p>
+Then provide implementations in suffix-named files:
+</p>
+
+<pre>
+// cpu_linux.go (also covers other Unix-likes via a build tag variant)
+//go:build linux || darwin || freebsd
+
+package platform
+
+import (
+    "syscall"
+    "time"
+)
+
+func cpuTime() time.Duration {
+    var ru syscall.Rusage
+    if err := syscall.Getrusage(syscall.RUSAGE_SELF, &amp;ru); err != nil {
+        return 0
+    }
+    // ru.Utime and ru.Stime are Timeval structs
+    user := time.Duration(ru.Utime.Sec)*time.Second +
+        time.Duration(ru.Utime.Usec)*time.Microsecond
+    sys := time.Duration(ru.Stime.Sec)*time.Second +
+        time.Duration(ru.Stime.Usec)*time.Microsecond
+    return user + sys
+}
+</pre>
+
+<pre>
+// cpu_windows.go
+package platform
+
+import (
+    "syscall"
+    "time"
+    "unsafe"
+)
+
+func cpuTime() time.Duration {
+    handle, _ := syscall.GetCurrentProcess()
+    var creation, exit, kernel, user syscall.Filetime
+    _ = syscall.GetProcessTimes(handle, &amp;creation, &amp;exit, &amp;kernel, &amp;user)
+    toNs := func(ft syscall.Filetime) time.Duration {
+        // Filetime is in 100-nanosecond intervals
+        n := int64(ft.HighDateTime)&lt;&lt;32 | int64(ft.LowDateTime)
+        return time.Duration(n) * 100
+    }
+    _ = unsafe.Sizeof(creation) // satisfy import
+    return toNs(kernel) + toNs(user)
+}
+</pre>
+
+<pre>
+// cpu_stub.go - fallback for platforms we haven't implemented
+//go:build !linux &amp;&amp; !darwin &amp;&amp; !freebsd &amp;&amp; !windows
+
+package platform
+
+import "time"
+
+func cpuTime() time.Duration { return 0 }
+</pre>
+
+<p>
+The stub file is important. Without it, a build for an unsupported platform (say,
+<code>plan9</code>) will fail with "undefined: cpuTime". The stub gives you a zero-cost
+fallback that compiles everywhere. In C# this is the <code>#else</code> branch; in C it is
+the <code>#else</code> at the end of an <code>#ifdef</code> chain. Go forces you to make
+it a separate file, which keeps each case isolated.
+</p>
+
+<h3>The syscall Package and golang.org/x/sys</h3>
+
+<p>
+The <code>syscall</code> package in the standard library wraps OS system calls. Its API is
+platform-dependent - <code>syscall.Getrusage</code> exists on Unix, not on Windows. The
+package was frozen after Go 1.4 to avoid breaking changes.
+</p>
+
+<p>
+For new code, prefer <code>golang.org/x/sys</code>, which is the actively maintained
+extension. It covers more system calls, handles newer kernel features, and has a cleaner
+API. Install it like any other module:
+</p>
+
+<pre>
+go get golang.org/x/sys
+</pre>
+
+<p>
+<code>golang.org/x/sys/unix</code> covers Linux, macOS, FreeBSD, and other Unix-like
+systems. <code>golang.org/x/sys/windows</code> covers the Windows API. Both have
+platform-specific build constraints baked in, so importing the wrong subpackage on the
+wrong OS is a compile error - a useful guardrail.
+</p>
+
+<p>
+In C, you call system calls directly via libc wrappers (<code>getrusage(2)</code>,
+<code>ioctl(2)</code>), and it is your responsibility to conditionally compile the right
+calls. In C# the P/Invoke layer lets you call native functions on any platform but provides
+no type safety across platforms. Go's separate packages-per-OS model is more structured
+than either.
+</p>
+
+<h3>Custom Build Tags</h3>
+
+<p>
+Beyond OS and architecture, you can define your own tags:
+</p>
+
+<pre>
+//go:build integration
+
+package mypackage
+</pre>
+
+<p>
+Then include it selectively:
+</p>
+
+<pre>
+go test -tags integration ./...
+</pre>
+
+<p>
+This is the standard way to exclude slow integration tests from the regular test run and
+include them only in CI. You may also use tags to include debug tracing, experimental
+features, or enterprise-only code paths.
+</p>
+
+<h3>Testing Platform-Specific Code</h3>
+
+<p>
+Platform-specific code is hardest to test because you may not have all OSes available in
+your CI. Two strategies:
+</p>
+
+<p>
+<b>Interface inversion.</b> Define the platform behaviour behind an interface. In tests,
+inject a fake implementation. This is the same pattern as injecting a mock database - it
+tests the logic without needing the real OS primitive.
+</p>
+
+<p>
+<b>Cross-compilation checks.</b> Even without running the code, you can verify that it
+compiles for all target platforms:
+</p>
+
+<pre>
+GOOS=windows GOARCH=amd64 go build ./...
+GOOS=darwin  GOARCH=arm64 go build ./...
+GOOS=linux   GOARCH=amd64 go build ./...
+</pre>
+
+<p>
+Add these to CI. A compile failure on Windows caught early saves a last-minute scramble
+before a release. Cross-compilation in Go is fast and requires no cross-toolchain because
+Go is self-contained - this is one of Go's genuine advantages over C, where you need a
+full cross-compilation toolchain for each target.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Go offers two mechanisms for platform-specific code: file-name suffixes (clean and
+implicit) and <code>//go:build</code> constraint expressions (explicit and powerful). Use
+suffixes for simple OS or architecture splits; use tags when the logic is more complex.
+Always provide stub files for platforms you have not implemented to avoid compilation
+failures on unsupported systems.
+</p>
+
+<p>
+The <code>syscall</code> package is frozen; use <code>golang.org/x/sys</code> for new
+system-call-level code. Verify that your code compiles across all target platforms in CI
+even if you cannot run it there. The overall pattern - hide platform specifics behind a
+common interface, test the interface - is exactly the same discipline applied throughout
+the series: define the contract, implement it, test it in isolation.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://pkg.go.dev/cmd/go#hdr-Build_constraints">Build constraints - cmd/go documentation</a></li>
+<li><a href="https://go.dev/ref/spec#Build_constraints">Build constraints - Go specification</a></li>
+<li><a href="https://pkg.go.dev/golang.org/x/sys">golang.org/x/sys - pkg.go.dev</a></li>
+<li><a href="https://pkg.go.dev/syscall">syscall - pkg.go.dev</a></li>
+<li><a href="https://go.dev/blog/osarch">Go, the language of systems programming</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="go-13-cross-compilation.htm">Building &amp; Cross-Compilation</a></li>
+<li><a href="go-11-modules.htm">Modules &amp; Dependencies</a></li>
+<li><a href="go-15-codegen.htm">Code Generation with go generate</a></li>
+<li><a href="go-17-testing.htm">Testing in Go</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

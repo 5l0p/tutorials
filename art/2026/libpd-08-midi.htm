@@ -1,0 +1,325 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>libpd - Part 8: MIDI with libpd</title>
+    <meta name="description" content="How to send MIDI events into Pd and receive MIDI output from Pd using libpd's MIDI API and hook callbacks.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, audio, puredata">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="libpd-08-midi.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../audio.htm">audio</a>, <a href="../../puredata.htm">puredata</a></i>
+        <h2>libpd - Part 8: MIDI with libpd</h2>
+        <p>Pure Data has a rich set of MIDI objects - <code>[notein]</code>, <code>[noteout]</code>, <code>[ctlin]</code>, <code>[ctlout]</code>, and a dozen more. libpd maps these to a C API that lets you inject MIDI events into the patch and collect MIDI output from it without touching any MIDI hardware directly. Your application handles the physical MIDI device; libpd routes the data to and from the Pd scheduler.</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How libpd replaces Pd's hardware MIDI I/O with a C function call API</li>
+<li>Sending Note On/Off, control change, pitch bend, and program change to the patch</li>
+<li>Receiving MIDI output from the patch via the noteon, controlchange, and other hooks</li>
+<li>How to integrate RtMidi with libpd: routing hardware MIDI through the API</li>
+<li>Thread safety for MIDI injection: why a lock-free queue is needed for production code</li>
+</ul>
+
+<h3>The Architecture</h3>
+
+<p>In desktop Pd, MIDI devices are selected in the preferences dialog. In libpd, Pd's MIDI I/O is replaced by the C API: you call <code>libpd_noteon</code> to send a Note On, the patch processes it through <code>[notein]</code>, and the result (if any) comes back through hooks you register with <code>libpd_set_noteonhook</code>. Physical MIDI I/O stays entirely in your code.</p>
+
+<h3>Sending MIDI to Pd</h3>
+
+<p>All MIDI send functions are in <code>z_libpd.h</code>. Channel numbers are 0-indexed (channel 0 = MIDI channel 1).</p>
+
+<pre>
+#include &lt;z_libpd.h&gt;
+
+/* Note On: channel 0, MIDI pitch 60 (middle C), velocity 100 */
+libpd_noteon(0, 60, 100);
+
+/* Note Off: velocity 0 = note off in standard MIDI */
+libpd_noteon(0, 60, 0);
+
+/* Control Change: channel 0, CC 74 (filter cutoff), value 64 */
+libpd_controlchange(0, 74, 64);
+
+/* Program Change: channel 0, program 12 */
+libpd_programchange(0, 12);
+
+/* Pitch Bend: channel 0, value -8192 to +8191 (0 = centre) */
+libpd_pitchbend(0, 512);
+
+/* Aftertouch (channel pressure): channel 0, value 80 */
+libpd_aftertouch(0, 80);
+
+/* Polyphonic aftertouch: channel 0, pitch 60, pressure 64 */
+libpd_polyaftertouch(0, 60, 64);
+
+/* Raw MIDI byte (for SysEx or other messages) */
+libpd_midibyte(0, 0xF8); /* MIDI clock tick */
+</pre>
+
+<p>These functions are synchronous - the event enters the Pd scheduler immediately and is processed during the next call to <code>libpd_process_float</code>.</p>
+
+<h3>The [notein] and [noteout] Pd Objects</h3>
+
+<p>On the Pd side, MIDI input objects receive what you send via the C API:</p>
+
+<pre>
+[notein]       - outputs: pitch, velocity, channel
+[notein 1]     - channel 1 only (channel number is 1-indexed in Pd)
+[ctlin]        - outputs: value, controller-number, channel
+[pgmin]        - outputs: program-number, channel
+[bendin]       - outputs: bend-value (-8192..8191), channel
+[touchin]      - outputs: pressure, channel
+</pre>
+
+<p>And MIDI output objects emit what your hooks will receive:</p>
+
+<pre>
+[noteout]      - takes: pitch, velocity, channel
+[ctlout]       - takes: value, controller, channel
+[pgmout]       - takes: program, channel
+[bendout]      - takes: bend-value, channel
+</pre>
+
+<h3>Receiving MIDI from Pd</h3>
+
+<p>Register hook callbacks to receive MIDI generated by the patch's output objects:</p>
+
+<pre>
+static void on_noteon(int channel, int pitch, int velocity) {
+    printf("Note: ch=%d pitch=%d vel=%d\n", channel, pitch, velocity);
+    /* Forward to a hardware MIDI port, synthesiser, etc. */
+}
+
+static void on_controlchange(int channel, int ctrl, int value) {
+    printf("CC: ch=%d ctrl=%d val=%d\n", channel, ctrl, value);
+}
+
+static void on_programchange(int channel, int program) {
+    printf("PC: ch=%d prog=%d\n", channel, program);
+}
+
+static void on_pitchbend(int channel, int bend) {
+    printf("PB: ch=%d bend=%d\n", channel, bend);
+}
+
+static void on_aftertouch(int channel, int pressure) {
+    printf("AT: ch=%d press=%d\n", channel, pressure);
+}
+
+static void on_polyaftertouch(int channel, int pitch, int pressure) {
+    printf("PAT: ch=%d pitch=%d press=%d\n", channel, pitch, pressure);
+}
+
+libpd_set_noteonhook(on_noteon);
+libpd_set_controlchangehook(on_controlchange);
+libpd_set_programchangehook(on_programchange);
+libpd_set_pitchbendhook(on_pitchbend);
+libpd_set_aftertouchhook(on_aftertouch);
+libpd_set_polyaftertouchhook(on_polyaftertouch);
+</pre>
+
+<p>As with all libpd hooks, these callbacks fire on the <b>audio thread</b>. Do not block, allocate, or touch the UI from inside them. Use a ring buffer to forward events to a non-audio thread (see article 06).</p>
+
+<h3>Complete MIDI-Driven Synth Example</h3>
+
+<pre>
+#include &lt;z_libpd.h&gt;
+#include &lt;portaudio.h&gt;
+#include &lt;stdio.h&gt;
+
+#define SR         44100
+#define BLOCK      512
+#define TICKS      (BLOCK / 64)
+#define CHANNELS   2
+
+static int pa_callback(const void *in, void *out,
+                       unsigned long frames,
+                       const PaStreamCallbackTimeInfo *ti,
+                       PaStreamCallbackFlags flags,
+                       void *ud)
+{
+    libpd_process_float(TICKS, (float *)in, (float *)out);
+    return paContinue;
+}
+
+static void on_noteon(int ch, int pitch, int vel) {
+    /* Route outgoing MIDI back to a hardware port if needed */
+    printf("Pd output: note ch=%d p=%d v=%d\n", ch, pitch, vel);
+}
+
+int main(void) {
+    libpd_init();
+    libpd_init_audio(0, CHANNELS, SR);
+
+    libpd_set_noteonhook(on_noteon);
+
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    void *patch = libpd_openfile("midi_synth.pd", "patches");
+    if (!patch) return 1;
+
+    Pa_Initialize();
+    PaStream *stream;
+    Pa_OpenDefaultStream(&amp;stream, 0, CHANNELS, paFloat32,
+                         SR, BLOCK, pa_callback, NULL);
+    Pa_StartStream(stream);
+
+    /* Simulate incoming MIDI: play a C major arpeggio */
+    int notes[] = {60, 64, 67, 72};
+    for (int i = 0; i &lt; 4; i++) {
+        libpd_noteon(0, notes[i], 100);
+        Pa_Sleep(250);
+        libpd_noteon(0, notes[i], 0); /* note off */
+        Pa_Sleep(50);
+    }
+
+    Pa_Sleep(1000);
+    Pa_StopStream(stream);
+    Pa_CloseStream(stream);
+    Pa_Terminate();
+
+    libpd_closefile(patch);
+    return 0;
+}
+</pre>
+
+<h3>Bridging a Physical MIDI Device</h3>
+
+<p>To connect real MIDI hardware, use a MIDI I/O library (RtMidi, PortMidi, ALSA sequencer) alongside libpd. The library calls your MIDI input callback; your callback forwards the bytes to libpd:</p>
+
+<pre>
+/* RtMidi callback - called on a separate thread by RtMidi */
+void rtmidi_callback(double stamp,
+                     std::vector&lt;unsigned char&gt; *msg,
+                     void *userData)
+{
+    if (msg-&gt;size() &lt; 2) return;
+    int status  = (*msg)[0] &amp; 0xF0;
+    int channel = (*msg)[0] &amp; 0x0F;
+
+    switch (status) {
+    case 0x90:
+        libpd_noteon(channel, (*msg)[1], (*msg)[2]);
+        break;
+    case 0x80:
+        libpd_noteon(channel, (*msg)[1], 0);
+        break;
+    case 0xB0:
+        libpd_controlchange(channel, (*msg)[1], (*msg)[2]);
+        break;
+    case 0xC0:
+        libpd_programchange(channel, (*msg)[1]);
+        break;
+    case 0xE0: {
+        int bend = ((*msg)[2] &lt;&lt; 7) | (*msg)[1];
+        libpd_pitchbend(channel, bend - 8192);
+        break;
+    }
+    }
+}
+</pre>
+
+<p>Note the thread safety issue: RtMidi calls your callback on its own thread, but libpd's MIDI functions should be called from the audio thread. In practice, for most applications the MIDI injection functions are safe to call from any thread at the cost of potential glitches under high load. For production code, queue MIDI events in a lock-free ring buffer and drain them at the start of each audio callback.</p>
+
+<h3>Summary</h3>
+
+<p>
+libpd replaces Pure Data's hardware MIDI layer with direct C function calls:
+<code>libpd_noteon(channel, pitch, velocity)</code>, <code>libpd_controlchange</code>,
+<code>libpd_pitchbend</code>, and friends send events to the patch as if they arrived from
+a MIDI device. The patch's <code>[noteout]</code> and <code>[ctlout]</code> objects route
+output back through registered hooks. Physical MIDI devices are your application's
+responsibility — integrate RtMidi or ALSA rawmidi, then queue events in a lock-free
+buffer and inject them at the start of each audio callback.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://puredata.info/docs/tutorials/midi">Pure Data MIDI tutorial</a></li>
+<li><a href="https://www.music.mcgill.ca/~gary/rtmidi/">RtMidi documentation</a></li>
+<li><a href="https://github.com/libpd/libpd/blob/master/libpd_wrapper/z_libpd.h">z_libpd.h MIDI API</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="libpd-05-send-messages.htm">Sending Messages to Pd</a></li>
+<li><a href="libpd-06-receive-messages.htm">Receiving Messages from Pd</a></li>
+<li><a href="libpd-10-vst3.htm">libpd Inside a VST3 Plugin</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

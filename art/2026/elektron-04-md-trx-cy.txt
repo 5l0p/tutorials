@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 4: Machinedrum TRX-CY Cymbal and TRX-CB Cowbell
-2026-01-01
+2026-06-01
 
 
 The TRX-CY and TRX-CB are the Machinedrum's analog-modeled cymbal and cowbell. The

@@ -1,0 +1,345 @@
+Lua - Part 6: Module Tables and Hot-Reload
+2026-06-01
+
+
+The step from a config file to a scene description is smaller than it looks. A config
+file says "sample_rate = 48000". A module table says "there is an oscillator at 440 Hz
+connected to a filter with cutoff 2000, connected to the output". Both are just Lua
+tables - the difference is what the C code does with them. This article shows how to
+move from passive key-value reading to active component construction: Lua tables declare
+a graph of named, typed components; C reads the type field of each entry
+and calls a constructor. The same mechanism works for audio node graphs, UI panel
+layouts, and agent tool registries. At the end, you reload the whole thing at runtime
+by re-running the Lua file without restarting the process.
+
+
+What You Will Learn
+
+
+The module-table DSL pattern: tables with a required type field.
+How to iterate a top-level modules table and dispatch by type.
+How to store per-component C state keyed to Lua table names.
+A complete C dispatcher for an audio node graph declared in Lua.
+How hot-reload works: luaL_loadfile + lua_pcall again, no restart.
+What must be torn down before reload and what can survive.
+
+
+The Module-Table Pattern
+
+
+A module table is a Lua table where every entry has at least a type string
+field. The type tells the C dispatcher which constructor to call. Additional fields are
+parameters to that constructor. The top-level structure is a named list:
+
+
+
+-- graph.lua
+modules = {
+    osc1 = {
+        type   = "oscillator",
+        freq   = 440.0,
+        wave   = "sine",
+    },
+    filt1 = {
+        type    = "biquad_filter",
+        cutoff  = 2000.0,
+        q       = 0.707,
+        mode    = "lowpass",
+    },
+    out1 = {
+        type    = "output",
+        gain_db = -6.0,
+    },
+    connections = {
+        { from = "osc1",  to = "filt1" },
+        { from = "filt1", to = "out1"  },
+    },
+}
+
+
+
+This is a data declaration. It describes a graph without invoking any C code. The Lua
+runtime only allocates tables and strings; it does no I/O, no DSP, nothing heavy. The
+C code does all construction after reading the tables.
+
+
+Reading the Modules Table in C
+
+
+The C dispatcher iterates the modules table with lua_next.
+For each entry it reads the type field and dispatches to a constructor.
+The key is the component name; the value is the parameter table.
+
+
+
+/* audio_node.h (simplified) */
+typedef enum { NODE_OSCILLATOR, NODE_FILTER, NODE_OUTPUT } NodeType;
+
+typedef struct AudioNode {
+    char       name[64];
+    NodeType   type;
+    /* type-specific data follows in real code */
+    double     freq;       /* oscillator */
+    double     cutoff, q;  /* filter     */
+    double     gain_db;    /* output     */
+} AudioNode;
+
+#define MAX_NODES 64
+static AudioNode  g_nodes[MAX_NODES];
+static int        g_node_count = 0;
+
+
+
+/* dispatcher.c */
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#include <stdio.h>
+#include <string.h>
+
+static void build_oscillator(lua_State *L, int tbl, const char *name) {
+    AudioNode *n = &g_nodes[g_node_count++];
+    strncpy(n->name, name, sizeof(n->name) - 1);
+    n->type = NODE_OSCILLATOR;
+
+    lua_getfield(L, tbl, "freq");
+    n->freq = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 440.0;
+    lua_pop(L, 1);
+
+    /* wave shape ignored in this skeleton but would be read the same way */
+    printf("  oscillator '%s' freq=%.1f\n", name, n->freq);
+}
+
+static void build_filter(lua_State *L, int tbl, const char *name) {
+    AudioNode *n = &g_nodes[g_node_count++];
+    strncpy(n->name, sizeof(n->name) - 1, name);
+    n->type = NODE_FILTER;
+
+    lua_getfield(L, tbl, "cutoff");
+    n->cutoff = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 1000.0;
+    lua_pop(L, 1);
+
+    lua_getfield(L, tbl, "q");
+    n->q = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0.707;
+    lua_pop(L, 1);
+
+    printf("  filter '%s' cutoff=%.1f q=%.3f\n", name, n->cutoff, n->q);
+}
+
+static void build_output(lua_State *L, int tbl, const char *name) {
+    AudioNode *n = &g_nodes[g_node_count++];
+    strncpy(n->name, name, sizeof(n->name) - 1);
+    n->type = NODE_OUTPUT;
+
+    lua_getfield(L, tbl, "gain_db");
+    n->gain_db = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0.0;
+    lua_pop(L, 1);
+
+    printf("  output '%s' gain=%.1f dB\n", name, n->gain_db);
+}
+
+/* dispatch_node: read type field, call the right constructor */
+static void dispatch_node(lua_State *L, int tbl_idx, const char *name) {
+    lua_getfield(L, tbl_idx, "type");        /* stack: [..., tbl, type_str] */
+    if (!lua_isstring(L, -1)) {
+        fprintf(stderr, "  module '%s': missing 'type' field, skipping\n", name);
+        lua_pop(L, 1);
+        return;
+    }
+    const char *type = lua_tostring(L, -1);
+
+    if (strcmp(type, "oscillator") == 0)
+        build_oscillator(L, tbl_idx, name);
+    else if (strcmp(type, "biquad_filter") == 0)
+        build_filter(L, tbl_idx, name);
+    else if (strcmp(type, "output") == 0)
+        build_output(L, tbl_idx, name);
+    else
+        fprintf(stderr, "  module '%s': unknown type '%s'\n", name, type);
+
+    lua_pop(L, 1);  /* pop type string */
+}
+
+/* load_graph: iterate modules{} and construct all nodes */
+static int load_graph(lua_State *L) {
+    g_node_count = 0;
+
+    lua_getglobal(L, "modules");             /* stack: [modules?]           */
+    if (!lua_istable(L, -1)) {
+        fprintf(stderr, "no 'modules' table in script\n");
+        lua_pop(L, 1);
+        return -1;
+    }
+    int modules_idx = lua_gettop(L);
+
+    printf("Building graph:\n");
+
+    lua_pushnil(L);                          /* first key                   */
+    while (lua_next(L, modules_idx) != 0) {
+        /* stack: [modules, key, value]                                     */
+
+        /* Skip non-table values (e.g. the 'connections' sequence)         */
+        if (lua_type(L, -2) == LUA_TSTRING && lua_istable(L, -1)) {
+            const char *name = lua_tostring(L, -2);
+            int val_idx = lua_gettop(L);
+
+            /* Skip the special 'connections' entry in this pass */
+            if (strcmp(name, "connections") != 0)
+                dispatch_node(L, val_idx, name);
+        }
+
+        lua_pop(L, 1);  /* pop value, keep key for lua_next */
+    }
+
+    lua_pop(L, 1);  /* pop modules table */
+    printf("Graph built: %d nodes\n", g_node_count);
+    return 0;
+}
+
+
+Hot-Reload: Reloading Without Restarting
+
+
+Hot-reload is one of the major practical advantages of embedding Lua. Because loading a
+Lua file is just a function call from C, reloading is: tear down the old state (free C
+objects that were constructed from the previous config), then re-run the Lua file. The
+Lua state itself does not need to be destroyed and recreated - you can simply run the
+file again, which overwrites the globals.
+
+
+
+/* reload_graph: tear down old state, reload the file, rebuild */
+static int reload_graph(lua_State *L, const char *filename) {
+    /* 1. Tear down C-side objects created by the previous load */
+    printf("Tearing down %d nodes...\n", g_node_count);
+    /* In a real implementation: free heap memory, close handles, stop threads */
+    g_node_count = 0;
+
+    /* 2. Reload the Lua file - this re-runs the top-level code,
+     *    overwriting 'modules' in the global table */
+    if (luaL_loadfile(L, filename) != LUA_OK) {
+        fprintf(stderr, "reload: load error: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return -1;
+    }
+    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+        fprintf(stderr, "reload: runtime error: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return -1;
+    }
+
+    /* 3. Rebuild C objects from the new Lua state */
+    return load_graph(L);
+}
+
+
+
+The key insight: the lua_State is reused. The Lua file runs again from the
+top, redefining modules with whatever new values the updated file contains.
+The C objects from the previous load have been freed. The C objects for the new load are
+constructed fresh. This is identical to what game engines do for hot-reloading scripts:
+the scripting state is shared, but the objects it describes are rebuilt.
+
+
+
+What must be torn down: any C struct, heap allocation, file handle, socket, or system
+resource that was created as a result of reading the previous Lua tables. If you hold
+pointers into Lua-owned memory (strings from lua_tostring), they are
+invalidated when the Lua state is modified - copy strings to C-owned storage during
+initial construction.
+
+
+
+What survives reload: the Lua state itself, any registered C functions, any manually
+pushed C values. The state is persistent; only the results of running the Lua file
+change.
+
+
+Watching for File Changes
+
+
+Triggering reload automatically when the file changes is a one-liner in most event
+loops - compare the file's modification time against the last-loaded time:
+
+
+
+#include <sys/stat.h>
+#include <time.h>
+
+static time_t g_last_mtime = 0;
+
+static int file_changed(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    if (st.st_mtime != g_last_mtime) {
+        g_last_mtime = st.st_mtime;
+        return 1;
+    }
+    return 0;
+}
+
+/* In your main loop: */
+if (file_changed("graph.lua"))
+    reload_graph(L, "graph.lua");
+
+
+Other Applications of the Pattern
+
+
+The same dispatcher pattern works anywhere your application has a set of named,
+typed components:
+
+
+
+UI panel layout. Each panel entry has a type field
+("button", "slider", "label") and position/size/label parameters. The C UI framework
+reads the table and constructs widget objects.
+
+
+
+Agent tool registry. Each tool entry has a type field
+("http_get", "file_read", "sql_query") and parameters. The C dispatcher maps types
+to handler functions. New tool types are added by adding entries to the Lua table and
+a new case in the dispatcher.
+
+
+
+Scene graph. Entities have types ("light", "mesh", "camera") and transform
+parameters. The C scene loader constructs GPU objects from the Lua description.
+
+
+Summary
+
+
+Declaring components as Lua tables with a type field gives you a typed,
+extensible DSL for free. The C dispatcher iterates the table with lua_next,
+reads type with lua_getfield, and calls the appropriate
+constructor. Hot-reload is implemented by tearing down C-side resources, re-running the
+Lua file, and reconstructing from the new tables. No restart required.
+
+
+
+The next article takes the relationship between C and Lua one step further:
+wrapping a C struct as a first-class Lua object with methods, a __gc
+destructor, and __tostring for debugging.
+
+
+Further Reading
+
+
+lua_next - Lua 5.4 Reference Manual
+Programming in Lua - Chapter 28: User-Defined Types
+luaL_loadfile - Lua 5.4 Reference Manual
+Programming in Lua - Configuring Your Application
+lua_getfield - Lua 5.4 Reference Manual
+Programming in Lua - Chapter 27: Techniques for Writing C Functions
+
+
+See Also
+
+
+Tables as Configuration
+Calling C from Lua
+Userdata: Wrapping C Structs
+Scripting a DSP Pipeline from Lua
+

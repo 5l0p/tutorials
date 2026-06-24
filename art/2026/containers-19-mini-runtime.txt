@@ -1,0 +1,548 @@
+Containers - Part 19: Building a Mini Container Runtime in Go
+2026-06-01
+
+
+This is where the series pays off. Over the past eighteen articles we have built
+a detailed mental model of every primitive that containers are made of: PID
+namespaces, mount namespaces, pivot_root, UTS namespaces, network namespaces
+with veth pairs, user namespaces, cgroups v2 for resource limits, capabilities
+for privilege reduction, and seccomp for syscall filtering. Now we assemble them
+into a single Go binary that runs a process as a proper isolated container.
+
+
+
+The runtime is intentionally minimal - no image format, no daemon, no registry.
+You point it at a directory that is already a Linux root filesystem and it
+containerises the process inside that tree. That is exactly what runc does
+once OCI image extraction is done; the isolation primitives are identical.
+
+
+
+This article covers the architecture and the first half of the implementation:
+the main entry point, namespace setup, rootfs and pivot_root, and UTS. Part 2
+covers networking, cgroups, capabilities, seccomp, and running a real process.
+
+
+What You Will Learn
+
+
+How to structure a Go container runtime using re-exec for namespace initialisation
+How to combine CLONE_NEWPID, CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWNET, CLONE_NEWUSER, and CLONE_NEWIPC
+How to implement pivot_root to switch the container's root filesystem
+How to mount /proc, /dev, /sys, and /tmp inside the container
+How to set the container hostname via the UTS namespace
+The overall program structure that the second part builds on
+
+
+Architecture: The Re-exec Pattern
+
+
+Go presents a challenge for namespace programming: the Go runtime starts multiple
+OS threads before main() runs. Namespace operations like unshare are
+per-thread. If you call unshare(CLONE_NEWPID) in a goroutine, only that OS
+thread is in the new PID namespace; other goroutines are not. The pid returned
+by getpid() from different goroutines can differ.
+
+
+
+The standard solution used by Docker, containerd, and runc is the re-exec
+pattern: the runtime executes itself as a child process, setting namespace
+flags on the SysProcAttr of the child's exec.Cmd. The kernel applies
+the CLONE_NEW* flags at fork/exec time, before the Go runtime
+starts in the child. The child then runs a special initialisation function
+(determined by an environment variable or argument) rather than the normal
+main.
+
+
+
+  Parent process (host)
+    │
+    ├─ parse args, prepare rootfs path, config
+    │
+    ├─ exec.Command("/proc/self/exe", "init")   <-- re-exec self
+    │   SysProcAttr.Cloneflags = CLONE_NEWPID | CLONE_NEWNS |
+    │                             CLONE_NEWUTS | CLONE_NEWNET |
+    │                             CLONE_NEWIPC | CLONE_NEWUSER
+    │   UidMappings / GidMappings set
+    │
+    └─ wait for child, write cgroup limits, signal child via pipe
+         │
+         └─ Child process (inside new namespaces)
+               │  (Go runtime starts here, inside the namespace)
+               ├─ pivot_root to rootfs
+               ├─ mount /proc, /dev, /sys
+               ├─ set hostname
+               ├─ wait for parent to finish cgroup setup (via pipe)
+               ├─ drop capabilities
+               ├─ install seccomp filter
+               └─ exec target command
+
+
+Project Layout
+
+
+miniruntime/
+├── go.mod
+├── main.go          -- entry point; dispatches to parent or child mode
+├── parent.go        -- sets up the exec.Cmd and waits
+├── child.go         -- runs inside the new namespaces
+├── pivot.go         -- pivot_root implementation
+├── caps.go          -- capability dropping
+├── seccomp.go       -- seccomp filter
+├── cgroup.go        -- cgroups v2 setup
+└── network.go       -- veth pair and bridge setup
+
+
+
+# go.mod
+module miniruntime
+
+go 1.21
+
+require (
+    github.com/vishvananda/netlink v1.2.1
+    golang.org/x/sys v0.18.0
+)
+
+
+main.go - Entry Point
+
+
+package main
+
+import (
+    "fmt"
+    "os"
+)
+
+func main() {
+    // When re-exec'd as the container init, the first argument is "init".
+    if len(os.Args) > 1 && os.Args[1] == "init" {
+        if err := childMain(); err != nil {
+            fmt.Fprintf(os.Stderr, "container init: %v\n", err)
+            os.Exit(1)
+        }
+        return
+    }
+
+    // Normal invocation: miniruntime <rootfs> <hostname> <cmd> [args...]
+    if len(os.Args) < 4 {
+        fmt.Fprintf(os.Stderr,
+            "usage: %s <rootfs> <hostname> <cmd> [args...]\n",
+            os.Args[0])
+        os.Exit(1)
+    }
+
+    rootfs   := os.Args[1]
+    hostname := os.Args[2]
+    cmd      := os.Args[3:]
+
+    if err := parentMain(rootfs, hostname, cmd); err != nil {
+        fmt.Fprintf(os.Stderr, "runtime error: %v\n", err)
+        os.Exit(1)
+    }
+}
+
+
+parent.go - Spawning the Container
+
+
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "os/exec"
+    "syscall"
+)
+
+// Config is passed from parent to child via the environment.
+type Config struct {
+    Rootfs   string   `json:"rootfs"`
+    Hostname string   `json:"hostname"`
+    Cmd      []string `json:"cmd"`
+}
+
+func parentMain(rootfs, hostname string, cmd []string) error {
+    cfg := Config{Rootfs: rootfs, Hostname: hostname, Cmd: cmd}
+    cfgJSON, err := json.Marshal(cfg)
+    if err != nil {
+        return fmt.Errorf("marshal config: %w", err)
+    }
+
+    // The synchronisation pipe: parent signals child once cgroups are ready.
+    readPipe, writePipe, err := os.Pipe()
+    if err != nil {
+        return fmt.Errorf("pipe: %w", err)
+    }
+
+    // Re-exec ourselves as the container init.
+    child := exec.Command("/proc/self/exe", "init")
+    child.Stdin  = os.Stdin
+    child.Stdout = os.Stdout
+    child.Stderr = os.Stderr
+
+    // Pass the sync pipe as fd 3 in the child.
+    child.ExtraFiles = []*os.File{readPipe}
+
+    child.Env = append(os.Environ(),
+        "MINIRUNTIME_CONFIG="+string(cfgJSON))
+
+    child.SysProcAttr = &syscall.SysProcAttr{
+        Cloneflags: syscall.CLONE_NEWPID |
+                    syscall.CLONE_NEWNS  |
+                    syscall.CLONE_NEWUTS |
+                    syscall.CLONE_NEWNET |
+                    syscall.CLONE_NEWIPC |
+                    syscall.CLONE_NEWUSER,
+        UidMappings: []syscall.SysProcIDMap{
+            {ContainerID: 0, HostID: os.Getuid(), Size: 1},
+        },
+        GidMappings: []syscall.SysProcIDMap{
+            {ContainerID: 0, HostID: os.Getgid(), Size: 1},
+        },
+        GidMappingsEnableSetgroups: false,
+    }
+
+    if err := child.Start(); err != nil {
+        return fmt.Errorf("start child: %w", err)
+    }
+    readPipe.Close()
+
+    // Set up cgroups v2 for the child (see cgroup.go in Part 2).
+    if err := setupCgroupV2(child.Process.Pid); err != nil {
+        child.Process.Kill()
+        return fmt.Errorf("cgroup setup: %w", err)
+    }
+
+    // Set up the veth pair for the container (see network.go in Part 2).
+    if err := setupNetwork(child.Process.Pid); err != nil {
+        child.Process.Kill()
+        return fmt.Errorf("network setup: %w", err)
+    }
+
+    // Signal child: cgroups and networking are ready.
+    writePipe.Write([]byte("go"))
+    writePipe.Close()
+
+    return child.Wait()
+}
+
+
+child.go - Running Inside the Namespaces
+
+
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "syscall"
+)
+
+func childMain() error {
+    // Read config from environment.
+    cfgJSON := os.Getenv("MINIRUNTIME_CONFIG")
+    var cfg Config
+    if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
+        return fmt.Errorf("unmarshal config: %w", err)
+    }
+
+    // fd 3 is the sync pipe from the parent.
+    syncPipe := os.NewFile(3, "sync")
+
+    // --- Step 1: Set up the root filesystem ---
+    if err := setupRootfs(cfg.Rootfs); err != nil {
+        return fmt.Errorf("rootfs: %w", err)
+    }
+
+    // --- Step 2: Set the hostname ---
+    if err := syscall.Sethostname([]byte(cfg.Hostname)); err != nil {
+        return fmt.Errorf("sethostname: %w", err)
+    }
+
+    // --- Step 3: Wait for parent to finish cgroup and network setup ---
+    buf := make([]byte, 2)
+    syncPipe.Read(buf)
+    syncPipe.Close()
+
+    // --- Step 4: Configure the container-side network interface ---
+    if err := setupContainerNetwork(); err != nil {
+        return fmt.Errorf("container network: %w", err)
+    }
+
+    // --- Step 5: Drop capabilities ---
+    if err := dropCapabilities(); err != nil {
+        return fmt.Errorf("drop capabilities: %w", err)
+    }
+
+    // --- Step 6: Install seccomp filter ---
+    if err := installSeccompFilter(); err != nil {
+        return fmt.Errorf("seccomp: %w", err)
+    }
+
+    // --- Step 7: Exec the target command ---
+    path, err := lookupInRootfs(cfg.Cmd[0])
+    if err != nil {
+        return fmt.Errorf("lookup %q: %w", cfg.Cmd[0], err)
+    }
+
+    return syscall.Exec(path, cfg.Cmd, os.Environ())
+}
+
+// lookupInRootfs resolves an absolute or PATH-relative command.
+// After pivot_root the path is already resolved relative to the new root,
+// so we just pass it through for absolute paths.
+func lookupInRootfs(name string) (string, error) {
+    if len(name) > 0 && name[0] == '/' {
+        return name, nil
+    }
+    // Simple PATH search within the container.
+    paths := []string{"/bin", "/usr/bin", "/sbin", "/usr/sbin"}
+    for _, dir := range paths {
+        candidate := dir + "/" + name
+        if _, err := os.Stat(candidate); err == nil {
+            return candidate, nil
+        }
+    }
+    return "", fmt.Errorf("not found in container PATH")
+}
+
+
+pivot.go - Switching the Root Filesystem
+
+
+pivot_root requires a few preconditions that are easy to forget:
+
+
+
+The new root and the put-old directory must be on different filesystems, OR the new root must be a bind-mount of itself (so it has its own mount point).
+The current root must be a mount point.
+The put-old directory must be inside the new root.
+
+
+
+package main
+
+import (
+    "fmt"
+    "os"
+    "path/filepath"
+    "syscall"
+)
+
+// setupRootfs performs pivot_root into rootfs and mounts the required
+// virtual filesystems inside it.
+func setupRootfs(rootfs string) error {
+    // Ensure rootfs is an absolute path.
+    rootfs, err := filepath.Abs(rootfs)
+    if err != nil {
+        return fmt.Errorf("abs path: %w", err)
+    }
+
+    // Bind-mount the rootfs onto itself so it becomes a distinct mount point.
+    // pivot_root requires newroot and put_old to be on different mounts.
+    if err := syscall.Mount(rootfs, rootfs, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+        return fmt.Errorf("bind mount rootfs: %w", err)
+    }
+
+    // Make the mount private so namespace changes don't propagate to host.
+    if err := syscall.Mount("", rootfs, "", syscall.MS_PRIVATE|syscall.MS_REC, ""); err != nil {
+        return fmt.Errorf("MS_PRIVATE rootfs: %w", err)
+    }
+
+    // Create a temporary directory inside rootfs to park the old root.
+    putOld := filepath.Join(rootfs, ".old_root")
+    if err := os.MkdirAll(putOld, 0700); err != nil {
+        return fmt.Errorf("mkdir put_old: %w", err)
+    }
+
+    // pivot_root: newroot=rootfs, put_old=rootfs/.old_root
+    if err := syscall.PivotRoot(rootfs, putOld); err != nil {
+        return fmt.Errorf("pivot_root: %w", err)
+    }
+
+    // After pivot_root our cwd may be the old root.
+    if err := os.Chdir("/"); err != nil {
+        return fmt.Errorf("chdir /: %w", err)
+    }
+
+    // Unmount the old root (now at /.old_root) and remove the directory.
+    if err := syscall.Unmount("/.old_root", syscall.MNT_DETACH); err != nil {
+        return fmt.Errorf("unmount old root: %w", err)
+    }
+    if err := os.Remove("/.old_root"); err != nil {
+        return fmt.Errorf("remove .old_root: %w", err)
+    }
+
+    // Mount virtual filesystems.
+    return mountVirtualFS()
+}
+
+func mountVirtualFS() error {
+    mounts := []struct {
+        source string
+        target string
+        fstype string
+        flags  uintptr
+        data   string
+    }{
+        // proc: process information
+        {"proc", "/proc", "proc",
+            syscall.MS_NOSUID | syscall.MS_NOEXEC | syscall.MS_NODEV, ""},
+        // tmpfs for /dev, then create minimal device nodes
+        {"tmpfs", "/dev", "tmpfs",
+            syscall.MS_NOSUID | syscall.MS_STRICTATIME,
+            "mode=755,size=65536k"},
+        // devpts: terminal emulation
+        {"devpts", "/dev/pts", "devpts",
+            syscall.MS_NOSUID | syscall.MS_NOEXEC,
+            "newinstance,ptmxmode=0666,mode=0620"},
+        // sysfs: kernel subsystem information (read-only)
+        {"sysfs", "/sys", "sysfs",
+            syscall.MS_NOSUID | syscall.MS_NOEXEC | syscall.MS_NODEV | syscall.MS_RDONLY, ""},
+        // tmpfs for /tmp
+        {"tmpfs", "/tmp", "tmpfs",
+            syscall.MS_NOSUID | syscall.MS_NODEV, ""},
+    }
+
+    for _, m := range mounts {
+        // Ensure the target directory exists.
+        if err := os.MkdirAll(m.target, 0755); err != nil {
+            return fmt.Errorf("mkdirall %s: %w", m.target, err)
+        }
+        if err := syscall.Mount(m.source, m.target, m.fstype, m.flags, m.data); err != nil {
+            return fmt.Errorf("mount %s: %w", m.target, err)
+        }
+    }
+
+    // Create the minimal /dev entries expected by most programs.
+    return createDevNodes()
+}
+
+func createDevNodes() error {
+    nodes := []struct {
+        path  string
+        mode  uint32
+        major uint32
+        minor uint32
+    }{
+        {"/dev/null",    syscall.S_IFCHR | 0666, 1, 3},
+        {"/dev/zero",    syscall.S_IFCHR | 0666, 1, 5},
+        {"/dev/random",  syscall.S_IFCHR | 0666, 1, 8},
+        {"/dev/urandom", syscall.S_IFCHR | 0666, 1, 9},
+        {"/dev/tty",     syscall.S_IFCHR | 0666, 5, 0},
+    }
+
+    for _, n := range nodes {
+        dev := syscall.Mkdev(n.major, n.minor)
+        if err := syscall.Mknod(n.path, n.mode, int(dev)); err != nil {
+            if !os.IsExist(err) {
+                return fmt.Errorf("mknod %s: %w", n.path, err)
+            }
+        }
+    }
+
+    // /dev/stdin, /dev/stdout, /dev/stderr as symlinks.
+    links := [][2]string{
+        {"/proc/self/fd/0", "/dev/stdin"},
+        {"/proc/self/fd/1", "/dev/stdout"},
+        {"/proc/self/fd/2", "/dev/stderr"},
+        {"/proc/self/fd",   "/dev/fd"},
+    }
+    for _, l := range links {
+        os.Symlink(l[0], l[1]) // ignore error if already exists
+    }
+
+    return nil
+}
+
+
+Preparing a Test Root Filesystem
+
+
+To test the runtime you need a minimal root filesystem. The simplest approach
+is to export a Docker image:
+
+
+
+# Export Alpine Linux as a root filesystem
+mkdir -p /tmp/alpine-rootfs
+docker export $(docker create alpine) | tar -xC /tmp/alpine-rootfs
+
+ls /tmp/alpine-rootfs/
+# bin  dev  etc  home  lib  media  mnt  opt  proc  root  run  sbin  srv  sys  tmp  usr  var
+
+
+
+Alternatively, debootstrap creates a minimal Debian rootfs:
+
+
+
+sudo debootstrap --variant=minbase bookworm /tmp/debian-rootfs
+
+
+Running the Runtime (So Far)
+
+
+# Build
+go build -o miniruntime ./...
+
+# Run a shell inside Alpine (requires the veth/cgroup code from Part 2)
+sudo ./miniruntime /tmp/alpine-rootfs mycontainer /bin/sh
+
+# Inside the container:
+hostname
+# mycontainer
+
+ps aux
+# PID   USER     TIME  COMMAND
+#   1   root      0:00 /bin/sh
+
+ip link
+# 1: lo: <LOOPBACK,UP,LOWER_UP> ...
+# 2: eth0@if5: <BROADCAST,MULTICAST,UP,LOWER_UP> ...
+
+cat /etc/hostname
+# mycontainer (if your rootfs has one; may not)
+
+
+Summary
+
+
+The mini container runtime uses the re-exec pattern to cleanly set up namespaces
+before the Go runtime starts in the child process. The parent process handles
+external setup (cgroups, networking) while the child handles internal setup
+(rootfs, virtual filesystems, hostname, capabilities, seccomp). The
+pivot_root implementation bind-mounts the rootfs, calls PivotRoot, and
+unmounts the old root with MNT_DETACH, leaving the container isolated
+in its own filesystem tree.
+
+
+
+Part 2 adds the remaining pieces: the veth pair for networking, cgroups v2
+resource limits, capability dropping, the seccomp filter, and a full end-to-end
+demonstration running a real process in the container.
+
+
+Further Reading
+
+
+pivot_root(2) - Linux man page
+clone(2) - Linux man page
+runc libcontainer source - the production reference (GitHub)
+os/exec SysProcAttr - Go documentation
+syscall.SysProcAttr - Go documentation
+
+
+See Also
+
+
+PID Namespaces
+pivot_root and Rootfs
+Network Namespaces
+Building a Mini Container Runtime in Go - Part 2
+The OCI Runtime Spec & runc
+

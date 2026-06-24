@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 6: Machinedrum EFM — FM Drum Synthesis
-2026-01-01
+2026-06-01
 
 
 The EFM machines apply FM (frequency modulation) synthesis to each standard drum voice.

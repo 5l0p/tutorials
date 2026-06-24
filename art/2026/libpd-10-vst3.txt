@@ -1,0 +1,281 @@
+libpd - Part 10: libpd Inside a VST3 Plugin
+2026-06-01
+
+A Pd patch makes an excellent DSP engine for a VST3 plugin: the patch defines the synthesis algorithm, while the plugin wrapper handles the VST3 protocol. When the user loads the plugin in a DAW, the patch runs inside the plugin process. Automation and knob tweaks map to libpd_float calls. This article shows how to wire libpd into the VST3 SDK's IAudioProcessor interface.
+
+What You Will Learn
+
+
+How to configure a CMake project that links both the VST3 SDK and libpd
+How to structure the plugin class: one libpd instance per plugin instance
+How to implement IAudioProcessor::process() to call libpd_process_float with VST3 buffers
+How to map VST3 parameter changes to libpd_float calls inside the process loop
+Multi-instance thread safety: calling libpd_set_instance at the start of each method
+
+
+VST3 SDK Setup
+
+Download the VST3 SDK from Steinberg and add it to your project alongside libpd. A minimal CMakeLists.txt:
+
+
+cmake_minimum_required(VERSION 3.21)
+project(MyPdPlugin)
+
+set(LIBPD_EXTRA ON CACHE BOOL "" FORCE)
+set(LIBPD_SHARED OFF CACHE BOOL "" FORCE)
+add_subdirectory(deps/libpd)
+
+# VST3 SDK
+set(SMTG_ADD_VSTGUI OFF)  # no GUI for now
+add_subdirectory(deps/vst3sdk)
+
+smtg_add_vst3plugin(MyPdPlugin
+    src/factory.cpp
+    src/processor.cpp
+    src/controller.cpp
+)
+
+target_link_libraries(MyPdPlugin
+    PRIVATE
+    sdk
+    libpdstatic
+    m pthread dl
+)
+
+target_include_directories(MyPdPlugin PRIVATE
+    deps/libpd/libpd_wrapper
+    deps/libpd/pure-data/src
+)
+
+
+The Processor Class
+
+Your processor implements Steinberg::Vst::AudioEffect, which provides both IAudioProcessor and IComponent:
+
+
+/* processor.h */
+#pragma once
+#include "public.sdk/source/vst/vstaudioeffect.h"
+#include <z_libpd.h>
+
+using namespace Steinberg;
+using namespace Steinberg::Vst;
+
+class PdProcessor : public AudioEffect {
+public:
+    PdProcessor();
+    ~PdProcessor();
+
+    static FUnknown *createInstance(void *) {
+        return (IAudioProcessor *)new PdProcessor();
+    }
+
+    /* IComponent */
+    tresult PLUGIN_API initialize(FUnknown *context) SMTG_OVERRIDE;
+    tresult PLUGIN_API terminate()                   SMTG_OVERRIDE;
+    tresult PLUGIN_API setActive(TBool state)        SMTG_OVERRIDE;
+
+    /* IAudioProcessor */
+    tresult PLUGIN_API setupProcessing(ProcessSetup &setup) SMTG_OVERRIDE;
+    tresult PLUGIN_API process(ProcessData &data)           SMTG_OVERRIDE;
+    tresult PLUGIN_API canProcessSampleSize(int32 size)     SMTG_OVERRIDE;
+
+private:
+    void   *m_patch   = nullptr;
+    int     m_ticks   = 0;
+    float  *m_inBuf   = nullptr;
+    float  *m_outBuf  = nullptr;
+    int     m_blockSize = 512;
+};
+
+
+initialize and setupProcessing
+
+
+tresult PLUGIN_API PdProcessor::initialize(FUnknown *context) {
+    AudioEffect::initialize(context);
+
+    /* Declare one stereo output bus */
+    addAudioOutput(STR16("Stereo Out"), SpeakerArr::kStereo);
+
+    /* Declare two parameters (mapped by ID) */
+    /* Parameters are declared in the Controller, not here */
+
+    libpd_init();
+    return kResultOk;
+}
+
+tresult PLUGIN_API PdProcessor::setupProcessing(ProcessSetup &setup) {
+    int sr    = (int)setup.sampleRate;
+    m_blockSize = setup.maxSamplesPerBlock;
+    m_ticks   = m_blockSize / 64;
+    if (m_blockSize % 64 != 0) m_ticks++; /* round up - handle partial */
+
+    libpd_init_audio(0, 2, sr);
+
+    /* Allocate interleaved buffers */
+    delete[] m_inBuf;
+    delete[] m_outBuf;
+    m_inBuf  = new float[m_blockSize * 2]();
+    m_outBuf = new float[m_blockSize * 2]();
+
+    /* Enable DSP */
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    /* Load (or reload) the patch */
+    if (m_patch) libpd_closefile(m_patch);
+    m_patch = libpd_openfile("plugin.pd", "patches");
+
+    return kResultOk;
+}
+
+
+The process() Method
+
+This is called by the DAW for every audio block. Parameter changes arrive through IParameterChanges; you map them to libpd_float calls before processing audio:
+
+
+tresult PLUGIN_API PdProcessor::process(ProcessData &data) {
+    /* 1. Handle parameter changes */
+    if (data.inputParameterChanges) {
+        int n = data.inputParameterChanges->getParameterCount();
+        for (int i = 0; i < n; i++) {
+            IParamValueQueue *q =
+                data.inputParameterChanges->getParameterData(i);
+            if (!q) continue;
+
+            ParamID  pid = q->getParameterId();
+            int      cnt = q->getPointCount();
+            int32    sampleOffset;
+            ParamValue normVal;
+
+            if (q->getPoint(cnt - 1, sampleOffset, normVal) == kResultOk) {
+                /* Map normalized [0,1] to Pd-ready value */
+                switch (pid) {
+                case 0: /* freq: 20 Hz - 20000 Hz, log */
+                    libpd_float("freq",
+                        20.0f * powf(1000.0f, (float)normVal));
+                    break;
+                case 1: /* gain: 0 - 1 */
+                    libpd_float("gain", (float)normVal);
+                    break;
+                }
+            }
+        }
+    }
+
+    /* 2. Prepare interleaved output buffer */
+    int frames = data.numSamples;
+    if (frames == 0) return kResultOk;
+
+    /* VST3 uses separate L/R buffers; libpd wants interleaved */
+    float *L = data.outputs[0].channelBuffers32[0];
+    float *R = data.outputs[0].channelBuffers32[1];
+
+    /* Process with libpd */
+    int ticks = frames / 64;
+    if (ticks < 1) ticks = 1;
+    libpd_process_float(ticks, nullptr, m_outBuf);
+
+    /* Deinterleave to VST3 buffers */
+    for (int i = 0; i < frames; i++) {
+        L[i] = m_outBuf[i * 2];
+        R[i] = m_outBuf[i * 2 + 1];
+    }
+
+    return kResultOk;
+}
+
+
+canProcessSampleSize
+
+
+tresult PLUGIN_API PdProcessor::canProcessSampleSize(int32 size) {
+    return (size == kSample32) ? kResultOk : kResultFalse;
+}
+
+
+libpd uses 32-bit float internally, so only 32-bit processing is supported unless you built libpd with PD_FLOATSIZE=64.
+
+setActive
+
+
+tresult PLUGIN_API PdProcessor::setActive(TBool state) {
+    libpd_start_message(1);
+    libpd_add_float(state ? 1.0f : 0.0f);
+    libpd_finish_message("pd", "dsp");
+    return AudioEffect::setActive(state);
+}
+
+
+The Controller Class
+
+The controller declares parameters to the host. Parameters live here, not in the processor:
+
+
+tresult PLUGIN_API PdController::initialize(FUnknown *context) {
+    EditController::initialize(context);
+
+    RangeParameter *freqParam = new RangeParameter(
+        STR16("Frequency"), 0 /* paramID */,
+        STR16("Hz"), 20.0, 20000.0, 440.0);
+    parameters.addParameter(freqParam);
+
+    RangeParameter *gainParam = new RangeParameter(
+        STR16("Gain"), 1 /* paramID */,
+        STR16(""), 0.0, 1.0, 0.8);
+    parameters.addParameter(gainParam);
+
+    return kResultOk;
+}
+
+
+Multiple Instances and Thread Safety
+
+A DAW may instantiate your plugin multiple times. Each instance needs its own t_pdinstance:
+
+
+PdProcessor::PdProcessor() {
+    m_pdInst = libpd_new_instance();
+    libpd_set_instance(m_pdInst);
+    /* ... init ... */
+}
+
+PdProcessor::~PdProcessor() {
+    libpd_set_instance(m_pdInst);
+    if (m_patch) libpd_closefile(m_patch);
+    libpd_free_instance(m_pdInst);
+}
+
+
+Always call libpd_set_instance at the top of each method that touches libpd, since the DAW may run multiple plugin instances on multiple threads.
+
+Summary
+
+
+Each VST3 plugin instance holds its own libpd_instance_t. In
+initialize(), create the instance, call libpd_init_audio with the
+host's sample rate, and open the patch. In process(), call
+libpd_set_instance first, then inject queued parameter changes as float
+messages, then call libpd_process_float with the VST3 input/output buffers.
+In terminate(), close the patch and free the instance. The patch defines the
+DSP; the C++ wrapper handles only the VST3 protocol.
+
+
+Further Reading
+
+
+Steinberg VST3 SDK documentation
+libpd GitHub repository
+VST3 parameter automation
+
+
+See Also
+
+
+Initialising libpd & Loading a Patch
+The Audio Render Loop
+MIDI with libpd
+

@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 5: Harmony Fundamentals
-2026-01-15
+2026-06-01
 
 
 A melody generator from Parts 3 and 4 outputs notes one at a time. Add simultaneous

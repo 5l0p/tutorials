@@ -72,11 +72,44 @@
 <h1>~5l0p/tut</h1>
 <!-- header end -->
         <a href="https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
-        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i>
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="lua.htm">lua</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="scripting.htm">scripting</a></i>
 <h2>Tutorials</h2>
 <h2>scripting-</h2>
-<p><b><a href="art/2026/lua-01-why-lua.htm">Lua - Part 1: Why Lua? The Embedding Case</a></b> - 2026-06-09<br>
+<p><b><a href="art/2026/lua-04-calling-c-from-lua.htm">Lua - Part 4: Calling C from Lua</a></b> - 2026-06-01<br>
+Expose C functions to Lua scripts using lua_CFunction, build a module table with luaL_Reg, and signal errors with luaL_error - complete C math module example.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
+<p><b><a href="art/2026/lua-09-sandboxing.htm">Lua - Part 9: Sandboxing Lua</a></b> - 2026-06-01<br>
+Restrict Lua to a safe subset: selectively open standard libraries, remove dangerous globals, use _ENV as a sandbox, add a CPU instruction limit via debug hook.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
+<p><b><a href="art/2026/lua-01-why-lua.htm">Lua - Part 1: Why Lua? The Embedding Case</a></b> - 2026-06-01<br>
 Lua is the dominant embeddable language because it was designed for exactly that purpose - small, fast, and written in portable ANSI C.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
+<p><b><a href="art/2026/lua-10-luajit.htm">Lua - Part 10: LuaJIT</a></b> - 2026-06-01<br>
+LuaJIT's tracing JIT, the FFI for zero-overhead C calls, struct passing, ffi.new, and the practical trade-offs of LuaJIT versus standard Lua 5.4.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
+<p><b><a href="art/2026/lua-02-stack-model.htm">Lua - Part 2: The Lua C API - The Stack Model</a></b> - 2026-06-01<br>
+The virtual stack is the only communication channel between C and Lua - understanding indices, type checks, and stack discipline is the foundation of every embedding.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
+<p><b><a href="art/2026/lua-07-userdata.htm">Lua - Part 7: Userdata - Wrapping C Structs as Lua Objects</a></b> - 2026-06-01<br>
+Use lua_newuserdata and metatables to wrap a C BiquadFilter struct as a Lua object with methods, automatic __gc cleanup, and type-safe casting via luaL_checkudata.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
+<p><b><a href="art/2026/lua-12-lua-of.htm">Lua - Part 12: Lua in openFrameworks</a></b> - 2026-06-01<br>
+Add ofxLua to an openFrameworks project, drive setup/update/draw from Lua, live-reload on file change, bind your own C++ class, and write a complete audio-visual sketch in Lua.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a>, <a href="openframeworks.htm">openframeworks</a></i></p>
+<p><b><a href="art/2026/lua-08-coroutines.htm">Lua - Part 8: Coroutines and C</a></b> - 2026-06-01<br>
+Lua coroutines driven from C: lua_resume, yield with data in both directions, a scripted sequence machine, and a cooperative task scheduler driven from a C game loop.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
+<p><b><a href="art/2026/lua-03-running-lua.htm">Lua - Part 3: Running Lua from C</a></b> - 2026-06-01<br>
+Load Lua files and strings, call named Lua functions, handle errors through protected calls, and read multiple return values - the complete workflow for driving Lua from C.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
+<p><b><a href="art/2026/lua-06-module-tables.htm">Lua - Part 6: Module Tables and Hot-Reload</a></b> - 2026-06-01<br>
+Declare application components as Lua tables, build a C dispatcher that reads a modules={} table and constructs real objects by type, and reload at runtime without restarting.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
+<p><b><a href="art/2026/lua-11-lua-audio.htm">Lua - Part 11: Scripting a DSP Pipeline from Lua</a></b> - 2026-06-01<br>
+Declare an audio node graph as a Lua DSL, wire real biquad and oscillator C structs from a C loader, and hot-reload the pipeline at runtime without stopping audio.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a>, <a href="dsp.htm">dsp</a></i></p>
+<p><b><a href="art/2026/lua-05-tables-config.htm">Lua - Part 5: Tables as Configuration</a></b> - 2026-06-01<br>
+Read top-level and nested Lua tables from C - lua_getglobal, lua_getfield, lua_next iteration, required-field validation, and a complete audio config loader.<br>
 <i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a></i></p>
 
 <!-- footer begin -->

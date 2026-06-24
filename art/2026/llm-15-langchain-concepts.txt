@@ -1,5 +1,5 @@
 LLM - Part 15: LangChain & LangGraph Concepts
-2026-06-24
+2026-06-01
 
 
 LangChain (Python/JavaScript) is the most widely deployed LLM application framework.

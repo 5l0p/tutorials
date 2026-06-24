@@ -1,0 +1,359 @@
+DSP - Part 17: Granular Synthesis
+2026-06-01
+
+
+Granular synthesis cuts audio into tiny fragments — grains of 10–200 ms — and
+reassembles them with independent control over timing, pitch, density, and randomness.
+The technique sits at the boundary of synthesis and processing: feed it a static sample
+and it produces evolving textures; feed it live audio and it stretches or pitches in
+real time without the artefacts of the phase vocoder. It sounds like clouds, like
+stuttering tape, like the space between notes. This article builds a complete granular
+engine in C from first principles.
+
+
+What You Will Learn
+
+
+The grain model: what parameters define one grain and how the Hann window shapes it.
+How scatter and density parameters control the texture's character.
+How per-grain pitch randomisation adds life without losing centre pitch.
+How to implement a fixed-pool grain scheduler in C.
+How to use the granular engine for time-stretching and pitch-shifting.
+
+
+The Grain Model
+
+
+A grain is a short burst of audio with a smooth amplitude envelope. Five parameters
+define one grain:
+
+
+
+start: the sample position in the source buffer where this grain begins reading.
+duration: the grain length in samples (typically 480–9600 at 48 kHz = 10–200 ms).
+rate: playback rate through the source; 1.0 = original pitch, 2.0 = octave up.
+amplitude: peak volume of this grain.
+pan: stereo position [-1, 1], converted to per-channel gains.
+
+
+
+The grain reads from the source buffer at position start + phase * rate for
+duration output samples, then dies. The amplitude envelope is a Hann
+window — a raised cosine that fades in and out, eliminating clicks at grain edges.
+
+
+
+#include <math.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define SAMPLE_RATE 48000
+#define MAX_GRAINS  64
+
+typedef struct {
+    const float *src;      /* source buffer (not owned) */
+    int          src_len;
+    double       phase;    /* output sample offset, in source-sample units */
+    double       start;    /* start frame in source buffer */
+    double       rate;     /* source advance per output sample */
+    int          duration; /* grain length in output samples */
+    int          pos;      /* current output sample counter */
+    float        amplitude;
+    float        pan_l;
+    float        pan_r;
+    int          active;
+} Grain;
+
+/* Linear interpolation read from source buffer */
+static float src_read(const float *src, int len, double pos) {
+    int i0 = (int)pos;
+    if (i0 < 0 || i0 >= len) return 0.0f;
+    int i1 = i0 + 1;
+    if (i1 >= len) return src[i0];
+    float t = (float)(pos - (double)i0);
+    return src[i0] + t * (src[i1] - src[i0]);
+}
+
+/* Render one output sample into *L, *R.
+   Returns 0 when the grain has completed. */
+int grain_next(Grain *g, float *L, float *R) {
+    if (!g->active) { *L = *R = 0.0f; return 0; }
+
+    /* Hann window over the grain's duration */
+    float t = (g->duration > 1)
+              ? (float)g->pos / (float)(g->duration - 1)
+              : 0.5f;
+    float w   = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * t));
+    float s   = src_read(g->src, g->src_len, g->start + g->phase);
+    float out = g->amplitude * w * s;
+
+    *L = out * g->pan_l;
+    *R = out * g->pan_r;
+
+    g->phase += g->rate;
+    g->pos++;
+    if (g->pos >= g->duration) {
+        g->active = 0;
+        return 0;
+    }
+    return 1;
+}
+
+
+Grain Scheduler: Density, Scatter, and Randomisation
+
+
+The scheduler decides when to spawn a new grain and where to read from.
+Two high-level parameters govern the texture:
+
+
+
+density: average number of simultaneously active grains. Higher density fills
+    more of the output with overlapping grains, giving a fuller, thicker texture.
+scatter: random spread around the current source read position, in seconds.
+    Zero scatter produces a coherent frozen sound; high scatter produces diffuse clouds.
+
+
+
+The scheduler maintains an inter-onset time: how many output samples pass between
+spawning successive grains. This is approximately duration / density.
+Randomising the inter-onset time slightly (±20%) prevents rhythmic artefacts from
+perfectly periodic grain placement.
+
+
+
+/* Simple pseudo-random number generator (LCG) */
+typedef struct { uint32_t state; } RNG;
+static void rng_init(RNG *r, uint32_t seed) { r->state = seed; }
+static float rng_f32(RNG *r) {
+    r->state = r->state * 1664525u + 1013904223u;
+    return (float)(r->state >> 8) / (float)(1u << 24);   /* [0, 1) */
+}
+static float rng_bipolar(RNG *r) { return rng_f32(r) * 2.0f - 1.0f; }
+
+typedef struct {
+    Grain  grains[MAX_GRAINS];
+    RNG    rng;
+
+    /* Source */
+    const float *src;
+    int          src_len;
+
+    /* Scheduler state */
+    double read_pos;         /* current centre read position in source (samples) */
+    int    countdown;        /* samples until next grain spawn */
+
+    /* Parameters */
+    int    grain_dur_min;    /* minimum grain duration (samples) */
+    int    grain_dur_max;    /* maximum grain duration (samples) */
+    float  density;          /* target simultaneous grains */
+    float  scatter;          /* read position spread (samples) */
+    float  pitch_rand;       /* pitch randomisation: 0=none, 0.1=+/-10% rate */
+    float  base_rate;        /* centre playback rate (1.0 = original pitch) */
+    float  amplitude;        /* per-grain amplitude before window */
+} GranularEngine;
+
+void gran_init(GranularEngine *g, const float *src, int src_len, uint32_t seed) {
+    memset(g, 0, sizeof(*g));
+    g->src         = src;
+    g->src_len     = src_len;
+    rng_init(&g->rng, seed);
+
+    g->grain_dur_min = (int)(0.020f * SAMPLE_RATE);   /* 20 ms */
+    g->grain_dur_max = (int)(0.080f * SAMPLE_RATE);   /* 80 ms */
+    g->density       = 4.0f;
+    g->scatter       = 0.05f * SAMPLE_RATE;           /* 50 ms scatter */
+    g->pitch_rand    = 0.0f;
+    g->base_rate     = 1.0f;
+    g->amplitude     = 0.5f;
+    g->countdown     = 0;
+}
+
+/* Find an inactive grain slot; returns NULL if pool is full */
+static Grain *alloc_grain(GranularEngine *g) {
+    for (int i = 0; i < MAX_GRAINS; i++)
+        if (!g->grains[i].active) return &g->grains[i];
+    return NULL;
+}
+
+/* Spawn one grain at the current read_pos */
+static void spawn_grain(GranularEngine *g) {
+    Grain *gr = alloc_grain(g);
+    if (!gr) return;   /* pool exhausted; skip this grain */
+
+    int dur = g->grain_dur_min +
+              (int)(rng_f32(&g->rng) * (g->grain_dur_max - g->grain_dur_min));
+
+    double start = g->read_pos + rng_bipolar(&g->rng) * g->scatter;
+    /* Clamp start to valid source range */
+    if (start < 0)               start = 0;
+    if (start >= g->src_len - 1) start = g->src_len - 2;
+
+    float rate = g->base_rate * (1.0f + g->pitch_rand * rng_bipolar(&g->rng));
+
+    /* Equal-power panning */
+    float pan   = rng_bipolar(&g->rng) * 0.5f;   /* gentle random pan */
+    float angle = (pan + 1.0f) * (float)M_PI / 4.0f;
+
+    gr->src       = g->src;
+    gr->src_len   = g->src_len;
+    gr->start     = start;
+    gr->phase     = 0.0;
+    gr->rate      = (double)rate;
+    gr->duration  = dur;
+    gr->pos       = 0;
+    gr->amplitude = g->amplitude;
+    gr->pan_l     = cosf(angle);
+    gr->pan_r     = sinf(angle);
+    gr->active    = 1;
+}
+
+
+Rendering the Engine
+
+
+The render loop advances the source read position by base_rate samples per
+output sample (for time-stretch this is decoupled — see below), counts down to the next
+grain spawn, renders all active grains, and sums their outputs.
+
+
+
+/* Render 'frames' stereo pairs into out_l[] and out_r[].
+   advance_src: how many source samples to advance per output sample.
+     - For normal playback: 1.0
+     - For time-stretch by factor S: S (read faster/slower through source)
+     - For time-freeze (drone): 0.0 */
+void gran_render(GranularEngine *g,
+                 float *out_l, float *out_r, int frames,
+                 double advance_src) {
+    for (int i = 0; i < frames; i++) {
+        /* Spawn grains on schedule */
+        if (g->countdown <= 0) {
+            spawn_grain(g);
+
+            /* Inter-onset = average_duration / density, +/-20% jitter */
+            float avg_dur = 0.5f * (g->grain_dur_min + g->grain_dur_max);
+            float interval = avg_dur / g->density;
+            g->countdown = (int)(interval * (0.8f + 0.4f * rng_f32(&g->rng)));
+            if (g->countdown < 1) g->countdown = 1;
+        }
+        g->countdown--;
+
+        /* Advance read position through source */
+        g->read_pos += advance_src;
+        if (g->read_pos >= g->src_len) g->read_pos = 0.0;
+        if (g->read_pos < 0)           g->read_pos = 0.0;
+
+        /* Render all active grains and sum */
+        float L = 0.0f, R = 0.0f;
+        for (int j = 0; j < MAX_GRAINS; j++) {
+            if (g->grains[j].active) {
+                float gl, gr;
+                grain_next(&g->grains[j], &gl, &gr);
+                L += gl;
+                R += gr;
+            }
+        }
+        out_l[i] = L;
+        out_r[i] = R;
+    }
+}
+
+
+Time-Stretch and Pitch-Shift
+
+
+The granular engine decouples source advance from playback rate, giving independent
+control of time and pitch — something the FFT phase vocoder can also do but with
+different artefacts.
+
+
+
+Time-stretch (change duration without changing pitch): set
+base_rate = 1.0 and vary advance_src:
+
+
+
+advance_src = 0.5: source advances at half speed. Output is twice as
+    long as source — 2x time-stretch. Pitch unchanged.
+advance_src = 2.0: source advances at double speed. Output is half as
+    long — 0.5x time-compress.
+advance_src = 0.0: source frozen at current position. Infinite hold /
+    texture drone.
+
+
+
+Pitch-shift (change pitch without changing duration): set
+advance_src = 1.0 and set base_rate to the desired pitch ratio:
+
+
+
+base_rate = 2.0: each grain reads at double speed through source =
+    octave up.
+base_rate = 0.5: octave down.
+
+
+
+Both simultaneously: set advance_src for time ratio and
+base_rate for pitch ratio independently. The two controls interact at very
+extreme values (e.g., 4x time-stretch + 2x pitch-up), but for ±1 octave and ±3x time
+they are effectively independent.
+
+
+Tuning the Engine
+
+
+Gotcha: with high density (8+) and long grain durations (100 ms), the output level
+builds up as many grains overlap. Scale down amplitude by approximately
+1 / sqrt(density) to keep the output level consistent:
+
+
+
+void gran_set_density(GranularEngine *g, float density) {
+    g->density   = density;
+    g->amplitude = 0.5f / sqrtf(density);
+}
+
+
+
+Scatter interacts with grain duration: scatter larger than the grain duration makes
+successive grains overlap from uncorrelated source positions — a diffuse cloud. Scatter
+smaller than the grain duration gives a more coherent, chorused texture. The sweet spot
+for most musical use is scatter ≈ 0.5 × grain duration.
+
+
+Summary
+
+
+A grain is a windowed, rate-adjusted read from a source buffer. The scheduler spawns
+grains at a density-determined rate with scattered start positions and optional pitch
+randomisation. Summing many overlapping grains produces the granular texture.
+Time-stretch and pitch-shift are separated by decoupling source advance from playback
+rate — the key structural insight that gives granular processing its flexibility over the
+phase vocoder.
+
+
+
+Part 18 changes subject entirely: MIDI protocol. Before you can play any of the
+synthesisers built in this series from a keyboard, you need to parse the MIDI byte
+stream — status bytes, running status, note-on/off, controllers.
+
+
+Further Reading
+
+
+Granular Synthesis - Julius O. Smith III (CCRMA)
+Csound GEN09 (Additive Synthesis for Granular)
+Granular Synthesis Notes - musicdsp.org
+Granular Synthesis Overview - Barry Truax (SFU)
+Granular Synthesis Lessons - Cycling '74
+
+
+See Also
+
+
+Sample Playback
+Spectral Processing with FFT
+FM Synthesis
+Wavetable Synthesis
+

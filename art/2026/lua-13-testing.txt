@@ -1,0 +1,471 @@
+Lua - Part 13: Testing Lua Code
+2026-06-01
+
+
+Lua code embedded in a C host has two distinct layers to test: the Lua scripts
+themselves (business logic, configuration, state machines) and the C functions exposed
+to Lua (the binding layer). This article covers both, using the busted framework for
+Lua-side tests and Unity-style host tests for the C binding layer.
+
+
+What You Will Learn
+
+
+Installing and running busted, the Lua test framework
+describe, it, before_each, and after_each blocks
+Spying on C function calls from Lua using a stub module
+Testing the Lua C API binding layer from the C host side
+Running busted from a Makefile target
+CI configuration for Lua tests
+
+
+Installing busted
+
+
+busted is installed via LuaRocks:
+
+
+
+luarocks install busted
+
+
+
+This installs the busted command-line tool and its dependencies. Verify:
+
+
+
+busted --version
+
+
+
+For projects that vendor Lua modules (Part 14), install to a local tree:
+
+
+
+luarocks install --tree lua_modules busted
+# Then run:
+lua_modules/.bin/busted
+
+
+Test File Structure
+
+
+busted test files use a nested describe/it structure:
+
+
+
+-- spec/spectrum_spec.lua
+local Spectrum = require("spectrum")
+
+describe("Spectrum", function()
+
+    local s
+
+    before_each(function()
+        s = Spectrum.new(64, 0.3)   -- 64 bins, 0.3 smoothing
+    end)
+
+    after_each(function()
+        s = nil
+    end)
+
+    describe("new()", function()
+        it("starts with all bins at zero", function()
+            for i = 1, 64 do
+                assert.are.equal(0.0, s:bin(i))
+            end
+        end)
+
+        it("rejects zero bin count", function()
+            assert.has_error(function()
+                Spectrum.new(0, 0.3)
+            end, "bin count must be positive")
+        end)
+    end)
+
+    describe("update()", function()
+        it("smooths towards the input value", function()
+            -- Push bin 1 to 1.0 repeatedly
+            local input = {}
+            for i = 1, 64 do input[i] = 0.0 end
+            input[1] = 1.0
+
+            for _ = 1, 50 do s:update(input) end
+
+            -- After 50 updates with smoothing 0.3, bin 1 should be near 1.0
+            assert.is_near(1.0, s:bin(1), 0.01)
+        end)
+
+        it("does not affect bins outside the input", function()
+            local input = {}
+            for i = 1, 64 do input[i] = 0.0 end
+            input[5] = 0.8
+
+            s:update(input)
+
+            assert.are.equal(0.0, s:bin(1))
+        end)
+    end)
+
+    describe("peak()", function()
+        it("returns the highest bin value", function()
+            local input = {0.1, 0.5, 0.9, 0.3}
+            for i = 5, 64 do input[i] = 0.0 end
+            for _ = 1, 30 do s:update(input) end
+
+            assert.is_near(0.9, s:peak(), 0.02)
+        end)
+    end)
+
+end)
+
+
+
+Run with:
+
+
+
+busted spec/
+
+
+
+busted discovers all files matching *_spec.lua or *_test.lua
+in the spec/ directory.
+
+
+busted Assertions
+
+
+busted uses the assert library with a method-chain syntax:
+
+
+
+assert.are.equal(expected, actual)         -- exact equality
+assert.are.same(expected, actual)          -- deep equality for tables
+assert.is_true(value)
+assert.is_false(value)
+assert.is_nil(value)
+assert.is_not_nil(value)
+assert.is_near(expected, actual, delta)    -- floating-point tolerance
+assert.has_error(function() end)           -- expects an error to be raised
+assert.has_error(function() end, "msg")    -- expects a specific error message
+assert.matches("pattern", string)          -- Lua pattern matching
+
+
+
+For DSP tests, assert.is_near is the most important — always use it
+instead of exact equality for floating-point values.
+
+
+Mocking C Functions from Lua
+
+
+Lua scripts often call C functions registered by the host: audio operations, file I/O,
+or hardware access. In tests, replace these with stubs. The cleanest pattern is a
+mock module that the test file loads before the module under test:
+
+
+
+-- spec/helpers/mock_audio.lua
+-- Replace the C 'audio' module with a test double.
+
+local calls = {}
+
+local mock = {
+    _calls = calls,
+
+    set_volume = function(v)
+        table.insert(calls, {fn="set_volume", v=v})
+    end,
+
+    play_note = function(pitch, vel)
+        table.insert(calls, {fn="play_note", pitch=pitch, vel=vel})
+    end,
+
+    -- Test helpers
+    reset = function()
+        for k in pairs(calls) do calls[k] = nil end
+    end,
+
+    called_with = function(fn, ...)
+        local args = {...}
+        for _, c in ipairs(calls) do
+            if c.fn == fn then
+                local match = true
+                for i, v in ipairs(args) do
+                    if c[i] ~= v then match = false; break end
+                end
+                if match then return true end
+            end
+        end
+        return false
+    end,
+}
+
+package.loaded["audio"] = mock
+return mock
+
+
+
+Load the mock before requiring the module under test:
+
+
+
+-- spec/sequencer_spec.lua
+local mock_audio = require("spec.helpers.mock_audio")
+local Sequencer  = require("sequencer")   -- loads mock instead of real audio
+
+describe("Sequencer", function()
+
+    before_each(function()
+        mock_audio.reset()
+    end)
+
+    it("plays the first note on step 1", function()
+        local seq = Sequencer.new({60, 64, 67, 72})
+        seq:trigger()   -- advances to step 1 and plays note
+
+        assert.is_true(mock_audio.called_with("play_note", 60, 100))
+    end)
+
+    it("advances to next step on each trigger", function()
+        local seq = Sequencer.new({60, 64, 67, 72})
+        seq:trigger()
+        seq:trigger()
+
+        assert.is_true(mock_audio.called_with("play_note", 64, 100))
+    end)
+
+    it("wraps around after the last step", function()
+        local seq = Sequencer.new({60, 64})
+        seq:trigger(); seq:trigger(); seq:trigger() -- wrap to step 1 again
+
+        -- Third trigger should replay note 1 (60)
+        local found = false
+        for _, c in ipairs(mock_audio._calls) do
+            if c.fn == "play_note" and c.pitch == 60 then
+                found = true
+            end
+        end
+        assert.is_true(found)
+    end)
+
+end)
+
+
+Spying on Calls with busted's Built-in Spy
+
+
+busted has a built-in spy/stub system for tables:
+
+
+
+-- spec/config_spec.lua
+local config = require("config")
+
+describe("config loader", function()
+
+    it("calls the callback when a value changes", function()
+        local callback = spy.new(function() end)
+        config.on_change("volume", callback)
+
+        config.set("volume", 0.8)
+
+        assert.spy(callback).was_called(1)
+        assert.spy(callback).was_called_with("volume", 0.8)
+    end)
+
+    it("does not call callback when value is unchanged", function()
+        local callback = spy.new(function() end)
+        config.set("volume", 0.5)
+        config.on_change("volume", callback)
+        config.set("volume", 0.5)   -- same value
+
+        assert.spy(callback).was_not_called()
+    end)
+
+end)
+
+
+
+spy.new(fn) wraps a function and records every call to it while still
+executing the original function. stub.new() replaces the function entirely
+and returns a fixed value instead.
+
+
+Testing the Lua C API Binding Layer
+
+
+The C binding functions (registered with lua_register or
+luaL_setfuncs) need to be tested too. Do this from C using a small
+harness that creates a Lua state, calls the C function as if from Lua, and asserts on
+the result:
+
+
+
+/* test/test_lua_bindings.c */
+#include "unity.h"
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+
+/* The C function we're testing */
+extern int l_set_volume(lua_State *L);
+extern int l_get_volume(lua_State *L);
+
+static lua_State *L;
+
+void setUp(void) {
+    L = luaL_newstate();
+    luaL_openlibs(L);
+    lua_register(L, "set_volume", l_set_volume);
+    lua_register(L, "get_volume", l_get_volume);
+}
+
+void tearDown(void) {
+    lua_close(L);
+}
+
+void test_set_volume_clamps_to_zero(void) {
+    luaL_dostring(L, "set_volume(-1.0)");
+    lua_getglobal(L, "get_volume");
+    lua_call(L, 0, 1);
+    float v = (float)lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, v);
+}
+
+void test_set_volume_clamps_to_one(void) {
+    luaL_dostring(L, "set_volume(2.5)");
+    lua_getglobal(L, "get_volume");
+    lua_call(L, 0, 1);
+    float v = (float)lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.0f, v);
+}
+
+void test_set_volume_accepts_mid_range(void) {
+    luaL_dostring(L, "set_volume(0.75)");
+    lua_getglobal(L, "get_volume");
+    lua_call(L, 0, 1);
+    float v = (float)lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.75f, v);
+}
+
+void test_set_volume_rejects_non_number(void) {
+    int result = luaL_dostring(L, "set_volume('loud')");
+    /* Should raise a Lua error */
+    TEST_ASSERT_NOT_EQUAL(0, result);
+}
+
+int main(void) {
+    UNITY_BEGIN();
+    RUN_TEST(test_set_volume_clamps_to_zero);
+    RUN_TEST(test_set_volume_clamps_to_one);
+    RUN_TEST(test_set_volume_accepts_mid_range);
+    RUN_TEST(test_set_volume_rejects_non_number);
+    return UNITY_END();
+}
+
+
+Makefile Test Target
+
+
+LUA     = lua5.4
+BUSTED  = busted
+
+# C binding tests use Unity (see Part 28)
+UNITY_SRC    = third_party/unity/unity.c
+LUA_BINDING_TESTS = test/test_lua_bindings.c
+LUA_BINDING_BIN   = build/test_lua_bindings
+
+.PHONY: test test-lua test-c
+
+test: test-lua test-c
+
+test-lua:
+	$(BUSTED) --lua=$(LUA) spec/
+
+test-c: $(LUA_BINDING_BIN)
+	./$(LUA_BINDING_BIN)
+
+$(LUA_BINDING_BIN): $(LUA_BINDING_TESTS) $(UNITY_SRC) src/bindings.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) -I third_party/unity -I src \
+	    $(shell pkg-config --cflags lua5.4) \
+	    -o $@ $^ \
+	    $(shell pkg-config --libs lua5.4) -lm
+
+
+CI Configuration
+
+
+# .github/workflows/test.yml
+name: Lua Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua and LuaRocks
+        run: |
+          sudo apt-get install -y lua5.4 luarocks liblua5.4-dev
+      - name: Install busted
+        run: sudo luarocks install busted
+      - name: Run Lua tests
+        run: busted --lua=lua5.4 spec/
+      - name: Build and run C binding tests
+        run: make test-c
+
+
+What to Test and What Not To
+
+
+Test with busted:
+
+
+Pure Lua business logic: state machines, sequencer steps, configuration parsing.
+Table manipulation: module loaders, registry lookups, default-value merging.
+Error handling: invalid arguments, missing keys, type mismatches.
+
+
+
+Test from C:
+
+
+C binding functions: argument type checking, clamping, error propagation to Lua.
+Userdata lifecycle: __gc metamethods, double-free prevention.
+Stack balance: every C function that enters with N items leaves with N items (or N+return values).
+
+
+
+Do not test:
+
+
+The Lua interpreter itself — Lua is well-tested.
+Standard library functions (string.format, table.sort) — they are correct.
+
+
+Summary
+
+
+Use busted for Lua-side tests: describe/it blocks with
+before_each setup and after_each teardown. Mock C modules by
+injecting a Lua table into package.loaded before requiring the module
+under test. Use busted's built-in spy.new for lightweight call recording.
+Test C binding functions from C using a Unity harness that creates a lua_State,
+calls the function via luaL_dostring, and asserts on the stack result.
+Combine both test types in a single make test target and run them in CI
+with a standard Ubuntu + LuaRocks environment.
+
+
+See Also
+
+
+Calling C from Lua - the binding functions tested here
+Userdata — Wrapping C Structs as Lua Objects - userdata lifecycle tests
+Bundling Lua Modules for Offline Use - vendoring busted for offline CI
+Testing DSP Code - Unity patterns used for C binding tests
+

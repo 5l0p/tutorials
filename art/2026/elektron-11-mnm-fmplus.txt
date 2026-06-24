@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 11: Monomachine FM+ Extended FM Engine
-2026-01-01
+2026-06-01
 
 
 The Monomachine FM+ engine extends the 2-operator VO model with additional operators,

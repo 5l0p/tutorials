@@ -1,5 +1,5 @@
 LLM - Part 8: MCP over HTTP
-2026-06-17
+2026-06-01
 
 
 The stdio transport from article 07 is great for local tools but it is process-bound:

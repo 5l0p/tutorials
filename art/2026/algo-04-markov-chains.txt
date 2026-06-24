@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 4: Markov Chains for Melody
-2026-01-14
+2026-06-01
 
 
 Brownian motion controls the shape of a melody — how far it moves and in which direction.

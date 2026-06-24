@@ -1,0 +1,312 @@
+DSP - Part 2: The Audio Callback Model
+2026-06-01
+
+
+Every audio API - ALSA, CoreAudio, WASAPI, SDL2, PortAudio - delivers audio through the
+same fundamental abstraction: a callback function that the audio driver calls on a
+dedicated high-priority thread whenever it needs more samples. Understanding this model
+and its constraints is the difference between audio software that works and audio
+software that glitches unpredictably under load.
+
+
+What You Will Learn
+
+
+What the audio callback contract is and why missing its deadline causes glitches
+The golden rule: never block the audio thread — no malloc, no locks, no I/O
+How to implement a lock-free ring buffer to bridge real-time and non-real-time code
+A minimal callback structure in C that can be adapted to any audio API
+The difference between block size and frame size
+How to pre-allocate all state and handle parameter changes safely from the audio thread
+How to test audio processing code offline without a sound card
+
+
+The Callback Contract
+
+
+The audio driver maintains an internal hardware buffer. When that buffer runs low it
+calls your callback, passing a pointer to an output buffer of a fixed size (the
+block size or buffer size). Your job is to fill that buffer with audio
+samples and return before the hardware exhausts its current data. If you take too long,
+the driver has nothing to play and the user hears a glitch - a pop, a dropout, or a
+stretch of silence.
+
+
+
+The latency the user experiences is approximately:
+
+
+
+latency_ms = (block_size / sample_rate) * 1000
+
+Examples at 48000 Hz:
+  block_size =  256:  5.33 ms
+  block_size =  512: 10.67 ms
+  block_size = 1024: 21.33 ms
+
+
+
+Smaller block sizes mean lower latency but more frequent callbacks and less time to do
+the work. 256 samples is typical for low-latency performance software. Streaming or
+DAW export can use 4096 or larger.
+
+
+The Golden Rule: Never Block the Audio Thread
+
+
+The audio callback runs on a real-time thread. Real-time means the operating system
+makes a scheduling guarantee - this thread gets CPU time within a bounded deadline. That
+guarantee evaporates the moment you call anything that can block indefinitely. The
+forbidden operations inside a callback are:
+
+
+
+malloc / free / new / delete - the allocator holds a mutex; another thread may be holding it.
+File I/O - disk seeks and kernel waits are unbounded.
+Mutex lock (blocking) - you may wait for a non-real-time thread that has been preempted.
+printf / fprintf - stdio locks a mutex internally.
+Any syscall that sleeps - sleep, nanosleep, cond_wait, semaphore_wait (with timeout).
+Loading or unloading shared libraries - involves memory allocation and kernel calls.
+
+
+
+The solution for communicating with the rest of your application is lock-free data
+structures, most commonly a ring buffer (circular buffer).
+
+
+Ring Buffers for Inter-Thread Communication
+
+
+A ring buffer has a fixed-size backing array, a write index, and a read index. The writer
+advances the write index after each write; the reader advances the read index after each
+read. As long as there is exactly one reader and one writer, and both indices are
+_Atomic (or volatile with appropriate memory barriers on your
+platform), no mutex is needed.
+
+
+
+#include <stdint.h>
+#include <stdatomic.h>
+#include <string.h>
+
+#define RING_SIZE 4096  /* must be power of two */
+#define RING_MASK (RING_SIZE - 1)
+
+typedef struct {
+    float          buf[RING_SIZE];
+    atomic_uint    write_pos;
+    atomic_uint    read_pos;
+} RingBuffer;
+
+void ring_init(RingBuffer *rb) {
+    memset(rb->buf, 0, sizeof(rb->buf));
+    atomic_store(&rb->write_pos, 0);
+    atomic_store(&rb->read_pos,  0);
+}
+
+/* Returns number of samples actually written */
+int ring_write(RingBuffer *rb, const float *src, int n) {
+    unsigned wp = atomic_load_explicit(&rb->write_pos, memory_order_relaxed);
+    unsigned rp = atomic_load_explicit(&rb->read_pos,  memory_order_acquire);
+    unsigned avail = RING_SIZE - (wp - rp);
+    if ((unsigned)n > avail) n = (int)avail;
+    for (int i = 0; i < n; i++)
+        rb->buf[(wp + i) & RING_MASK] = src[i];
+    atomic_store_explicit(&rb->write_pos, wp + n, memory_order_release);
+    return n;
+}
+
+/* Returns number of samples actually read */
+int ring_read(RingBuffer *rb, float *dst, int n) {
+    unsigned rp = atomic_load_explicit(&rb->read_pos,  memory_order_relaxed);
+    unsigned wp = atomic_load_explicit(&rb->write_pos, memory_order_acquire);
+    unsigned avail = wp - rp;
+    if ((unsigned)n > avail) n = (int)avail;
+    for (int i = 0; i < n; i++)
+        dst[i] = rb->buf[(rp + i) & RING_MASK];
+    atomic_store_explicit(&rb->read_pos, rp + n, memory_order_release);
+    return n;
+}
+
+
+
+The audio thread calls ring_read or ring_write; the GUI or
+network thread calls the other end. The power-of-two size lets you use bitwise AND
+instead of modulo, which matters when this runs 48000 times per second.
+
+
+A Minimal Callback Structure
+
+
+Here is the shape every audio callback takes, regardless of which API backs it. The
+details differ (SDL2, ALSA, etc.) but the pattern is universal.
+
+
+
+#include <stdint.h>
+#include <string.h>
+
+#define SAMPLE_RATE 48000
+#define BLOCK_SIZE  512
+
+/* All synthesiser state lives in this struct.
+   It is pre-allocated; the callback never calls malloc. */
+typedef struct {
+    float phase;
+    float freq;
+    float gain;
+} SynthState;
+
+/* Called by the audio driver on the real-time thread.
+   Must fill 'out' with 'block_size' interleaved stereo float samples
+   and return immediately. */
+void audio_callback(SynthState *state, float *out, int block_size) {
+    const float phase_inc = state->freq / (float)SAMPLE_RATE;
+    float phase = state->phase;
+
+    for (int i = 0; i < block_size; i++) {
+        float sample = state->gain * sinf(2.0f * 3.14159265f * phase);
+        out[i * 2 + 0] = sample;  /* left  */
+        out[i * 2 + 1] = sample;  /* right */
+        phase += phase_inc;
+        if (phase >= 1.0f) phase -= 1.0f;
+    }
+    state->phase = phase;
+}
+
+
+
+Notice that phase_inc is computed once per block rather than once per sample.
+Dividing inside the per-sample loop is wasteful and was once catastrophically slow on
+FPUs without hardware divide. The habit remains good practice.
+
+
+Block Size vs Frame Size
+
+
+APIs differ in their terminology. SDL2 calls the number of samples (not frames) a
+samples field. ALSA counts frames (one frame = one sample across all channels).
+PortAudio uses frames per buffer. Interleaved stereo with N frames means a buffer
+of 2*N floats. Always check the units in whichever API you are using - getting this wrong
+produces audio that plays back at the wrong pitch and duration.
+
+
+Pre-Allocating All State
+
+
+Because you cannot call malloc inside the callback, you must allocate
+everything before the audio stream opens. A common pattern is a single large
+AudioEngine struct that is heap-allocated once at startup and whose address
+is passed as the userdata pointer in every API.
+
+
+
+typedef struct {
+    /* Oscillators, filters, envelopes - all pre-allocated */
+    SynthState  osc[16];
+    float       mix_buf[BLOCK_SIZE * 2];
+    RingBuffer  midi_from_ui;
+    float       master_gain;
+} AudioEngine;
+
+/* In main(), before opening the audio device: */
+AudioEngine *engine = calloc(1, sizeof(AudioEngine));
+ring_init(&engine->midi_from_ui);
+/* ... open audio device, pass engine as userdata ... */
+
+
+Handling Parameter Changes Safely
+
+
+When the UI changes a parameter (e.g., the user moves a filter cutoff knob), the new
+value must reach the audio thread without a lock. Two approaches:
+
+
+
+Atomic store/load: Use _Atomic float for simple scalar parameters. On most platforms a 32-bit atomic store is lock-free.
+Ring buffer of messages: For complex changes (e.g., loading a new sample) send a message struct through a ring buffer. The audio thread polls at the top of each callback.
+
+
+
+#include <stdatomic.h>
+
+typedef struct {
+    _Atomic float cutoff_hz;
+    _Atomic float resonance;
+} FilterParams;
+
+/* UI thread: */
+void ui_set_cutoff(FilterParams *p, float hz) {
+    atomic_store(&p->cutoff_hz, hz);
+}
+
+/* Audio thread (inside callback): */
+float cutoff = atomic_load(&params->cutoff_hz);
+/* ... recompute biquad coefficients with new cutoff ... */
+
+
+Testing Without a Sound Card
+
+
+During development it is useful to run your DSP code offline - write samples to a file
+instead of sending them to hardware. This lets you inspect the output in an audio editor
+or plot it.
+
+
+
+#include <stdio.h>
+
+void write_wav_header(FILE *f, int sample_rate, int num_samples) {
+    int data_size = num_samples * 2;  /* 16-bit mono */
+    int riff_size = 36 + data_size;
+    fwrite("RIFF", 1, 4, f);
+    fwrite(&riff_size, 4, 1, f);
+    fwrite("WAVEfmt ", 1, 8, f);
+    int chunk = 16, fmt = 1, ch = 1, bps = 16, blk = 2;
+    int byte_rate = sample_rate * blk;
+    fwrite(&chunk, 4, 1, f);
+    fwrite(&fmt, 2, 1, f);
+    fwrite(&ch, 2, 1, f);
+    fwrite(&sample_rate, 4, 1, f);
+    fwrite(&byte_rate, 4, 1, f);
+    fwrite(&blk, 2, 1, f);
+    fwrite(&bps, 2, 1, f);
+    fwrite("data", 1, 4, f);
+    fwrite(&data_size, 4, 1, f);
+}
+
+
+
+Call your audio_callback in a loop in main(), writing its output
+to a WAV file. Add the real-time backend (SDL2, ALSA) only after the signal chain sounds
+correct in offline testing.
+
+
+Summary
+
+
+The audio callback runs on a high-priority thread with a hard deadline. Missing
+it causes an audible glitch. The callback must never block: no malloc, no mutex,
+no file I/O, no syscalls that can sleep. Use a lock-free ring buffer to pass
+data between the audio thread and the rest of the application. Pre-allocate all
+state at startup. Test the signal chain offline by writing output to a WAV file
+before adding a real-time backend.
+
+
+Further Reading
+
+
+Real-time audio latency explained - Superpowered
+Real-time Audio Programming 101 - Ross Bencina
+JACK and PulseAudio co-existence - Linux Audio wiki
+Steinberg VST3 SDK documentation
+
+
+See Also
+
+
+Audio Fundamentals
+SDL2 as an Audio Backend
+Oscillators: Basic Waveforms
+Denormal Numbers
+

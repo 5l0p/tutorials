@@ -1,0 +1,292 @@
+Containers - Part 11: 9P: The Plan 9 Network Filesystem Protocol
+2026-06-01
+
+
+9P is a network filesystem protocol developed at Bell Labs for the Plan 9
+operating system. It is extraordinarily simple - a small set of typed messages
+over a byte stream - and it has found a second life in Linux containers. QEMU
+uses 9P (as virtio-9p) to share host directories into VMs; WSL2 uses it to
+expose the Windows filesystem; and some container runtimes use it to share
+volume data without requiring a VFS kernel module. This article covers the
+wire protocol, implements a minimal 9P file server in Go, and shows how to
+mount it with the Linux kernel's built-in 9p client.
+
+
+What You Will Learn
+
+
+How 9P's message header is structured and the difference between T-messages and R-messages
+The core message types: version, attach, walk, open, read, write, clunk, stat, create, remove
+What a qid is and how it uniquely identifies a file in the server's namespace
+How to build a 9P file server in Go using github.com/hugelgupf/p9
+How to mount it with the Linux kernel's 9p client over TCP and Unix sockets
+How to implement a custom in-memory filesystem using the p9.File interface
+How 9P is used in QEMU, Kata Containers, WSL2, and other container contexts
+
+
+Plan 9 Heritage
+
+
+Plan 9 was built on the principle that everything is a file accessed through a
+namespace. Every resource - processes, network connections, devices - is exposed
+as a file tree served over 9P. A process's namespace is a private composition
+of 9P mounts. This influenced Linux namespaces and the /proc filesystem,
+both of which owe conceptual debt to Plan 9.
+
+
+
+The current protocol version is 9P2000 with the Linux extension
+9P2000.L, which adds Linux-specific operations. The kernel's 9p client
+supports both.
+
+
+Protocol Overview
+
+
+9P is a request-response protocol over a byte stream (TCP, Unix socket, or
+virtio channel). Every message has a fixed header:
+
+
+
+[4 bytes: size] [1 byte: type] [2 bytes: tag]
+
+
+
+size includes the four size bytes themselves. type identifies the
+message. T-messages are requests (client to server); R-messages are replies
+(server to client). tag is a caller-chosen number used to match replies
+to requests. The special tag 0xFFFF (NOTAG) is used for the initial
+version negotiation.
+
+
+Core Message Types
+
+
+Tversion / Rversion - negotiate protocol version and maximum message size (msize).
+Tattach / Rattach - authenticate and establish a connection to the file tree root. Returns a fid (file identifier).
+Twalk / Rwalk - traverse a path from an existing fid. Returns a new fid for the target.
+Topen / Ropen - open a fid for reading or writing.
+Tread / Rread - read data from an open fid.
+Twrite / Rwrite - write data to an open fid.
+Tclunk / Rclunk - release a fid.
+Tstat / Rstat - retrieve file metadata (qid, mode, size, name, mtime).
+Twstat / Rwstat - set file metadata.
+Tremove / Rremove - delete a file.
+Tcreate / Rcreate - create a new file.
+
+
+
+A qid (unique identifier) is a 13-byte structure: 1 byte type, 4 bytes
+version, 8 bytes path. It uniquely identifies a file in the server's namespace.
+
+
+A Minimal 9P File Server in Go
+
+
+The github.com/hugelgupf/p9 library implements 9P2000.L in Go and is
+used by gVisor, QEMU tools, and others. Here is a server that exposes a single
+read-only directory:
+
+
+
+package main
+
+import (
+    "flag"
+    "log"
+    "net"
+    "os"
+
+    "github.com/hugelgupf/p9/fsimpl/localfs"
+    "github.com/hugelgupf/p9/p9"
+)
+
+func main() {
+    root := flag.String("root", ".", "directory to serve")
+    addr := flag.String("addr", ":5640", "listen address")
+    flag.Parse()
+
+    info, err := os.Stat(*root)
+    if err != nil || !info.IsDir() {
+        log.Fatalf("root %q is not a directory: %v", *root, err)
+    }
+
+    // localfs.Attach serves an existing directory via 9P
+    attacher := localfs.NewAttacher(*root)
+
+    server := p9.NewServer(attacher,
+        p9.WithServerLogger(log.Default()),
+    )
+
+    ln, err := net.Listen("tcp", *addr)
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("9P server listening on %s, serving %s", *addr, *root)
+    log.Fatal(server.Serve(ln))
+}
+
+
+
+Run with:
+
+
+
+go run server.go -root /tmp/shared -addr :5640
+
+
+Mounting with the Linux 9p Client
+
+
+# Mount the 9P server (TCP transport)
+sudo mount -t 9p \
+  -o trans=tcp,port=5640,version=9p2000.L \
+  127.0.0.1 /mnt/9p
+
+# List files
+ls /mnt/9p/
+
+# Read a file
+cat /mnt/9p/hello.txt
+
+# Unmount
+sudo umount /mnt/9p
+
+
+
+For a Unix socket instead of TCP:
+
+
+
+# Start server on a Unix socket
+go run server.go -addr unix:///tmp/9p.sock -root /tmp/shared
+
+# Mount
+sudo mount -t 9p \
+  -o trans=unix,uname=root,access=any \
+  /tmp/9p.sock /mnt/9p
+
+
+The Wire Protocol in Detail
+
+
+Let us trace a minimal session - version negotiation, attach, walk, read:
+
+
+
+Client sends Tversion (tag=NOTAG=0xFFFF):
+  size[4]=23  type[1]=100  tag[2]=0xFFFF
+  msize[4]=65536  version[2+s]="9P2000.L"
+
+Server replies Rversion:
+  size[4]=23  type[1]=101  tag[2]=0xFFFF
+  msize[4]=65536  version[2+s]="9P2000.L"
+
+Client sends Tattach (tag=1, fid=0, afid=NOFID=0xFFFFFFFF):
+  size[4]=...  type[1]=104  tag[2]=1
+  fid[4]=0  afid[4]=0xFFFFFFFF  uname[s]="user"  aname[s]=""  n_uname[4]=1000
+
+Server replies Rattach:
+  size[4]=20  type[1]=105  tag[2]=1
+  qid[13]={type=0x80 ver=0 path=1}  /* root directory qid */
+
+Client sends Twalk (tag=2, fid=0, newfid=1):
+  size[4]=...  type[1]=110  tag[2]=2
+  fid[4]=0  newfid[4]=1  nwname[2]=1  wname[0][s]="hello.txt"
+
+Server replies Rwalk:
+  nwqid[2]=1  wqid[0][13]={type=0 ver=0 path=2}
+
+/* client now opens newfid=1 and reads it */
+
+
+Implementing a Custom Filesystem Handler
+
+
+To serve a custom in-memory filesystem with github.com/hugelgupf/p9,
+implement the p9.File interface. The key methods are Walk,
+Open, ReadAt, Stat, and Readdir:
+
+
+
+package main
+
+import (
+    "io"
+    "strings"
+
+    "github.com/hugelgupf/p9/p9"
+)
+
+// MemFile serves a single in-memory string as a file.
+type MemFile struct {
+    p9.DefaultWalkGetAttr
+    content string
+    reader  *strings.Reader
+}
+
+func (f *MemFile) Open(mode p9.OpenFlags) (p9.QID, uint32, error) {
+    f.reader = strings.NewReader(f.content)
+    return p9.QID{Type: p9.TypeRegular, Path: 1}, 4096, nil
+}
+
+func (f *MemFile) ReadAt(buf []byte, offset uint64) (int, error) {
+    n, err := f.reader.ReadAt(buf, int64(offset))
+    if err == io.EOF {
+        err = nil
+    }
+    return n, err
+}
+
+func (f *MemFile) GetAttr(req p9.AttrMask) (p9.QID, p9.AttrMask, p9.Attr, error) {
+    qid := p9.QID{Type: p9.TypeRegular, Path: 1}
+    attr := p9.Attr{
+        Mode: p9.ModeRegular | 0444,
+        Size: uint64(len(f.content)),
+    }
+    return qid, req, attr, nil
+}
+
+
+9P in Container Runtimes
+
+
+virtio-9p is the mechanism QEMU uses for the -virtfs option to share a
+host directory into a guest VM. Kata Containers (which runs each container in a
+micro-VM) uses a variant for volume sharing. The kernel module
+9pnet_virtio implements the virtio transport:
+
+
+
+# Inside a VM started with -virtfs local,path=/host/data,mount_tag=data,...
+mount -t 9p -o trans=virtio data /mnt/data
+
+
+Summary
+
+
+9P is a minimal request-response protocol: a 7-byte header (size, type, tag)
+followed by message-specific fields. Clients walk a fid through the path tree,
+open it, then read or write. The Go hugelgupf/p9 library implements
+9P2000.L and serves real directories or custom p9.File implementations.
+The Linux kernel's built-in 9p client mounts these servers over TCP, Unix
+sockets, or virtio. QEMU uses virtio-9p for host-directory sharing; Kata
+Containers uses a variant for container volumes.
+
+
+Further Reading
+
+
+9P Introduction - Plan 9 manual
+hugelgupf/p9 - Go 9P2000.L library (GitHub)
+9P - kernel documentation
+Plan 9 and Linux (LWN)
+
+
+See Also
+
+
+FUSE: Writing a Userspace Filesystem
+WebDAV: HTTP as a Filesystem
+Mount Namespaces & chroot
+

@@ -1,0 +1,303 @@
+Go - Part 10: Generics
+2026-06-01
+
+
+For its first decade, Go had no generics. When you needed a container that could hold any
+type, you used interface{} and type assertions at every access. Go 1.18
+(released March 2022) added a generics system intentionally simpler than C++ templates
+or C# generics. If you are coming from C#, some things will feel familiar and some will
+feel limited - both reactions are correct. This article explains the system as it exists
+and the idioms that have emerged around it.
+
+
+What You Will Learn
+
+
+How type parameters and constraints are declared in Go 1.18
+Interface constraints: using interfaces to express what a type parameter must support
+Union constraints and the ~ operator for underlying-type matching
+How to write generic functions and generic types (containers)
+When to use generics versus interfaces — and why many cases still prefer interfaces
+Limitations compared to C# generics: no specialisation, no operator overloading via constraints
+
+
+Type Parameters
+
+
+A generic function declares its type parameters in square brackets between the function
+name and the parameter list:
+
+
+
+func Map[T, U any](s []T, f func(T) U) []U {
+    result := make([]U, len(s))
+    for i, v := range s {
+        result[i] = f(v)
+    }
+    return result
+}
+
+// Usage - type arguments inferred:
+doubled := Map([]int{1, 2, 3}, func(n int) int { return n * 2 })
+// doubled == []int{2, 4, 6}
+
+stringified := Map([]int{1, 2, 3}, func(n int) string {
+    return fmt.Sprintf("item-%d", n)
+})
+// stringified == []string{"item-1", "item-2", "item-3"}
+
+
+
+Type arguments are usually inferred from the call-site values. You can specify them
+explicitly when inference is not possible:
+
+
+
+result := Map[int, string]([]int{1, 2, 3}, func(n int) string {
+    return strconv.Itoa(n)
+})
+
+
+
+In C# this is static U[] Map<T, U>(T[] s, Func<T, U> f) - very
+similar syntax in a different position.
+
+
+Constraints
+
+
+A constraint restricts which types may be used as a type argument. The simplest constraints
+are any (no restriction, same as interface{}) and
+comparable (types that support == and !=):
+
+
+
+func Contains[T comparable](s []T, target T) bool {
+    for _, v := range s {
+        if v == target {
+            return true
+        }
+    }
+    return false
+}
+
+found := Contains([]string{"a", "b", "c"}, "b") // true
+found  = Contains([]int{1, 2, 3}, 4)             // false
+
+
+
+Without the comparable constraint, the compiler would reject v == target
+because any does not guarantee support for == (slices and maps do
+not support it). In C# all reference types support == (object identity), but
+Go's constraint-based approach is more precise.
+
+
+Interface Constraints
+
+
+Any interface can be used as a constraint. This means a type parameter constrained to an
+interface can call that interface's methods:
+
+
+
+type Stringer interface {
+    String() string
+}
+
+func PrintAll[T Stringer](s []T) {
+    for _, v := range s {
+        fmt.Println(v.String())
+    }
+}
+
+
+
+This is the mechanism C# uses too: where T : IFormattable in C# is the
+same idea as [T Stringer] in Go.
+
+
+Union Constraints and the ~ Operator
+
+
+Constraints can specify a union of concrete types, allowing arithmetic and comparison
+operators on type parameters:
+
+
+
+type Number interface {
+    int | int8 | int16 | int32 | int64 |
+        uint | uint8 | uint16 | uint32 | uint64 |
+        float32 | float64
+}
+
+func Sum[T Number](s []T) T {
+    var total T
+    for _, v := range s {
+        total += v
+    }
+    return total
+}
+
+fmt.Println(Sum([]int{1, 2, 3}))       // 6
+fmt.Println(Sum([]float64{1.1, 2.2}))  // 3.3
+
+
+
+The ~ (tilde) operator means "this type or any type with this underlying
+type". Without it, a named type like type Celsius float64 would not satisfy
+float64 in a union, even though it is backed by float64:
+
+
+
+type Numeric interface {
+    ~int | ~float64 // includes int, Celsius, MyFloat, etc.
+}
+
+type Celsius float64
+
+func Double[T Numeric](v T) T {
+    return v * 2
+}
+
+fmt.Println(Double(5))             // 10 (int)
+fmt.Println(Double(Celsius(36.6))) // 73.2 (Celsius)
+
+
+
+C++ templates achieve this with SFINAE or requires clauses. C# does not have
+a clean equivalent - you would use where T : struct and rely on boxing
+or use a library like MathGeneric. Go's tilde approach is concise and does not require
+metaprogramming tricks.
+
+
+The golang.org/x/exp/slices and maps Packages
+
+
+The standard library added generic slice and map utilities in Go 1.21:
+
+
+
+import "slices"
+import "maps"
+
+// Sort a slice of any ordered type
+slices.Sort([]int{3, 1, 2}) // [1 2 3]
+
+// Check if sorted
+ok := slices.IsSorted([]string{"a", "b", "c"}) // true
+
+// Map keys
+keys := maps.Keys(map[string]int{"a": 1, "b": 2})
+
+
+
+Before 1.21, these were in golang.org/x/exp (the experimental module). If
+you are on Go 1.18–1.20, use that module; 1.21+ use the standard library directly.
+
+
+Generic Types (Containers)
+
+
+Type parameters work on types (structs), not just functions. This is how you write generic
+containers:
+
+
+
+type Stack[T any] struct {
+    items []T
+}
+
+func (s *Stack[T]) Push(item T) {
+    s.items = append(s.items, item)
+}
+
+func (s *Stack[T]) Pop() (T, bool) {
+    if len(s.items) == 0 {
+        var zero T
+        return zero, false
+    }
+    n := len(s.items) - 1
+    item := s.items[n]
+    s.items = s.items[:n]
+    return item, true
+}
+
+// Usage:
+s := Stack[int]{}
+s.Push(1)
+s.Push(2)
+v, ok := s.Pop() // v=2, ok=true
+
+
+
+Note the var zero T pattern for returning the zero value of a type parameter.
+In C# you can use default(T) - Go uses the same concept without special
+syntax; declaring a variable without initialising it produces the zero value.
+
+
+When to Use Generics vs Interfaces
+
+
+Generics and interfaces both provide polymorphism. The choice depends on what you need:
+
+
+
+Use interfaces when you want to write code that calls methods on values and the caller passes in different implementations. The io.Reader pattern is the classic example.
+Use generics when you want to write code that works on values of different types without calling methods on them - containers (Stack[T]), algorithms (Map, Filter), or functions that need to preserve type identity.
+Use generics when you need type-safe heterogeneous return types. An interface-based Map would return []any; a generic one returns []U.
+
+
+
+A rule of thumb from the Go team: if you find yourself writing the same function three
+times with different concrete types, generics are appropriate. If you are writing code
+that calls methods on its argument, an interface is likely more appropriate.
+
+
+Limitations Compared to C# Generics
+
+
+Go generics are intentionally simpler and have real limitations:
+
+
+
+No specialisation: you cannot write a generic function that has a different implementation for specific type arguments (C++ explicit template specialisation, C# where you might use overloads).
+No generic methods on non-generic types: you cannot add a method with its own type parameter to a type that was not already generic. Workaround: make it a function instead.
+No variance (covariance/contravariance): a Stack[Dog] is not a Stack[Animal] even if Dog implements Animal.
+Type parameters cannot be used as map keys unless constrained to comparable.
+
+
+
+These limitations are not bugs - they are deliberate trade-offs. The Go team was explicit
+that they would rather have a simpler generics system that is easy to understand and fast
+to compile than a complete one that is hard to reason about.
+
+
+Summary
+
+
+Go generics use square-bracket type parameters constrained by interfaces.
+The ~T syntax matches any type whose underlying type is T.
+Prefer generics when you have identical logic over multiple concrete types
+and the type matters to the implementation. Prefer interfaces when you are
+working with behaviour, not structure. Go generics do not support template
+specialisation or operator overloading; for arithmetic types, use union
+constraints like constraints.Integer. Most code does not need
+generics — the standard library operated without them for over a decade.
+
+
+Further Reading
+
+
+An Introduction to Generics - The Go Blog
+Go Specification: Type Parameters
+Package constraints - golang.org/x/exp
+Go FAQ: Generics
+
+
+See Also
+
+
+Interfaces & Structural Typing
+Syntax & Types
+Testing in Go
+

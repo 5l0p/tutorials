@@ -1,0 +1,507 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Drums - Part 7: Assembling a Drum Machine in Pure Data and Lua</title>
+    <meta name="description" content="Combining the four drum voices into a sequenced drum machine: a Pd step sequencer with pattern storage, per-step velocity, tempo sync, a Lua UI with step buttons and pattern banks, the simple drum machine patch as a starting point, and a minimal techno pattern to verify the whole system.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, puredata, lua, audio, synthesis, drums">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="drums-07-machine.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../lua.htm">lua</a>, <a href="../../audio.htm">audio</a>, <a href="../../synthesis.htm">synthesis</a>, <a href="../../drums.htm">drums</a></i>
+        <h2>Drums - Part 7: Assembling a Drum Machine in Pure Data and Lua</h2>
+        <p>
+The four voices built in Parts 2–5 are standalone Pd patches. This article assembles
+them into a playable drum machine: a clock, a 16-step sequencer, pattern storage,
+per-step velocity, Lua UI controls, and airwindows effects inserts on each channel.
+The result is a minimal techno machine — kick, snare, hi-hat, clap — that runs inside
+tARTlite or any libpd-based host.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>A Pd clock and step sequencer using <code>[metro]</code> and <code>[counter]</code></li>
+<li>Instantiating the four drum voices as subpatches in one top-level Pd file</li>
+<li>Routing sequencer triggers to voice instances via <code>[send]</code>/<code>[receive]</code></li>
+<li>Per-step velocity: storing and reading a float array per voice per pattern</li>
+<li>Pattern banks: storing and switching between 8 patterns</li>
+<li>A Lua UI with 16 step buttons, BPM knob, and mute/solo per voice</li>
+<li>The simple drum machine patch as a minimal starting reference</li>
+</ul>
+
+<h3>The Simple Drum Machine — A Starting Reference</h3>
+
+<p>
+Before building the full parametric machine, study the simple drum machine patch
+(<code>simpledrums/drumachine.pd</code>). It has three voices — kick, snare, hi-hat —
+with a 16-step sequencer driven by <code>[metro]</code> at 250 ms intervals (240 BPM),
+stepping through four patterns of four steps each:
+</p>
+
+<pre>
+; Clock:
+[metro 250]          ; 250 ms = 16th note at 240 BPM
+|
+[counter 0 15]       ; count 0 to 15
+
+; Pattern routing:
+[% 4][change]        ; which beat within the bar
+[sel 0 2]            ; beat 0 and 2 = kick and snare triggers
+
+; Hi-hat on every step:
+[metro 250]
+→ [hh subpatch] always
+
+; Kick pattern: steps 0, (skips 1, 2, 3...)
+; Snare pattern: steps 4, 12 (beats 2 and 4 of a 4/4 bar)
+</pre>
+
+<p>
+The kick voice in this patch is a minimal FM kick:
+<code>[line~]</code> drives a <code>[cos~]</code> via a phase accumulation — a
+compact FM-style pitch sweep in about 10 Pd objects:
+</p>
+
+<pre>
+; From the bd subpatch in simpledrums:
+[inlet]                   ; receives bang on trigger
+|
+[bng]
+|
+[0 \, 1 200(              ; message: reset to 0, ramp to 1 over 200ms
+→ [line~]
+→ [sqrt~]                 ; square root for exponential shape
+→ [*~ 20]                 ; scale to 20× for frequency range
+→ [-~ 0.25]               ; center the cos~ phase argument
+→ [cos~]                  ; cosine oscillator phase-modulated by line~
+→ [lop~ 1000]             ; lowpass to smooth
+→ [outlet~]
+</pre>
+
+<p>
+This is a beautiful minimal kick — 7 DSP objects, no parameters, always sounds right.
+Use it as a sanity check and fallback while building the more complex voice.
+</p>
+
+<h3>Top-Level Patch Structure</h3>
+
+<p>
+The drum machine patch (<code>drums.pd</code>) instantiates the four voice patches as
+sub-patches and wires them to the sequencer and mix bus:
+</p>
+
+<pre>
+; drums.pd — top level
+
+; Clock and sequencer:
+[r $0-bpm]
+→ [/ 4]             ; quarter note ms from BPM: ms = 60000/BPM/4
+→ [metro]           ; 16th note clock
+→ [counter 0 15]    ; step 0–15
+→ sequencer logic
+
+; Voice instances (each is a [pd kick], [pd snare], etc.):
+[pd kick]  [pd snare]  [pd hihat]  [pd clap]
+
+; Mix bus:
+kick out → [*~ kickVol] ─┐
+snare out → [*~ snVol]  ─┤
+hihat out → [*~ hhVol]  ─┤ [+~] → mix → [dac~]
+clap out → [*~ clapVol] ─┘
+</pre>
+
+<p>
+Each voice subpatch is the full kick/snare/hi-hat/clap Pd patch from Parts 2–5.
+The <code>$0</code> inside each subpatch gets a unique integer, providing automatic
+namespacing of all send/receive names.
+</p>
+
+<h3>The Step Sequencer</h3>
+
+<p>
+A 16-step sequencer stores patterns as four arrays of 16 values (one per voice).
+Each value is either 0 (silent) or a velocity (0.0–1.0). On each clock tick, the
+sequencer reads the current step's value and fires the voice if non-zero:
+</p>
+
+<pre>
+; Sequencer core:
+[metro $stepMs]
+|
+[counter 0 15]   ; step number 0–15
+|
+[t f f f f]      ; fan out to all four voices
+|    |    |    |
+[tabread kick_pat_0] ; read kick pattern array at current step
+[tabread sn_pat_0]
+[tabread hh_pat_0]
+[tabread cl_pat_0]
+|
+[sel 0]          ; if value != 0, fire the voice (sel filters out zeros)
+; for velocity: send value directly as $0-velocity, then bang $0-trigger
+</pre>
+
+<p>
+Pattern arrays in Pd:
+</p>
+
+<pre>
+[array kick_pat_0 16]   ; 16-cell array, values 0 or 0–1
+[array sn_pat_0 16]
+[array hh_pat_0 16]
+[array cl_pat_0 16]
+</pre>
+
+<p>
+To read from a pattern array and fire a voice on non-zero steps:
+</p>
+
+<pre>
+step counter 0–15
+    |
+[t f f]
+|     |
+[tabread kick_pat_0]   ; velocity at this step
+    |
+[t f f]
+|       |
+[> 0]   |             ; is it non-zero?
+|       |
+[sel 1] |             ; if yes...
+    |   |
+    [bang] [f]        ; → trigger + velocity to kick voice
+    |        |
+[s kick-trigger]   [s kick-velocity]
+</pre>
+
+<h3>Pattern Banks</h3>
+
+<p>
+Eight patterns per voice = 8 arrays per voice = 32 pattern arrays total. Switch
+patterns by copying the active pattern array into a working array that the sequencer
+reads:
+</p>
+
+<pre>
+; Pattern bank switch:
+[r $0-pattern]   ; 0–7, current pattern number
+|
+[* 4]            ; offset into voice slot (4 voices × 16 steps = 64 values per bank)
+
+; Simpler: switch the [tabread] target name dynamically:
+[r $0-pattern]
+|
+[prepend kick_pat_]    ; → "kick_pat_0", "kick_pat_1", etc.
+|
+[tabread~]             ; route to correct pattern array
+
+; Or use Lua to write the active pattern into a single shared array:
+pd.setArray("kick_active", getCurrentPattern("kick"))
+</pre>
+
+<p>
+The Lua approach (writing the active pattern into a fixed array) is cleaner — the Pd
+patch always reads from <code>kick_active</code> and Lua manages all 8 patterns as
+Lua tables.
+</p>
+
+<h3>Lua Pattern Storage</h3>
+
+<pre>
+-- module.lua — pattern storage and sequencer control
+
+local NUM_STEPS   = 16
+local NUM_VOICES  = 4
+local NUM_BANKS   = 8
+
+-- Each pattern is a table of 16 values (0 = silent, 0–1 = velocity)
+local banks = {}
+for b = 1, NUM_BANKS do
+    banks[b] = {
+        kick  = {1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0},  -- four on the floor
+        snare = {0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0},  -- 2 and 4
+        hihat = {1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1},  -- every 16th
+        clap  = {0,0,0,0, 1,0,0,0, 0,0,0,0, 0,1,0,0},  -- syncopated
+    }
+end
+
+local currentBank = 1
+
+local function activateBank(b)
+    currentBank = b
+    local pat = banks[b]
+    pd.setArray("kick_active",  pat.kick)
+    pd.setArray("snare_active", pat.snare)
+    pd.setArray("hihat_active", pat.hihat)
+    pd.setArray("clap_active",  pat.clap)
+end
+
+activateBank(1)  -- load bank 1 on start
+</pre>
+
+<h3>Lua Step Button UI</h3>
+
+<pre>
+-- 16 step buttons per voice, displayed as a grid
+
+local voiceNames = {"kick", "snare", "hihat", "clap"}
+local stepButtons = {}
+
+for vi, voice in ipairs(voiceNames) do
+    stepButtons[voice] = {}
+    for step = 1, NUM_STEPS do
+        local btn = module.button({
+            label   = "",
+            toggle  = true,
+            color   = {50, 50, 80},
+            activeColor = {200, 100, 50},
+            gridPos = {step, vi},
+        })
+        btn:onChange(function(active)
+            local vel = active and 0.85 or 0.0
+            banks[currentBank][voice][step] = vel
+            activateBank(currentBank)  -- refresh active array
+        end)
+        stepButtons[voice][step] = btn
+    end
+end
+
+-- BPM knob
+local bpmKnob = module.knob({ label="BPM", range={60,200}, default=120 })
+bpmKnob:onChange(function(v)
+    pd.send("bpm", v)
+end)
+
+-- Mute buttons
+for _, voice in ipairs(voiceNames) do
+    local mute = module.button({ label=voice, toggle=true })
+    mute:onChange(function(active)
+        pd.send(voice .. "-mute", active and 0.0 or 1.0)
+    end)
+end
+</pre>
+
+<h3>BPM and Swing</h3>
+
+<p>
+The clock in Pd uses a <code>[metro]</code> with a step interval in milliseconds.
+The interval for a 16th note at BPM is:
+</p>
+
+<pre>
+step_ms = 60000 / BPM / 4
+</pre>
+
+<p>
+Wire from Lua:
+</p>
+
+<pre>
+[r $0-bpm]
+|
+[expr 60000 / $f1 / 4]   ; ms per 16th note
+|
+[metro]   ; drives the counter
+</pre>
+
+<p>
+For swing, alternate between two step intervals — a longer odd step and a shorter
+even step to create a shuffled 16th note feel:
+</p>
+
+<pre>
+; Swing: swing amount 0 = straight, 1 = maximum shuffle
+; odd step  ms = base_ms * (1 + swing/2)
+; even step ms = base_ms * (1 - swing/2)
+
+[counter 0 15]
+|
+[% 2]          ; 0 = even step, 1 = odd step
+|
+[sel 0 1]
+|        |
+even ms  odd ms → both feed back into metro's period
+</pre>
+
+<h3>Putting a Pattern Together</h3>
+
+<p>
+A minimal one-bar techno pattern at 130 BPM:
+</p>
+
+<pre>
+Step:  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16
+Kick:  1  0  0  0  0  0  0  0  1  0  0  0  0  0  0  0  (beats 1, 3)
+Snare: 0  0  0  0  1  0  0  0  0  0  0  0  1  0  0  0  (beats 2, 4)
+HiHat: 1  0  1  0  1  0  1  0  1  0  1  0  1  0  1  0  (every 8th)
+Clap:  0  0  0  0  1  0  0  0  0  0  0  0  1  0  0  0  (with snare)
+</pre>
+
+<p>
+Velocity variation:
+</p>
+
+<pre>
+Kick:  0.9, -, -, -, -, -, -, -, 0.75, -, -, -, -, -, -, -
+HiHat: 0.7, -, 0.5, -, 0.7, -, 0.5, -, 0.7, -, 0.5, -, 0.7, -, 0.9, -
+</pre>
+
+<p>
+In Lua:
+</p>
+
+<pre>
+banks[1] = {
+    kick  = {0.9,0,0,0,0,0,0,0,0.75,0,0,0,0,0,0,0},
+    snare = {0,0,0,0,0.85,0,0,0,0,0,0,0,0.85,0,0,0},
+    hihat = {0.7,0,0.5,0,0.7,0,0.5,0,0.7,0,0.5,0,0.7,0,0.9,0},
+    clap  = {0,0,0,0,0.8,0,0,0,0,0,0,0,0.8,0,0,0},
+}
+</pre>
+
+<h3>Complete Top-Level Pd Wiring</h3>
+
+<pre>
+; drums.pd — complete signal flow
+
+; == CLOCK ==
+[r $0-bpm] → [expr 60000/$f1/4] → [metro] → [counter 0 15] → step
+
+; == SEQUENCER ==
+step → [tabread kick_active]  → [> 0][sel 1] → [s kick-velocity][s kick-trigger]
+step → [tabread snare_active] → [> 0][sel 1] → [s snare-velocity][s snare-trigger]
+step → [tabread hihat_active] → [> 0][sel 1] → [s hihat-velocity][s hihat-trigger]
+step → [tabread clap_active]  → [> 0][sel 1] → [s clap-velocity][s clap-trigger]
+
+; == VOICE INSTANCES ==
+[pd kick]   ; contains kick.pd with its own $0 namespace
+[pd snare]  ; contains snare.pd
+[pd hihat]
+[pd clap]
+
+; == EFFECTS INSERTS ==
+[kick outlet~]  → [pd kick_fx]  → [*~ $0-kickVol]  ─┐
+[snare outlet~] → [pd snare_fx] → [*~ $0-snareVol] ─┤ mix bus
+[hihat outlet~] → [pd hihat_fx] → [*~ $0-hihatVol] ─┤
+[clap outlet~]  → [pd clap_fx]  → [*~ $0-clapVol]  ─┘
+                                        │
+                                    [+~]
+                                        │
+                                [*~ $0-masterVol]
+                                        │
+                                    [dac~]
+</pre>
+
+<h3>Build Order</h3>
+
+<ol>
+<li>Start with the simple drum machine patch (<code>simpledrums/drumachine.pd</code>) — verify it makes sound.</li>
+<li>Replace the minimal kick with the parametric kick from Part 2 — same 16-step pattern.</li>
+<li>Replace snare and hi-hat similarly.</li>
+<li>Add the clap voice.</li>
+<li>Parameterise the BPM and wire <code>$0-bpm</code>.</li>
+<li>Implement pattern arrays and the Lua pattern storage system.</li>
+<li>Build the Lua step button UI.</li>
+<li>Add effects inserts.</li>
+<li>Add pattern banks (8 slots).</li>
+<li>Add swing.</li>
+</ol>
+
+<h3>Summary</h3>
+
+<p>
+The drum machine wraps the four parametric voices into a single Pd patch with a
+<code>[metro]</code> clock, a 16-step counter, per-step velocity arrays, and a Lua
+pattern storage layer. Pattern banks are Lua tables of 16-value arrays written into
+Pd's array objects via <code>pd.setArray</code>. The Lua UI provides step buttons,
+BPM control, mute/solo, and bank selection. The simple drum machine patch from
+<code>simpledrums/drumachine.pd</code> — a working 16-step kick/snare/hat in minimal
+Pd — serves as the reference starting point and sanity check throughout the build.
+</p>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="drums-01-architecture.htm">Architecture and Approach</a> - the $0 namespacing system this assembly relies on</li>
+<li><a href="drums-02-kick.htm">Kick Drum Synthesis</a> - voice 1</li>
+<li><a href="drums-03-snare.htm">Snare Drum Synthesis</a> - voice 2</li>
+<li><a href="drums-04-hihat.htm">Hi-Hat Synthesis</a> - voice 3</li>
+<li><a href="drums-05-clap.htm">Clap Synthesis</a> - voice 4</li>
+<li><a href="drums-06-effects.htm">Effects with Airwindows</a> - channel inserts</li>
+<li><a href="libpd-07-arrays.htm">Arrays &amp; Tables</a> - the pd.setArray pattern used for pattern storage</li>
+<li><a href="lua-05-tables-config.htm">Tables as Configuration</a> - the Lua pattern bank table structure</li>
+<li><a href="algo-01-what-is-algorithmic-composition.htm">Algorithmic Composition</a> - driving this machine with generative algorithms</li>
+<li><a href="algo-10-euclidean-rhythms.htm">Euclidean Rhythms</a> - replacing static patterns with rule-generated ones</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

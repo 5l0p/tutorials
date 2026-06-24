@@ -1,0 +1,446 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>openFrameworks - Part 21: SDL2 as a Lighter Alternative</title>
+    <meta name="description" content="Using SDL2 for window management, rendering, input, and text when you do not need the full openFrameworks stack - and connecting SDL2 audio to DSP code from the Series 4 articles.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="cpp, openframeworks, graphics">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="of-21-sdl2.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../cpp.htm">cpp</a>, <a href="../../openframeworks.htm">openframeworks</a>, <a href="../../graphics.htm">graphics</a></i>
+        <h2>openFrameworks - Part 21: SDL2 as a Lighter Alternative</h2>
+        <p>
+openFrameworks is powerful but not lightweight. It pulls in FreeImage, FreeType, GLFW, Boost
+filesystem, RTAudio, and a pile of its own abstractions. For a command-line tool that just
+needs a preview window, or a small utility with a fixed GUI, that weight is a liability.
+SDL2 is the opposite: a single, stable C library that gives you a window, an OpenGL or
+software renderer, keyboard/mouse input, and audio, with a total size measured in hundreds
+of kilobytes. This article shows when SDL2 is the right choice, how it covers the same ground
+as oF's core, and how to connect SDL2's audio callback to the DSP oscillator and filter code
+from Series 4.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+  <li>How to create an <code>SDL_Window</code> and an OpenGL context or SDL renderer.</li>
+  <li>The difference between <code>SDL_Surface</code> (CPU) and <code>SDL_Texture</code> (GPU) in the 2D renderer.</li>
+  <li>How to handle the SDL2 event loop for keyboard and mouse input.</li>
+  <li>How to use SDL_ttf for text rendering without FreeType setup.</li>
+  <li>How to connect SDL2's audio callback to the Series 4 DSP code.</li>
+  <li>When to choose SDL2 over openFrameworks.</li>
+</ul>
+
+<h3>Installing SDL2</h3>
+
+<pre>
+# Debian/Ubuntu:
+sudo apt install libsdl2-dev libsdl2-ttf-dev
+
+# macOS (Homebrew):
+brew install sdl2 sdl2_ttf
+
+# Windows (vcpkg):
+vcpkg install sdl2 sdl2-ttf
+</pre>
+
+<p>
+Compile with:
+</p>
+
+<pre>
+g++ -std=c++17 main.cpp $(sdl2-config --cflags --libs) -lSDL2_ttf -o myapp
+</pre>
+
+<h3>SDL_Window and the Event Loop</h3>
+
+<p>
+The SDL2 lifecycle is: <code>SDL_Init</code>, create window and renderer (or GL context),
+enter event loop, clean up. No base class, no setup/update/draw virtuals - just a
+<code>while</code> loop you control.
+</p>
+
+<pre>
+#include &lt;SDL2/SDL.h&gt;
+#include &lt;cstdio&gt;
+
+int main(int argc, char* argv[]) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
+        SDL_Log("SDL_Init failed: %s", SDL_GetError());
+        return 1;
+    }
+
+    SDL_Window *window = SDL_CreateWindow(
+        "SDL2 Demo",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        800, 600,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
+    );
+
+    SDL_Renderer *renderer = SDL_CreateRenderer(
+        window, -1,
+        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC
+    );
+
+    bool running = true;
+    while (running) {
+        // --- Event phase ---
+        SDL_Event e;
+        while (SDL_PollEvent(&amp;e)) {
+            if (e.type == SDL_QUIT) running = false;
+            if (e.type == SDL_KEYDOWN &amp;&amp; e.key.keysym.sym == SDLK_ESCAPE) running = false;
+        }
+
+        // --- Draw phase ---
+        SDL_SetRenderDrawColor(renderer, 20, 20, 30, 255);
+        SDL_RenderClear(renderer);
+
+        // Draw a filled rectangle
+        SDL_SetRenderDrawColor(renderer, 200, 100, 50, 255);
+        SDL_Rect rect = {300, 200, 200, 150};
+        SDL_RenderFillRect(renderer, &amp;rect);
+
+        SDL_RenderPresent(renderer);
+    }
+
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return 0;
+}
+</pre>
+
+<h3>SDL_Renderer vs OpenGL Context</h3>
+
+<p>
+SDL2 provides two rendering paths:
+</p>
+
+<p>
+<b>SDL_Renderer</b> is a hardware-accelerated 2D API: rectangles, lines, points, and
+textures. It targets the GPU via Metal, Direct3D, or OpenGL under the hood but exposes
+none of that complexity. It is the right choice for 2D tools, visualisers, and simple games.
+</p>
+
+<p>
+<b>OpenGL context</b>: request <code>SDL_WINDOW_OPENGL</code> on the window and call
+<code>SDL_GL_CreateContext()</code>. SDL2 handles the platform-specific context creation;
+after that you use raw OpenGL or a loader like GLEW/GLAD. This is the path for 3D work,
+shaders, and FBOs.
+</p>
+
+<pre>
+// OpenGL path
+SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+
+SDL_Window *window = SDL_CreateWindow("GL Window", SDL_WINDOWPOS_CENTERED,
+    SDL_WINDOWPOS_CENTERED, 800, 600, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
+
+SDL_GLContext ctx = SDL_GL_CreateContext(window);
+SDL_GL_SetSwapInterval(1);   // vsync
+
+// ... OpenGL calls here ...
+
+SDL_GL_SwapWindow(window);   // present frame
+SDL_GL_DeleteContext(ctx);
+</pre>
+
+<h3>SDL_Surface vs SDL_Texture</h3>
+
+<p>
+An <code>SDL_Surface</code> is a pixel buffer in CPU memory. Operations on it (blitting,
+pixel access) run on the CPU. A <code>SDL_Texture</code> is a GPU-side image; it can only be
+drawn by an <code>SDL_Renderer</code>, not accessed pixel-by-pixel directly.
+</p>
+
+<p>
+The typical flow for a dynamically updated visualisation:
+</p>
+
+<pre>
+// Allocate a texture for CPU-updated content
+SDL_Texture *waveformTex = SDL_CreateTexture(
+    renderer,
+    SDL_PIXELFORMAT_RGBA8888,
+    SDL_TEXTUREACCESS_STREAMING,   // updated each frame
+    512, 128
+);
+
+// Each frame: lock, write pixels, unlock, render
+void* pixels;
+int pitch;
+SDL_LockTexture(waveformTex, nullptr, &amp;pixels, &amp;pitch);
+    uint32_t *px = static_cast&lt;uint32_t*&gt;(pixels);
+    for (int x = 0; x &lt; 512; x++) {
+        // Draw a waveform: white pixel at y = 64 + sample * 64
+        int y = 64 + (int)(waveformData[x] * 60.0f);
+        y = std::max(0, std::min(127, y));
+        for (int row = 0; row &lt; 128; row++) {
+            px[row * (pitch / 4) + x] = (row == y) ? 0xFFFFFFFF : 0x00000000;
+        }
+    }
+SDL_UnlockTexture(waveformTex);
+
+SDL_Rect dst = {20, 400, 512, 128};
+SDL_RenderCopy(renderer, waveformTex, nullptr, &amp;dst);
+</pre>
+
+<h3>Keyboard and Mouse Input</h3>
+
+<pre>
+// In the event loop:
+SDL_Event e;
+while (SDL_PollEvent(&amp;e)) {
+    switch (e.type) {
+    case SDL_QUIT:
+        running = false;
+        break;
+    case SDL_KEYDOWN:
+        if (e.key.keysym.sym == SDLK_SPACE) togglePlay();
+        if (e.key.keysym.sym == SDLK_UP)    freq += 10.0f;
+        if (e.key.keysym.sym == SDLK_DOWN)  freq -= 10.0f;
+        break;
+    case SDL_MOUSEBUTTONDOWN:
+        if (e.button.button == SDL_BUTTON_LEFT) {
+            int x = e.button.x;
+            int y = e.button.y;
+            // handle click at (x, y)
+        }
+        break;
+    case SDL_MOUSEMOTION:
+        if (e.motion.state &amp; SDL_BUTTON_LMASK) {
+            // left-drag
+        }
+        break;
+    case SDL_MOUSEWHEEL:
+        freq += e.wheel.y * 5.0f;
+        break;
+    }
+}
+</pre>
+
+<h3>SDL_ttf for Text</h3>
+
+<p>
+SDL2 itself does not render text; that requires SDL_ttf. It wraps FreeType and produces
+<code>SDL_Surface</code> glyphs you upload to a texture.
+</p>
+
+<pre>
+#include &lt;SDL2/SDL_ttf.h&gt;
+
+TTF_Init();
+TTF_Font *font = TTF_OpenFont(ofToDataPath("fonts/Mono.ttf").c_str(), 16);
+
+// Each frame (or cache the texture if the string is static):
+SDL_Color white = {255, 255, 255, 255};
+SDL_Surface *surf = TTF_RenderUTF8_Blended(font, "Hello, World", white);
+SDL_Texture *tex  = SDL_CreateTextureFromSurface(renderer, surf);
+SDL_FreeSurface(surf);
+
+SDL_Rect dst;
+SDL_QueryTexture(tex, nullptr, nullptr, &amp;dst.w, &amp;dst.h);
+dst.x = 20;
+dst.y = 20;
+SDL_RenderCopy(renderer, tex, nullptr, &amp;dst);
+SDL_DestroyTexture(tex);   // destroy each frame, or cache by string
+
+TTF_CloseFont(font);
+TTF_Quit();
+</pre>
+
+<p>
+For high-frequency text updates, cache the texture and only recreate it when the string
+changes. Creating a texture from a surface on every frame is expensive.
+</p>
+
+<h3>Connecting SDL2 Audio to Series 4 DSP Code</h3>
+
+<p>
+SDL2's audio API uses a callback model identical to oF's <code>ofSoundStream</code>. The
+Series 4 DSP objects (oscillators, biquad filters, compressors) are plain C++ classes with no
+oF dependency - they work unchanged inside an SDL2 audio callback.
+</p>
+
+<pre>
+#include &lt;SDL2/SDL.h&gt;
+// Series 4 DSP headers - no oF dependency required
+#include "Oscillator.h"   // from dsp-03 / dsp-04
+#include "BiquadFilter.h" // from dsp-05
+
+Oscillator osc;
+BiquadFilter lpf;
+
+void audioCallback(void* userdata, Uint8* stream, int len) {
+    float* out    = reinterpret_cast&lt;float*&gt;(stream);
+    int numFrames = len / (2 * sizeof(float));  // stereo, float32
+
+    for (int i = 0; i &lt; numFrames; i++) {
+        float s = osc.tick();          // generate oscillator sample
+        s = lpf.process(s);            // run through low-pass filter
+        out[i * 2]     = s;            // left
+        out[i * 2 + 1] = s;            // right
+    }
+}
+
+int main(int argc, char* argv[]) {
+    SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO);
+
+    osc.setSampleRate(44100);
+    osc.setFrequency(220.0f);
+    lpf.setLowPass(44100, 800.0f, 0.707f);
+
+    SDL_AudioSpec want, have;
+    SDL_zero(want);
+    want.freq     = 44100;
+    want.format   = AUDIO_F32;
+    want.channels = 2;
+    want.samples  = 512;
+    want.callback = audioCallback;
+
+    SDL_AudioDeviceID dev = SDL_OpenAudioDevice(nullptr, 0, &amp;want, &amp;have, 0);
+    SDL_PauseAudioDevice(dev, 0);   // start playing
+
+    // ... event loop ...
+
+    SDL_CloseAudioDevice(dev);
+    SDL_Quit();
+    return 0;
+}
+</pre>
+
+<p>
+The callback runs on a dedicated audio thread. Use <code>SDL_LockAudioDevice(dev)</code> /
+<code>SDL_UnlockAudioDevice(dev)</code> around parameter changes from the main thread, or
+use lock-free atomics as described in the Series 4 articles.
+</p>
+
+<h3>When to Choose SDL2 over openFrameworks</h3>
+
+<p>
+SDL2 is the better choice when:
+</p>
+
+<ul>
+  <li>You need a minimal footprint - a small utility, a CI test harness, or an embedded target where oF's dependencies are impractical.</li>
+  <li>You want explicit control over the event loop and rendering pipeline without a framework's opinions.</li>
+  <li>You are writing portable code that will also be used by projects not using oF (the DSP code from Series 4 is a good example).</li>
+  <li>You only need 2D hardware-accelerated drawing plus text and input - SDL_Renderer covers this with less complexity than oF.</li>
+</ul>
+
+<p>
+openFrameworks is the better choice when:
+</p>
+
+<ul>
+  <li>You need <code>ofMesh</code>, <code>ofEasyCam</code>, <code>ofLight</code>, or the shader pipeline.</li>
+  <li>You want the addon ecosystem (ofxCV, ofxOSC, ofxGui, etc.).</li>
+  <li>You are doing live-coding or prototyping where oF's integrated utilities save time.</li>
+  <li>You need cross-platform audio routing beyond a simple callback (JACK, per-device selection).</li>
+</ul>
+
+<h3>Summary</h3>
+
+<p>
+SDL2 covers window creation, hardware-accelerated 2D rendering, input, and audio in a single
+small C library with minimal dependencies. <code>SDL_Renderer</code> is the 2D path;
+<code>SDL_GL_CreateContext</code> gives you a raw OpenGL context for 3D work. The audio
+callback matches the pattern from oF's <code>ofSoundStream</code>, so Series 4 DSP objects
+plug in without modification. Choose SDL2 when you need a lightweight, low-dependency tool;
+choose oF when you need the full 3D pipeline, shaders, and the addon ecosystem. Part 22
+returns to oF and dives into the OpenGL core profile: VAOs, VBOs, and the programmable
+pipeline without oF's fixed-function abstractions.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+  <li><a href="https://wiki.libsdl.org/SDL2/FrontPage">SDL2 Wiki</a></li>
+  <li><a href="https://wiki.libsdl.org/SDL2/SDL_AudioSpec">SDL_AudioSpec Reference</a></li>
+  <li><a href="https://wiki.libsdl.org/SDL2_ttf/FrontPage">SDL_ttf Documentation</a></li>
+  <li><a href="https://lazyfoo.net/tutorials/SDL/">Lazy Foo SDL2 Tutorials</a></li>
+  <li><a href="https://wiki.libsdl.org/SDL2/SDL_CreateRenderer">SDL_CreateRenderer Reference</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+  <li><a href="dsp-03-oscillators.htm">DSP Part 3: Oscillators</a></li>
+  <li><a href="dsp-05-biquad.htm">DSP Part 5: Biquad Filters</a></li>
+  <li><a href="of-22-opengl-core.htm">OpenGL Core Profile: VAO/VBO</a></li>
+  <li><a href="of-09-audio.htm">Audio I/O with ofSoundStream</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

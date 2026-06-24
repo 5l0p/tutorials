@@ -1,0 +1,305 @@
+openFrameworks - Part 13: Addons - Structure & Best Practices
+2026-06-01
+
+
+The addon system is one of openFrameworks' most practical features. Rather than a curated
+package registry, it is a convention: a repository that follows a specific folder layout can be
+dropped into the addons/ directory of your oF installation and the project
+generator picks it up automatically. That simplicity is both its strength and its hazard -
+any C++ code wrapped in the right folders becomes an "addon", regardless of quality or
+maintenance status. This article explains the layout, the difference between header-only and
+compiled addons, how to write a minimal addon from scratch, and the discipline required to
+avoid turning your project into a graveyard of half-integrated libraries.
+
+
+What You Will Learn
+
+
+  The canonical addon directory structure (src/, libs/,
+  addon_config.mk).
+  The difference between header-only and compiled addons and when each applies.
+  How to write a minimal reusable addon from scratch.
+  How to add an addon via the project generator vs by hand.
+  Dependency management pitfalls and how to avoid them.
+  Criteria for deciding when not to use an addon.
+
+
+The Addon Directory Structure
+
+
+Every addon lives under openframeworks/addons/ofxMyAddon/ (or equivalently, any
+addons/ directory that the project generator knows about). The conventional
+layout:
+
+
+
+ofxMyAddon/
+  addon_config.mk          # build metadata (optional but recommended)
+  ofxMyAddon.h             # convenience include - includes everything the user needs
+  src/
+    ofxMyAddon.h           # class declarations
+    ofxMyAddon.cpp         # definitions
+  libs/
+    mylib/
+      include/             # third-party headers
+      lib/
+        linux64/           # platform-specific static or shared libraries
+        osx/
+        vs/
+  example-basic/
+    src/
+      ofApp.h
+      ofApp.cpp
+      main.cpp
+    addons.make            # lists: ofxMyAddon
+
+
+
+The project generator scans src/ for source files and libs/ for
+include paths and precompiled libraries. addon_config.mk is where you express
+extra compiler flags, additional include paths, or exclusions for specific platforms.
+
+
+addon_config.mk Anatomy
+
+
+# addon_config.mk for ofxNoiseOsc
+
+meta:
+    ADDON_NAME = ofxNoiseOsc
+    ADDON_DESCRIPTION = A reusable band-limited noise oscillator
+    ADDON_AUTHOR = you
+    ADDON_TAGS = audio synthesis
+    ADDON_URL = https://github.com/you/ofxNoiseOsc
+
+common:
+    # Additional include paths (relative to addon root)
+    ADDON_INCLUDES = src libs/noiselib/include
+
+    # Additional source files from libs/
+    ADDON_SOURCES = libs/noiselib/src/noiselib.cpp
+
+linux64:
+    # Platform-specific linker flags
+    ADDON_LDFLAGS = -lm
+
+
+
+The common: section applies to all platforms. Named sections
+(linux64:, osx:, vs:) apply only to that target.
+Platform names match oF's internal identifiers.
+
+
+Header-Only vs Compiled Addons
+
+
+A header-only addon has no .cpp files in src/. All code
+lives in headers (typically using inline, templates, or small implementation
+blocks guarded by an include guard). The user includes the header and the compiler compiles
+that code as part of the application. Examples: math utility addons, tiny data structure
+wrappers.
+
+
+
+Advantages: zero build system complexity, easy to reason about. Disadvantages: long compile
+times when headers are large; any change to the header recompiles every translation unit that
+includes it.
+
+
+
+A compiled addon has .cpp files. The project generator adds those files
+to the project build. Each .cpp compiles once and the result is linked. This is
+the right choice for anything beyond trivial code.
+
+
+Writing a Minimal Addon: ofxNoiseOsc
+
+
+The example addon is a reusable noise oscillator: it generates band-limited white noise at a
+configurable amplitude, suitable for use in an audio callback. We will write it as a compiled
+addon with a single class.
+
+
+
+// ofxNoiseOsc/src/ofxNoiseOsc.h
+#pragma once
+#include <cstddef>
+
+// A simple white-noise oscillator with a linear-ramp amplitude envelope.
+class ofxNoiseOsc {
+public:
+    ofxNoiseOsc() = default;
+
+    // Call once to set output sample rate
+    void setup(float sampleRate);
+
+    // Set target amplitude (0-1). Reached in rampMs milliseconds.
+    void setAmplitude(float target, float rampMs = 10.0f);
+
+    // Generate <numFrames> samples of mono noise into <out>.
+    // Adds to existing content if additive == true.
+    void generate(float* out, size_t numFrames, bool additive = false);
+
+private:
+    float sampleRate_  = 44100.0f;
+    float amplitude_   = 0.0f;
+    float target_      = 0.0f;
+    float rampInc_     = 0.0f;
+    unsigned int seed_ = 22695477u;
+
+    float nextSample();
+};
+
+
+
+// ofxNoiseOsc/src/ofxNoiseOsc.cpp
+#include "ofxNoiseOsc.h"
+#include <cmath>
+#include <cstdlib>
+
+void ofxNoiseOsc::setup(float sampleRate) {
+    sampleRate_ = sampleRate;
+}
+
+void ofxNoiseOsc::setAmplitude(float target, float rampMs) {
+    target_   = target;
+    float dur = (rampMs / 1000.0f) * sampleRate_;
+    rampInc_  = dur > 0.0f ? (target - amplitude_) / dur : target - amplitude_;
+}
+
+void ofxNoiseOsc::generate(float* out, size_t numFrames, bool additive) {
+    for (size_t i = 0; i < numFrames; ++i) {
+        // Walk amplitude toward target
+        if (rampInc_ > 0.0f && amplitude_ < target_) {
+            amplitude_ = std::min(amplitude_ + rampInc_, target_);
+        } else if (rampInc_ < 0.0f && amplitude_ > target_) {
+            amplitude_ = std::max(amplitude_ + rampInc_, target_);
+        }
+
+        float s = nextSample() * amplitude_;
+        out[i]  = additive ? out[i] + s : s;
+    }
+}
+
+float ofxNoiseOsc::nextSample() {
+    // Fast, non-secure LCG PRNG; good enough for audio noise
+    seed_  = seed_ * 1664525u + 1013904223u;
+    // Map [0, UINT_MAX] to [-1, 1]
+    return (float)(int)seed_ / 2147483648.0f;
+}
+
+
+
+// ofxNoiseOsc/ofxNoiseOsc.h  (top-level convenience header)
+#pragma once
+#include "src/ofxNoiseOsc.h"
+
+
+
+That is the entire addon. The user drops the folder into addons/, adds
+ofxNoiseOsc to addons.make, runs the project generator, and gets
+#include "ofxNoiseOsc.h".
+
+
+Adding an Addon via the Project Generator
+
+
+The graphical project generator (launched from the oF root as projectGenerator)
+shows a list of all addons it finds in the addons/ directory. Check the boxes you
+need and click Generate. The generator updates the Makefile, Xcode project, or Visual Studio
+project automatically.
+
+
+
+From the command line (projectGenerator-cli):
+
+
+
+./projectGenerator-cli --addons="ofxOSC,ofxNoiseOsc" myProject
+
+
+Adding an Addon Manually
+
+
+If you cannot use the project generator, or you are on a Linux Makefile workflow:
+
+
+
+  Add the addon name to addons.make in your project root.
+  Run make. The oF Makefile system reads addons.make and
+  includes the addon's src/ and libs/ automatically.
+
+
+
+# addons.make
+ofxOSC
+ofxNoiseOsc
+
+
+
+For Xcode or Visual Studio: you must manually add source files to the project and configure
+include paths in the project settings. This is tedious - use the project generator when
+possible.
+
+
+Avoiding Dependency Creep
+
+
+The biggest risk with addons is cumulative complexity. Each addon you add can:
+
+
+
+  Introduce transitive dependencies (addon A requires library X, which requires library Y).
+  Cause symbol conflicts if two addons bundle different versions of the same library.
+  Break after an oF version bump because the addon was written for an older API.
+  Add significant compile time, especially if it pulls in large headers.
+
+
+
+A practical discipline: before adding an addon, ask whether you need the whole thing or just
+one feature. Reading an addon's src/ directory is often faster than you expect -
+and extracting the two functions you actually need into your own code is frequently the right
+call.
+
+
+When NOT to Use an Addon
+
+
+  Last commit was four years ago. The oF API changed; it probably will not compile
+  without patching.
+  You need one utility function. Copy the function and cite the source.
+  Do not pull in 5,000 lines for a sine approximation.
+  The addon wraps a system library you already link. Write a thin wrapper
+  yourself rather than taking on another person's abstraction.
+  The addon has no example. An addon with no example almost certainly has not
+  been tested end-to-end.
+
+
+Summary
+
+
+An oF addon is a folder under addons/ that follows the src/,
+libs/, addon_config.mk layout. Header-only addons are simple but
+can slow compilation; compiled addons are the norm for non-trivial code. Writing your own
+addon takes about fifteen minutes and yields reusable, self-documenting code. The project
+generator automates the build system integration. Keep your dependency list short and audit
+each addon before adding it. The next article introduces yaml-cpp, a header-friendly YAML
+library that you would typically integrate as a compiled addon.
+
+
+Further Reading
+
+
+  ofxaddons.com - community addon catalogue
+  oF Wiki: How to create an addon
+  How oF Works - official guide
+  projectGenerator on GitHub
+
+
+See Also
+
+
+  What Is openFrameworks?
+  YAML in C++ with yaml-cpp
+  ofxGui: Built-in UI Controls
+

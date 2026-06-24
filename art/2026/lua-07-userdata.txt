@@ -1,0 +1,424 @@
+Lua - Part 7: Userdata - Wrapping C Structs as Lua Objects
+2026-06-01
+
+
+When a Lua script needs to hold a reference to a C object and call methods on it, you
+need more than a table of integers. You need userdata: a block of memory allocated by
+Lua but owned and interpreted by C, equipped with a metatable that makes it behave like
+a proper Lua object. With userdata, a Lua script can write
+filt:set_coeffs(2000, 0.707), pass the filter object to another function,
+and let the garbage collector call the C destructor when the last reference is dropped.
+This is how Lua's own file handles work, how LuaSocket wraps OS sockets, and how any
+serious C library presents stateful objects to Lua scripts. This article shows the
+complete mechanism: allocation, metatable, method dispatch via __index,
+type-safe casting with luaL_checkudata, and automatic cleanup with
+__gc.
+
+
+What You Will Learn
+
+
+How lua_newuserdata allocates GC-managed memory for a C struct.
+How luaL_newmetatable and lua_setmetatable attach behaviour.
+How __index dispatches method calls to C functions.
+How __gc implements an automatic C destructor.
+How __tostring gives debug-friendly representations.
+How luaL_checkudata provides type-safe casting in method bodies.
+
+
+lua_newuserdata: Allocating C Memory via Lua
+
+
+lua_newuserdata(L, size) allocates size bytes, pushes a
+userdata value onto the stack, and returns a void * pointer to the block.
+The memory is managed by Lua's garbage collector: it will be freed when the userdata is
+no longer reachable, optionally after calling a __gc metamethod first.
+
+
+
+/* The C struct we want to wrap */
+typedef struct {
+    double b0, b1, b2;   /* feed-forward coefficients */
+    double a1, a2;        /* feed-back coefficients    */
+    double x1, x2;        /* input delay line          */
+    double y1, y2;        /* output delay line         */
+    int    sample_rate;
+} BiquadFilter;
+
+
+
+/* Constructor called from Lua: BiquadFilter.new(sample_rate) */
+static int biquad_new(lua_State *L) {
+    int sr = (int)luaL_optinteger(L, 1, 44100);
+
+    /* Allocate a BiquadFilter inside Lua-managed memory */
+    BiquadFilter *f = lua_newuserdata(L, sizeof(BiquadFilter));
+    /* stack: [userdata]                                                    */
+
+    /* Zero-initialise */
+    memset(f, 0, sizeof(*f));
+    f->sample_rate = sr;
+    /* Set bypass coefficients: output = input unchanged */
+    f->b0 = 1.0; f->b1 = 0.0; f->b2 = 0.0;
+    f->a1 = 0.0; f->a2 = 0.0;
+
+    /* Attach the metatable - this is what makes it a "BiquadFilter" */
+    luaL_getmetatable(L, "BiquadFilter");
+    /* stack: [userdata, metatable]                                         */
+    lua_setmetatable(L, -2);
+    /* stack: [userdata]  -- metatable is now attached                     */
+
+    return 1;  /* return the userdata */
+}
+
+
+
+The metatable must exist before luaL_getmetatable is called. It is created
+once at module load time by luaL_newmetatable (see below). The metatable
+name "BiquadFilter" is an arbitrary string - it is the key under which the metatable
+is stored in Lua's registry. Choose a name that is globally unique within your
+application to avoid collisions.
+
+
+luaL_newmetatable and __index for Methods
+
+
+A metatable is an ordinary Lua table with fields whose names start with double
+underscores. These fields are metamethods - Lua calls them automatically for operations
+like indexing, garbage collection, and string conversion. The most important for object
+orientation is __index.
+
+
+
+When Lua evaluates filt:set_coeffs(...), it is sugar for
+filt.set_coeffs(filt, ...). That means Lua looks up set_coeffs
+in filt. Since filt is userdata (not a table), the lookup goes
+through the metatable's __index field. If __index is a table,
+Lua looks up the key in that table. The simplest pattern is to set __index
+to the metatable itself - the metatable serves as both the metamethod holder and the
+method dispatch table.
+
+
+
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#include <math.h>
+#include <string.h>
+#include <stdio.h>
+
+#define BIQUAD_MT "BiquadFilter"   /* metatable registry key */
+
+/* Type-safe: returns a pointer only if the value at index is a BiquadFilter */
+static BiquadFilter *check_biquad(lua_State *L, int index) {
+    return (BiquadFilter *)luaL_checkudata(L, index, BIQUAD_MT);
+}
+
+
+
+/* Register the metatable - called once during module load */
+static void create_biquad_metatable(lua_State *L) {
+    luaL_newmetatable(L, BIQUAD_MT);   /* stack: [mt]                      */
+
+    /* __index = metatable itself - methods live here */
+    lua_pushvalue(L, -1);              /* stack: [mt, mt]                  */
+    lua_setfield(L, -2, "__index");    /* mt.__index = mt  stack: [mt]     */
+
+    /* Register methods into the metatable */
+    static const luaL_Reg methods[] = {
+        { "set_lowpass",  biquad_set_lowpass  },
+        { "set_highpass", biquad_set_highpass },
+        { "process",      biquad_process      },
+        { "__gc",         biquad_gc           },
+        { "__tostring",   biquad_tostring     },
+        { NULL, NULL }
+    };
+    luaL_setfuncs(L, methods, 0);      /* stack: [mt]                      */
+    lua_pop(L, 1);                     /* pop metatable                    */
+}
+
+
+Implementing Methods: luaL_checkudata
+
+
+Inside every method, the first argument (index 1) is the object itself - the userdata.
+luaL_checkudata both retrieves the pointer and validates that the userdata
+has the expected metatable. If the check fails (wrong type, or a plain table), it raises
+a Lua error with a descriptive message:
+
+
+
+/* set_lowpass(self, cutoff_hz, q)
+ * Computes biquad lowpass coefficients using the Audio EQ Cookbook formula */
+static int biquad_set_lowpass(lua_State *L) {
+    BiquadFilter *f  = check_biquad(L, 1);       /* type-safe cast    */
+    double        fc = luaL_checknumber(L, 2);   /* cutoff Hz         */
+    double        q  = luaL_checknumber(L, 3);   /* quality factor    */
+
+    double w0    = 2.0 * M_PI * fc / f->sample_rate;
+    double cos_w = cos(w0);
+    double sin_w = sin(w0);
+    double alpha = sin_w / (2.0 * q);
+    double a0    = 1.0 + alpha;
+
+    f->b0 =  (1.0 - cos_w) / 2.0 / a0;
+    f->b1 =  (1.0 - cos_w)       / a0;
+    f->b2 =  (1.0 - cos_w) / 2.0 / a0;
+    f->a1 = -2.0 * cos_w         / a0;
+    f->a2 =  (1.0 - alpha)       / a0;
+    /* Reset delay lines when coefficients change */
+    f->x1 = f->x2 = f->y1 = f->y2 = 0.0;
+
+    return 0;  /* no return value - method call for side effect */
+}
+
+/* process(self, sample) -> filtered_sample */
+static int biquad_process(lua_State *L) {
+    BiquadFilter *f = check_biquad(L, 1);
+    double        x = luaL_checknumber(L, 2);
+
+    /* Direct Form I biquad */
+    double y = f->b0*x + f->b1*f->x1 + f->b2*f->x2
+                       - f->a1*f->y1 - f->a2*f->y2;
+    f->x2 = f->x1; f->x1 = x;
+    f->y2 = f->y1; f->y1 = y;
+
+    lua_pushnumber(L, y);
+    return 1;
+}
+
+
+__gc: Automatic C Destructor
+
+
+If the userdata owns heap memory, file handles, or other resources beyond the
+lua_newuserdata block itself, the __gc metamethod is where
+they are freed. Lua calls it when the userdata is about to be collected.
+
+
+
+static int biquad_gc(lua_State *L) {
+    BiquadFilter *f = check_biquad(L, 1);
+    /* BiquadFilter has no external resources in this example.
+     * If it held a malloc'd buffer or a file descriptor:
+     *   free(f->buffer);
+     *   close(f->fd);
+     * The struct itself is freed by Lua after __gc returns. */
+    (void)f;
+    printf("BiquadFilter GC'd\n");
+    return 0;
+}
+
+
+
+The lua_newuserdata block is freed by Lua's allocator after __gc
+returns. You must not use the pointer after __gc has been called. If you
+store the C pointer in a C-side data structure, clear that reference in __gc
+to prevent use-after-free.
+
+
+__tostring for Debug Output
+
+
+static int biquad_tostring(lua_State *L) {
+    BiquadFilter *f = check_biquad(L, 1);
+    lua_pushfstring(L, "BiquadFilter(sr=%d, b0=%.4f)", f->sample_rate, f->b0);
+    return 1;
+}
+
+
+
+After this, tostring(filt) in Lua returns something readable instead of
+"userdata: 0x7f3c20004c20".
+
+
+Complete Example
+
+
+Putting it all together - the full C module:
+
+
+
+/* biquad_lua.c - wrap BiquadFilter as a Lua object */
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#include <math.h>
+#include <string.h>
+#include <stdio.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define BIQUAD_MT "BiquadFilter"
+
+typedef struct {
+    double b0, b1, b2, a1, a2;
+    double x1, x2, y1, y2;
+    int    sample_rate;
+} BiquadFilter;
+
+static BiquadFilter *check_biquad(lua_State *L, int idx) {
+    return (BiquadFilter *)luaL_checkudata(L, idx, BIQUAD_MT);
+}
+
+static int biquad_new(lua_State *L) {
+    int sr = (int)luaL_optinteger(L, 1, 44100);
+    BiquadFilter *f = lua_newuserdata(L, sizeof(BiquadFilter));
+    memset(f, 0, sizeof(*f));
+    f->sample_rate = sr;
+    f->b0 = 1.0;
+    luaL_getmetatable(L, BIQUAD_MT);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+static int biquad_set_lowpass(lua_State *L) {
+    BiquadFilter *f  = check_biquad(L, 1);
+    double fc = luaL_checknumber(L, 2);
+    double q  = luaL_checknumber(L, 3);
+    double w0 = 2.0 * M_PI * fc / f->sample_rate;
+    double cw = cos(w0), sw = sin(w0);
+    double alpha = sw / (2.0 * q);
+    double a0    = 1.0 + alpha;
+    f->b0 = (1.0 - cw) / 2.0 / a0;
+    f->b1 = (1.0 - cw)       / a0;
+    f->b2 = (1.0 - cw) / 2.0 / a0;
+    f->a1 = -2.0 * cw         / a0;
+    f->a2 = (1.0 - alpha)     / a0;
+    f->x1 = f->x2 = f->y1 = f->y2 = 0.0;
+    return 0;
+}
+
+static int biquad_process(lua_State *L) {
+    BiquadFilter *f = check_biquad(L, 1);
+    double x = luaL_checknumber(L, 2);
+    double y = f->b0*x + f->b1*f->x1 + f->b2*f->x2
+                       - f->a1*f->y1  - f->a2*f->y2;
+    f->x2 = f->x1; f->x1 = x;
+    f->y2 = f->y1; f->y1 = y;
+    lua_pushnumber(L, y);
+    return 1;
+}
+
+static int biquad_gc(lua_State *L) {
+    (void)check_biquad(L, 1);
+    return 0;
+}
+
+static int biquad_tostring(lua_State *L) {
+    BiquadFilter *f = check_biquad(L, 1);
+    lua_pushfstring(L, "BiquadFilter(sr=%d)", f->sample_rate);
+    return 1;
+}
+
+static const luaL_Reg biquad_methods[] = {
+    { "set_lowpass",  biquad_set_lowpass  },
+    { "process",      biquad_process      },
+    { "__gc",         biquad_gc           },
+    { "__tostring",   biquad_tostring     },
+    { NULL, NULL }
+};
+
+static const luaL_Reg biquad_module[] = {
+    { "new", biquad_new },
+    { NULL, NULL }
+};
+
+int luaopen_biquad(lua_State *L) {
+    /* Create the metatable and populate it */
+    luaL_newmetatable(L, BIQUAD_MT);      /* stack: [mt]                   */
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -2, "__index");       /* mt.__index = mt               */
+    luaL_setfuncs(L, biquad_methods, 0);  /* add methods to mt             */
+    lua_pop(L, 1);                        /* pop metatable                 */
+
+    /* Create and return the module table */
+    lua_createtable(L, 0, 1);
+    luaL_setfuncs(L, biquad_module, 0);
+    return 1;
+}
+
+
+
+Lua script using the module:
+
+
+
+-- test_biquad.lua
+local BQ = require("biquad")
+
+local filt = BQ.new(48000)
+print(tostring(filt))          -- BiquadFilter(sr=48000)
+
+filt:set_lowpass(1000, 0.707)
+
+-- Process 8 samples of a 2 kHz sine wave (above cutoff, should be attenuated)
+local two_pi = 2 * math.pi
+for i = 0, 7 do
+    local x = math.sin(two_pi * 2000 * i / 48000)
+    local y = filt:process(x)
+    print(string.format("x=% .4f  y=% .4f", x, y))
+end
+-- filt goes out of scope here; __gc fires at next collection
+
+
+
+gcc -o test_biquad test_biquad.c biquad_lua.c $(pkg-config --cflags --libs lua5.4) -lm
+./test_biquad
+
+
+Userdata vs Tables: When to Use Each
+
+
+Use userdata when: the object owns resources that need deterministic cleanup
+(file handles, sockets, audio device handles); the object has identity (two different
+filter instances are not equal even if their coefficients match); performance matters
+(field access on userdata goes through C, not Lua table lookup); or type safety matters
+(you need to distinguish a BiquadFilter from a random table).
+
+
+
+Use a plain Lua table when: the object is pure data with no C-side resources; scripts
+should be able to inspect and modify its fields freely; you want the flexibility of
+adding arbitrary fields at runtime without C changes.
+
+
+Summary
+
+
+lua_newuserdata allocates GC-managed memory for a C struct.
+luaL_newmetatable creates the metatable once at module load time.
+Setting __index = metatable enables method dispatch.
+luaL_setfuncs registers method C functions into the metatable.
+luaL_checkudata in each method provides type-safe casting with automatic
+error messages. __gc runs C cleanup code when the object is collected.
+__tostring makes debugging bearable.
+
+
+
+The next article covers coroutines: how Lua's cooperative multitasking works, how to
+drive coroutines from C, and how to build a scripted sequence system where Lua yields
+control back to C between steps.
+
+
+Further Reading
+
+
+lua_newuserdata - Lua 5.4 Reference Manual
+luaL_newmetatable - Lua 5.4 Reference Manual
+luaL_checkudata - Lua 5.4 Reference Manual
+Programming in Lua - Chapter 28: User-Defined Types in C
+Programming in Lua - Chapter 29: Managing Resources
+Metatables and Metamethods - Lua 5.4 Reference Manual
+
+
+See Also
+
+
+Calling C from Lua
+Tables as Configuration
+Coroutines and C
+Scripting a DSP Pipeline from Lua
+

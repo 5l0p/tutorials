@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 14: Monomachine Percussion Toolbox
-2026-01-01
+2026-06-01
 
 
 The Monomachine includes a Percussion Toolbox synthesis engine — a set of built-in

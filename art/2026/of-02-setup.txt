@@ -1,0 +1,277 @@
+openFrameworks - Part 2: Setup & Project Generator
+2026-06-01
+
+
+Before you can draw a single pixel you need a working build environment. openFrameworks is not
+installed from a package manager - you download a release archive, unzip it, and every project
+you create lives inside that directory tree. This article walks through that process, explains
+the folder layout, and shows you how to compile and run a project on each of the three major
+desktop platforms.
+
+
+What You Will Learn
+
+
+How to download the openFrameworks release archive and what the folder layout means
+How to use the Project Generator to create a new project with addons
+How to compile and run a project with make on Linux, Xcode on macOS, and Visual Studio on Windows
+What lives in the apps/, addons/, and libs/ directories
+How to read example source code as the fastest way to learn the oF API
+
+
+Downloading openFrameworks
+
+
+Go to openframeworks.cc/download and grab the
+archive for your platform: linux64, osx, or vs (Visual Studio, Windows).
+The 0.12.x series is the current stable branch. Each platform archive is roughly 250–300 MB
+because it bundles all the precompiled third-party libraries oF depends on.
+
+
+
+Unzip to a location without spaces in the path. A common convention is:
+
+
+
+~/of/           # Linux / macOS home directory
+C:\of\          # Windows, short path avoids NTFS MAX_PATH issues
+
+
+
+After unzipping you will see the top-level oF distribution. All your own projects will live
+inside this tree, under apps/myApps/ by convention.
+
+
+The Distribution Folder Layout
+
+
+of_v0.12.0_linux64_release/
+  addons/             <-- ofxOSC, ofxGui, etc. (bundled addons)
+  apps/
+    myApps/           <-- your projects go here
+  libs/               <-- oF core source + third-party (FreeType, GLFW, ...)
+  scripts/            <-- platform setup scripts
+  projectGenerator/   <-- the GUI tool for creating projects
+  examples/           <-- official examples, organised by topic
+
+
+
+The libs/ directory is large. It contains both the oF source code
+(libs/openFrameworks/) and precompiled third-party binaries for your target
+platform. You almost never need to modify anything here.
+
+
+Running the Project Generator
+
+
+The project generator (PG) creates a correctly wired skeleton project. On Linux and macOS you
+can run it as a GUI application or from the command line. On Windows the GUI version is the
+primary workflow.
+
+
+
+GUI workflow (all platforms): Launch projectGenerator/projectGenerator
+(Linux/macOS) or projectGenerator\projectGenerator.exe (Windows). Set:
+
+
+
+  Project name - e.g. mySketch
+  Project path - defaults to apps/myApps/, which is correct
+  Addons - check any bundled addons you need (you can re-run PG later to add more)
+
+
+
+Click Generate. The tool creates the project folder and exits cleanly.
+
+
+
+Command-line workflow (Linux/macOS):
+
+
+
+cd ~/of/of_v0.12.0_linux64_release/
+./projectGenerator/projectGenerator \
+    --project apps/myApps/mySketch \
+    --addons ofxOSC,ofxGui
+
+
+Inside a Generated Project
+
+
+apps/myApps/mySketch/
+  src/
+    main.cpp
+    ofApp.h
+    ofApp.cpp
+  bin/               <-- compiled binary appears here after build
+  addons.make        <-- list of addons for the Makefile system
+  Makefile
+  mySketch.xcodeproj/   (macOS only)
+  mySketch.sln          (Windows only)
+  mySketch.vcxproj      (Windows only)
+
+
+
+The generated src/ofApp.h, src/ofApp.cpp, and
+src/main.cpp contain the minimal skeleton covered in the previous article. You
+should not need to edit main.cpp until you want to change the window size or
+switch to fullscreen.
+
+
+Building on Linux
+
+
+openFrameworks on Linux uses a GNU Makefile build system. Install the prerequisites first
+(Ubuntu / Debian shown):
+
+
+
+sudo apt update
+sudo apt install build-essential libgl1-mesa-dev libglu1-mesa-dev \
+    libasound2-dev libpulse-dev libgtk-3-dev libfreeimage-dev \
+    libfreetype6-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    libmpg123-dev libsndfile1-dev
+
+
+
+The oF distribution includes a convenience script that installs all of these for various
+distros:
+
+
+
+cd ~/of/of_v0.12.0_linux64_release/scripts/linux/
+sudo ./install_dependencies.sh
+
+
+
+Then build your project:
+
+
+
+cd ~/of/of_v0.12.0_linux64_release/apps/myApps/mySketch/
+make -j$(nproc)
+make run
+
+
+
+The first build compiles both the oF static library and your project - this takes several
+minutes. Subsequent builds are incremental and typically take a few seconds.
+
+
+Building on macOS
+
+
+The PG generates an Xcode project. Open mySketch.xcodeproj in Xcode, select the
+mySketch scheme, and press Cmd+R to build and run. Xcode must be installed
+from the App Store; the Command Line Tools alone are not sufficient because oF links against
+macOS frameworks.
+
+
+
+Alternatively, from the terminal:
+
+
+
+cd ~/of/of_v0.12.0_osx/apps/myApps/mySketch/
+make -j$(sysctl -n hw.ncpu)
+make run
+
+
+
+The macOS Makefile path is supported but the Xcode IDE gives you the debugger and profiler,
+which are valuable for creative coding work.
+
+
+Building on Windows
+
+
+Download and install Visual Studio Community (free). During installation select the
+Desktop development with C++ workload. The project generator creates a
+.sln solution file. Open it, set the configuration to Release x64 (or
+Debug if you need to step through code), and press F5.
+
+
+
+Visual Studio places the compiled binary in bin\ relative to your project root,
+matching the Linux and macOS convention.
+
+
+Adding an Addon After Project Creation
+
+
+Open addons.make in your project folder and add one addon name per line:
+
+
+
+ofxOSC
+ofxGui
+ofxAssimpModelLoader
+
+
+
+Then re-run the project generator (point it at the existing project folder) to regenerate the
+platform-specific project files. On Linux the Makefile system reads addons.make
+directly at build time, so you only need to re-run PG if you use Xcode or Visual Studio.
+
+
+The config.make File
+
+
+Each project on Linux/macOS has a config.make that lets you override build
+variables. Common overrides:
+
+
+
+# config.make
+CFLAGS += -O3 -march=native       # optimise for the current CPU
+PROJECT_LDFLAGS += -lsndfile      # link an extra system library
+EXCLUDE_FROM_BUILD = src/WipFile.cpp
+
+
+Running the Official Examples
+
+
+Before writing your own code, build and run a few of the official examples:
+
+
+
+cd ~/of/of_v0.12.0_linux64_release/examples/graphics/polygonExample/
+make -j$(nproc) && make run
+
+
+
+The examples directory is organised by topic: graphics/, sound/,
+3d/, gl/, input_output/. Each example is a
+self-contained project with its own Makefile. Reading example source code is one of the fastest
+ways to learn the oF API.
+
+
+Summary
+
+
+Download the release archive from openframeworks.cc and unzip it — all your projects live
+inside the resulting directory. Run the Project Generator to create a new app; it generates
+the correct Makefile and IDE project for your platform and lists addons in
+addons.make. Build with make && make RunRelease on Linux,
+open the Xcode project on macOS, or the Visual Studio solution on Windows. The
+examples/ directory is organised by topic and is the best reference for the
+oF API.
+
+
+Further Reading
+
+
+  openFrameworks Download Page
+  oF Linux Setup Guide
+  oF macOS / Xcode Setup Guide
+  oF Windows / Visual Studio Setup Guide
+
+
+See Also
+
+
+  What Is openFrameworks?
+  The ofApp Lifecycle
+  Linux Builds
+  Windows Builds
+

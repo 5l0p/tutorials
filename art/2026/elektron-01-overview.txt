@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 1: Machinedrum and Monomachine Architecture
-2026-01-01
+2026-06-01
 
 
 The Elektron Machinedrum (2001) and Monomachine (2004) are hardware synthesisers that

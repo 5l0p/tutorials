@@ -1,0 +1,436 @@
+Lua - Part 9: Sandboxing Lua
+2026-06-01
+
+
+When a user can supply the Lua script - a game modder, a pipeline author, a remote
+caller - the embedding contract changes completely. A script that calls
+os.execute("rm -rf ~") or io.open("/etc/passwd") is no longer
+a hypothetical concern. Lua's flexibility is exactly what makes unrestricted embedding
+dangerous: by default, luaL_openlibs gives scripts full access to the
+filesystem, the shell, the network (via LuaSocket if loaded), and the ability to load
+arbitrary C modules. This article walks through the complete threat model, the tools
+Lua provides to restrict it, and a complete sandboxed evaluator in C that allows
+computation and string manipulation but cannot touch the OS, the filesystem, or run
+indefinitely.
+
+
+What You Will Learn
+
+
+The threat model for untrusted Lua: what unrestricted scripts can do.
+How to open only safe standard libraries selectively.
+How to remove or replace dangerous globals after opening libraries.
+How to use _ENV as a sandbox environment in Lua 5.4.
+How to add a CPU instruction limit using a Lua debug hook.
+A complete sandboxed evaluator in C.
+
+
+The Threat Model
+
+
+An unrestricted Lua script loaded with luaL_openlibs can:
+
+
+
+Read and write arbitrary files via io.open, io.lines, os.rename.
+Execute shell commands via os.execute and io.popen.
+Load additional C modules from the filesystem via require and package.loadlib.
+Obtain file timestamps, current directory, environment variables via os.*.
+Spin the CPU indefinitely in an infinite loop.
+Allocate unbounded memory with large tables or strings.
+Use debug.getinfo to introspect the call stack and potentially bypass metatables.
+
+
+
+Your sandbox must address all of these. The first three are eliminated by not loading
+the dangerous libraries. The infinite loop is addressed by a debug hook. Memory is
+harder to bound without a custom allocator; for most use cases, process-level limits
+(ulimit, cgroups) are more practical than in-Lua memory tracking.
+
+
+Selective Library Loading
+
+
+Never call luaL_openlibs for untrusted scripts. Open libraries explicitly,
+one by one, using luaL_requiref:
+
+
+
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#include <stdio.h>
+#include <string.h>
+
+static void open_safe_libs(lua_State *L) {
+    /* base: print, ipairs, pairs, type, tostring, etc. */
+    luaL_requiref(L, "_G",        luaopen_base,   1); lua_pop(L, 1);
+
+    /* math: safe - no I/O or system access */
+    luaL_requiref(L, "math",      luaopen_math,   1); lua_pop(L, 1);
+
+    /* string: safe - string manipulation only */
+    luaL_requiref(L, "string",    luaopen_string, 1); lua_pop(L, 1);
+
+    /* table: safe - table manipulation only */
+    luaL_requiref(L, "table",     luaopen_table,  1); lua_pop(L, 1);
+
+    /* coroutine: generally safe for single-threaded embeddings */
+    luaL_requiref(L, "coroutine", luaopen_coroutine, 1); lua_pop(L, 1);
+
+    /* utf8: safe - string encoding utilities */
+    luaL_requiref(L, "utf8",      luaopen_utf8,   1); lua_pop(L, 1);
+
+    /* NOT opened: io, os, package, debug */
+}
+
+
+
+After this, scripts have access to arithmetic, string formatting, table manipulation,
+and coroutines. They cannot touch the filesystem, the shell, or the module loader.
+
+
+Removing Dangerous Globals
+
+
+Even with selective loading, the base library introduces a few functions
+that can be dangerous in some contexts:
+
+
+
+load - compiles and runs arbitrary Lua code. Allows the sandbox to be bypassed if the untrusted script can construct Lua source.
+loadstring - same as load with a string argument.
+dofile - loads and runs a Lua file from disk.
+loadfile - loads a file from disk.
+require - loads a module; can load C modules.
+collectgarbage - can trigger GC or query memory use; timing side-channel.
+
+
+
+Remove them by setting them to nil in the global table:
+
+
+
+static void remove_dangerous_globals(lua_State *L) {
+    static const char *dangerous[] = {
+        "load", "loadstring", "dofile", "loadfile",
+        "require", "collectgarbage",
+        NULL
+    };
+    for (int i = 0; dangerous[i]; i++) {
+        lua_pushnil(L);
+        lua_setglobal(L, dangerous[i]);
+    }
+}
+
+
+
+Setting a global to nil removes it. Scripts that try to call require("io")
+after this will get "attempt to call a nil value".
+
+
+
+Whether to remove load depends on your use case. For a formula evaluator
+or config parser it should go. For a macro scripting system where users are expected
+to generate and run code, you might keep it but load it with the sandbox environment
+(see below).
+
+
+_ENV as a Sandbox
+
+
+Lua 5.4 uses the _ENV variable as the implicit environment for all global
+accesses. Every reference to a global x in Lua code is actually
+_ENV.x. You can replace _ENV with a restricted table to
+give the script a completely different view of globals.
+
+
+
+The cleanest approach: load the script chunk, then set its upvalue (which is _ENV)
+to a custom table before running it:
+
+
+
+static int run_sandboxed(lua_State *L, const char *code,
+                          const char *chunkname) {
+    /* Load the script as a chunk (does not run it yet) */
+    int rc = luaL_loadbuffer(L, code, strlen(code), chunkname);
+    if (rc != LUA_OK) {
+        fprintf(stderr, "compile error: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return -1;
+    }
+    /* stack: [chunk_function] */
+
+    /* Build the sandbox environment table */
+    lua_createtable(L, 0, 16);          /* stack: [chunk, sandbox_env] */
+    int env_idx = lua_gettop(L);
+
+    /* Copy only the safe globals we want the script to see */
+    static const char *allowed_globals[] = {
+        "print", "tostring", "tonumber", "type",
+        "pairs", "ipairs", "next",
+        "select", "unpack", "pcall", "xpcall", "error",
+        "setmetatable", "getmetatable", "rawget", "rawset", "rawequal",
+        "math", "string", "table", "coroutine", "utf8",
+        NULL
+    };
+    for (int i = 0; allowed_globals[i]; i++) {
+        lua_getglobal(L, allowed_globals[i]);     /* get from real globals */
+        lua_setfield(L, env_idx, allowed_globals[i]); /* set in sandbox    */
+    }
+
+    /* Set _ENV in the sandbox to itself (so scripts can see it) */
+    lua_pushvalue(L, env_idx);
+    lua_setfield(L, env_idx, "_ENV");
+
+    /* Replace the chunk's _ENV upvalue with our sandbox table */
+    /* The first upvalue of a Lua 5.4 chunk is always _ENV      */
+    lua_pushvalue(L, env_idx);   /* stack: [chunk, sandbox, sandbox] */
+    const char *upval = lua_setupvalue(L, -3, 1);  /* sets upvalue 1 of chunk */
+    /* stack: [chunk, sandbox] */
+    if (!upval) {
+        fprintf(stderr, "sandbox: could not set _ENV upvalue\n");
+        lua_pop(L, 2);
+        return -1;
+    }
+    lua_pop(L, 1);   /* pop sandbox env (still referenced as upvalue) */
+    /* stack: [chunk] */
+
+    /* Run the chunk */
+    rc = lua_pcall(L, 0, LUA_MULTRET, 0);
+    if (rc != LUA_OK) {
+        fprintf(stderr, "runtime error: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return -1;
+    }
+    return 0;
+}
+
+
+
+With this technique, even if the script tries to access os directly, it
+will get nil because os is not in the sandbox table. The script cannot
+"escape" by indexing _G either - _G is not in the sandbox,
+and even if it were, the real global table references only the sandbox copy of safe
+functions.
+
+
+CPU Instruction Limit via Debug Hook
+
+
+A debug hook is a C callback that Lua calls at specified intervals during execution.
+The "count" hook fires every N VM instructions. Install one that aborts the script
+after a fixed instruction budget:
+
+
+
+#define INSTRUCTION_LIMIT 1000000   /* 1 million instructions */
+
+static void instruction_limit_hook(lua_State *L, lua_Debug *ar) {
+    (void)ar;
+    /* Raise a Lua error - terminates the running script */
+    luaL_error(L, "execution limit exceeded (%d instructions)", INSTRUCTION_LIMIT);
+}
+
+static void install_instruction_limit(lua_State *L) {
+    /* LUA_MASKCOUNT: call the hook every INSTRUCTION_LIMIT instructions */
+    lua_sethook(L, instruction_limit_hook, LUA_MASKCOUNT, INSTRUCTION_LIMIT);
+}
+
+
+
+Install this on the coroutine's lua_State (or the main state if not using
+coroutines) before running untrusted code:
+
+
+
+install_instruction_limit(L);
+run_sandboxed(L, untrusted_code, "user_script");
+
+
+
+The hook fires after at most INSTRUCTION_LIMIT instructions regardless of
+what the script does. An infinite loop hits the limit and gets a Lua error, which
+lua_pcall catches. The count resets each time the hook fires, so you may
+want to track total instructions in the hook and raise the error only after the cumulative
+total is exceeded if you want a strict single budget.
+
+
+
+What constitutes "one instruction" is Lua VM opcodes, not C source lines. A tight Lua
+loop like while true do end generates roughly 3-4 opcodes per iteration
+(OP_JMP, OP_FORLOOP or similar). 1,000,000 instructions allows several hundred thousand
+loop iterations - generous for computation, tight enough to prevent denial-of-service.
+
+
+Complete Sandboxed Evaluator
+
+
+/* sandbox.c - complete sandboxed Lua evaluator */
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define INST_LIMIT 500000
+
+static void hook_limit(lua_State *L, lua_Debug *ar) {
+    (void)ar;
+    luaL_error(L, "instruction limit (%d) exceeded", INST_LIMIT);
+}
+
+static void open_safe_libs(lua_State *L) {
+    luaL_requiref(L, "_G",        luaopen_base,      1); lua_pop(L, 1);
+    luaL_requiref(L, "math",      luaopen_math,      1); lua_pop(L, 1);
+    luaL_requiref(L, "string",    luaopen_string,    1); lua_pop(L, 1);
+    luaL_requiref(L, "table",     luaopen_table,     1); lua_pop(L, 1);
+    luaL_requiref(L, "utf8",      luaopen_utf8,      1); lua_pop(L, 1);
+
+    /* Remove globals that could escape the sandbox */
+    static const char *deny[] = {
+        "load", "loadfile", "dofile", "require",
+        "collectgarbage", "rawdebug",
+        NULL
+    };
+    for (int i = 0; deny[i]; i++) {
+        lua_pushnil(L);
+        lua_setglobal(L, deny[i]);
+    }
+}
+
+static int eval_sandboxed(lua_State *L, const char *code) {
+    /* Compile */
+    if (luaL_loadbuffer(L, code, strlen(code), "user") != LUA_OK) {
+        fprintf(stderr, "compile: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return -1;
+    }
+
+    /* Build restricted environment */
+    lua_createtable(L, 0, 12);
+    int env = lua_gettop(L);
+
+    static const char *allowed[] = {
+        "print","tostring","tonumber","type",
+        "pairs","ipairs","next","select","pcall","xpcall","error",
+        "math","string","table","utf8",
+        NULL
+    };
+    for (int i = 0; allowed[i]; i++) {
+        lua_getglobal(L, allowed[i]);
+        lua_setfield(L, env, allowed[i]);
+    }
+    /* _ENV points to itself so scripts can iterate their own globals */
+    lua_pushvalue(L, env);
+    lua_setfield(L, env, "_ENV");
+
+    /* Inject _ENV as upvalue 1 of the chunk */
+    lua_pushvalue(L, env);
+    lua_setupvalue(L, -3, 1);
+    lua_pop(L, 1);   /* pop sandbox env */
+
+    /* Install instruction limiter */
+    lua_sethook(L, hook_limit, LUA_MASKCOUNT, INST_LIMIT);
+
+    /* Run */
+    int rc = lua_pcall(L, 0, LUA_MULTRET, 0);
+    lua_sethook(L, NULL, 0, 0);   /* remove hook after run */
+
+    if (rc != LUA_OK) {
+        fprintf(stderr, "runtime: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return -1;
+    }
+    return 0;
+}
+
+int main(void) {
+    lua_State *L = luaL_newstate();
+    open_safe_libs(L);
+
+    /* Safe: computation */
+    puts("--- safe computation ---");
+    eval_sandboxed(L,
+        "local sum = 0\n"
+        "for i = 1, 100 do sum = sum + i end\n"
+        "print('sum =', sum)\n"
+    );
+
+    /* Blocked: filesystem access */
+    puts("--- blocked filesystem ---");
+    eval_sandboxed(L,
+        "local f = io and io.open('/etc/passwd') or nil\n"
+        "print('io is', io)   -- nil: not in sandbox\n"
+    );
+
+    /* Blocked: infinite loop */
+    puts("--- blocked infinite loop ---");
+    eval_sandboxed(L, "while true do end\n");
+
+    lua_close(L);
+    return 0;
+}
+
+
+
+gcc -o sandbox sandbox.c $(pkg-config --cflags --libs lua5.4)
+./sandbox
+# --- safe computation ---
+# sum =   5050
+# --- blocked filesystem ---
+# io is   nil
+# --- blocked infinite loop ---
+# runtime: [string "user"]:1: instruction limit (500000) exceeded
+
+
+What the Sandbox Does Not Cover
+
+
+This sandbox prevents filesystem access, shell execution, and CPU exhaustion. It does not:
+
+
+
+Limit memory allocation. A script can still allocate gigabytes. Use a custom Lua allocator or OS-level memory limits for hard bounds.
+Prevent stack overflow via deep recursion. Set lua_setcstacklimit or catch Lua errors from very deep recursion.
+Prevent all timing side-channels. Scripts can measure elapsed time via os.clock if you allow it.
+Protect against logic bugs in C functions you expose. A C function that trusts its arguments without validation is still vulnerable to malformed input.
+
+
+Summary
+
+
+Sandboxing Lua requires three layers working together: open only safe libraries
+(math, string, table - not io, os, package); remove dangerous base functions (load,
+require, dofile); and replace _ENV with a restricted table so global
+lookups see only what you permit. Add an instruction-count debug hook to prevent
+infinite loops. The result is a Lua interpreter that scripts can use for computation
+and string handling but cannot use to touch the OS or consume unbounded resources.
+
+
+
+The next article covers LuaJIT: how the tracing JIT works, the FFI extension for calling
+C with near-zero overhead, and the practical differences from standard Lua 5.4.
+
+
+Further Reading
+
+
+lua_sethook - Lua 5.4 Reference Manual
+lua_setupvalue - Lua 5.4 Reference Manual
+Environments and the Global Environment - Lua 5.4
+Programming in Lua - Sandboxing with Environments
+LuaJIT Extensions (includes security notes)
+luaL_requiref - Lua 5.4 Reference Manual
+
+
+See Also
+
+
+Running Lua from C
+Calling C from Lua
+Coroutines and C
+LuaJIT
+

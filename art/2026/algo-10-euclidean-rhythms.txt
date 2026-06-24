@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 10: Euclidean Rhythms
-2026-01-20
+2026-06-01
 
 
 Most rhythmic patterns in Western popular and classical music place beats on metrically

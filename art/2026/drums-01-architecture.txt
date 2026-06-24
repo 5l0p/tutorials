@@ -1,5 +1,5 @@
 Drums - Part 1: Electronic Drum Synthesis — Architecture and Approach
-2026-06-09
+2026-06-01
 
 
 Every classic drum machine — TR-808, TR-909, LinnDrum — synthesises its sounds from

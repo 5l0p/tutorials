@@ -1,5 +1,5 @@
 openFrameworks - Part 1: What Is openFrameworks?
-2026-06-09
+2026-06-01
 
 
 openFrameworks (oF) is an open-source C++ toolkit designed for creative coding. Rather than

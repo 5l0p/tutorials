@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 7: Voice Leading
-2026-01-17
+2026-06-01
 
 
 The chord progression generator from Part 6 outputs chords as root-position triads —

@@ -1,0 +1,294 @@
+Pico — Part 9: Multicore Communication
+2026-06-01
+
+
+Two cores running at 125 MHz, sharing 264 KB of SRAM with no cache between them and no
+memory protection unit worth speaking of. The RP2040's inter-core communication story
+is both simpler and more dangerous than it sounds: simpler because the cores share a
+single coherent memory system, more dangerous because nothing stops you from writing
+a shared variable from both cores simultaneously and producing garbage. This article
+covers the three tools the RP2040 gives you for cross-core coordination - the SIO FIFO,
+hardware spinlocks, and the inter-core FIFO message channel - and how to use them for
+the specific problem of changing a synthesiser's frequency mid-note without a click.
+
+
+What You Will Learn
+
+
+The SIO FIFO: what it is, its capacity, and how to use multicore_fifo_push and multicore_fifo_pop
+Hardware spinlocks: claiming, locking, unlocking, and when to use them vs the FIFO
+The double-buffer swap pattern for parameter updates without holding a lock across DSP computation
+Why __dmb() (Data Memory Barrier) is needed at the swap boundary
+Practical example: changing oscillator frequency mid-note without an audible click
+The single-writer rule: why the cleanest approach is often to own each variable from exactly one core
+
+
+The SIO FIFO
+
+
+The RP2040's SIO (Single-cycle IO) block contains two 32-bit wide, 8-entry deep FIFOs -
+one from core 0 to core 1, and one from core 1 to core 0. They are the simplest
+inter-core communication mechanism: push a 32-bit word from one side, pop it from
+the other. The FIFOs have a status register that can trigger an interrupt on the
+receiving core when data arrives.
+
+
+
+#include "pico/multicore.h"
+
+/* Core 0: push a 32-bit value to core 1.
+   Blocks if the FIFO is full (rare at audio rates). */
+multicore_fifo_push_blocking(uint32_t value);
+
+/* Core 1: pop a 32-bit value from core 0.
+   Blocks until data is available. */
+uint32_t value = multicore_fifo_pop_blocking();
+
+/* Non-blocking versions: */
+bool ok = multicore_fifo_push_timeout_us(value, 100);
+bool available = multicore_fifo_rvalid();   /* check before popping */
+
+
+
+The FIFO is 8 entries deep. At MIDI event rates (dozens of events per second) it will
+never fill. For audio parameter updates that happen every buffer period (256 samples at
+44.1 kHz = every 5.8 ms), one update per buffer comfortably fits. The limitation is that
+the FIFO carries only 32-bit words - enough for a frequency (as a Q22 fixed-point
+integer) or a 16-bit parameter index combined with a 16-bit value, but not for a large
+struct.
+
+
+
+Use the FIFO for:
+
+
+Startup synchronisation (core 1 signals ready to core 0, as in Part 4)
+Single-word parameter updates: frequency, gate, MIDI note number
+Simple command codes (e.g. "reset voice", "all notes off")
+
+
+Hardware Spinlocks
+
+
+The RP2040 provides 32 hardware spinlocks, each a single 32-bit register. Reading the
+register returns non-zero and atomically claims the lock if it was free, or returns zero
+if it was already claimed. Writing any value to the register releases it. This is a
+test-and-set in one bus cycle - hardware-guaranteed atomic even between the two cores.
+
+
+
+#include "hardware/sync.h"
+
+/* Claim spinlock number 5 (0-31). Claim is global - do it once at startup.
+   The SDK reserves spinlocks 14 and 15 for its own use; use 0-13 freely. */
+static spin_lock_t *my_lock;
+
+static void spinlock_init(void) {
+    int lock_num = spin_lock_claim_unused(true); /* panic if none available */
+    my_lock = spin_lock_init(lock_num);
+}
+
+/* Lock (busy-waits until acquired): */
+uint32_t save = spin_lock_blocking(my_lock);
+
+/* Unlock: */
+spin_unlock(my_lock, save);
+
+
+
+The return value from spin_lock_blocking is the saved interrupt state -
+pass it back to spin_unlock to restore interrupts to whatever they were
+before the lock. This matters on core 1 where the audio IRQ must not be masked for
+more than a few cycles.
+
+
+
+Hardware spinlocks are appropriate for protecting very short critical sections: a
+pointer swap, a word write. Never hold a spinlock across floating-point computation or
+anything with unbounded execution time. The other core busy-waits while the lock is
+held.
+
+
+The Double-Buffer Swap Pattern
+
+
+The most important parameter-passing pattern in real-time audio is the double-buffer
+swap. It works like this:
+
+
+
+Maintain two copies of the mutable parameter block (or DSP state) - a write
+buffer (owned by core 0) and a read buffer (owned by core 1).
+Core 0 writes new parameters into the write buffer.
+When the write is complete, core 0 atomically swaps the pointer: the write buffer
+becomes the read buffer and vice versa, using a spinlock or a __dmb-guarded
+pointer store.
+Core 1, at the start of each buffer fill, checks whether a swap has occurred and
+adopts the new parameters.
+
+
+
+The critical point: core 1 never holds a lock during DSP computation. It takes a
+snapshot of the parameters at the top of the fill loop and runs DSP on that snapshot.
+Core 0 writes to the other copy at any time without contention.
+
+
+
+/* Parameter block for the synthesiser voice */
+typedef struct {
+    float    freq_hz;       /* oscillator frequency */
+    uint8_t  gate;          /* 1 = note on, 0 = note off */
+    uint8_t  velocity;      /* 0-127 */
+    uint16_t _pad;
+} VoiceParams;
+
+/* Two parameter blocks - one for each core to write */
+static VoiceParams param_buf[2];
+
+/* Index of the "current" (core 1's) buffer.
+   Core 0 writes to param_buf[1 - current_params_idx].
+   Core 1 reads from param_buf[current_params_idx]. */
+static volatile int current_params_idx = 0;
+
+/* Spinlock protecting the swap */
+static spin_lock_t *params_lock;
+
+/* --- Core 0: update parameters and swap --- */
+static void params_update(float freq, uint8_t gate, uint8_t vel) {
+    int write_idx = 1 - current_params_idx;
+    /* Write into the back buffer - no lock needed yet */
+    param_buf[write_idx].freq_hz  = freq;
+    param_buf[write_idx].gate     = gate;
+    param_buf[write_idx].velocity = vel;
+    /* Memory barrier: ensure all writes above are visible before the swap */
+    __dmb();
+    /* Atomic swap: flip the index under the spinlock */
+    uint32_t save = spin_lock_blocking(params_lock);
+    current_params_idx = write_idx;
+    spin_unlock(params_lock, save);
+}
+
+/* --- Core 1: read current parameters at the top of each buffer fill --- */
+static VoiceParams params_snapshot;
+
+static void params_fetch(void) {
+    uint32_t save = spin_lock_blocking(params_lock);
+    int idx = current_params_idx;
+    spin_unlock(params_lock, save);
+    __dmb();   /* ensure we see up-to-date data after reading the index */
+    params_snapshot = param_buf[idx];
+}
+
+
+
+The spinlock is held only for a single integer read or write - a handful of cycles. Core
+1's DSP computation runs entirely outside the lock, operating on params_snapshot.
+
+
+Avoiding Glitches on Frequency Change
+
+
+A frequency change mid-note can produce an audible click if the oscillator's phase
+accumulator jumps discontinuously. Changing the phase increment (not the phase itself)
+is safe - the oscillator immediately starts stepping at the new rate from wherever it
+currently is. This is called a hard frequency change and is the standard approach
+for MIDI-driven synthesis.
+
+
+
+Hard frequency changes produce no click if the envelope is non-zero at the moment of
+change - the waveform continues smoothly from its current phase. The only time you get
+a discontinuity is if you also reset the phase on note-on, which some implementations
+do. Resetting phase on note-on is fine; the click is masked by the attack ramp of the
+envelope. Here is the core 1 apply step:
+
+
+
+static Oscillator osc;
+static ADSR       env;
+static bool       prev_gate = false;
+
+/* Call once per buffer fill on core 1, before the sample loop */
+static void apply_params(void) {
+    params_fetch();   /* read current params under spinlock */
+
+    bool gate = params_snapshot.gate;
+    osc_set_freq(&osc, params_snapshot.freq_hz, SAMPLE_RATE);
+
+    /* Gate transitions */
+    if (gate && !prev_gate) {
+        osc.phase = 0;   /* reset phase on note-on to avoid phase accumulation drift */
+        adsr_note_on(&env);
+    } else if (!gate && prev_gate) {
+        adsr_note_off(&env);
+    }
+    prev_gate = gate;
+}
+
+
+
+The key design: osc_set_freq writes only osc.phase_inc, not
+osc.phase. The running phase is untouched during a legato note slide, so
+the output waveform is continuous - no click.
+
+
+The Single-Writer Rule
+
+
+The simplest way to avoid data races is to enforce that each variable is written by
+exactly one core. With this rule:
+
+
+
+DSP state (oscillator phase, filter state, envelope state) is written only by core 1.
+Core 0 never touches it.
+MIDI parser state and USB/UART buffers are written only by core 0. Core 1 never
+touches them.
+The shared parameter block is the only variable both cores interact with, and it is
+protected by the swap pattern above.
+
+
+
+When you find yourself wanting to read DSP state from core 0 (e.g. to display current
+envelope level on a screen), use the FIFO: have core 1 periodically push a status word.
+Never let core 0 read DSP state directly from live variables that core 1 writes every
+sample.
+
+
+Summary
+
+
+The RP2040 gives you three inter-core tools: the SIO FIFO (8-entry, 32-bit, blocking
+or non-blocking), hardware spinlocks (32 available, test-and-set in hardware), and the
+memory model that makes SRAM writes immediately visible to both cores. The double-buffer
+swap pattern combines a spinlock (held for one integer write) with a memory barrier
+(__dmb()) to pass a complete parameter block from core 0 to core 1 with zero
+blocking time on the audio path. For a frequency change mid-note, updating only the
+phase increment (not the phase itself) keeps the waveform continuous and the output
+click-free.
+
+
+
+Part 10 is the series capstone: a complete monophonic synthesiser integrating wavetable
+oscillator, resonant lowpass filter, ADSR envelope, USB MIDI input, and I2S audio
+output - all the pieces from Parts 1 through 9 assembled into one working instrument.
+
+
+Further Reading
+
+
+RP2040 Datasheet - Chapter 2 (SIO, spinlocks, FIFO)
+Raspberry Pi Pico C/C++ SDK - pico_multicore, hardware_sync chapters
+Cortex-M0+ Technical Reference Manual - memory model section
+Introduction to Lock-Free Data Structures - embedded.com
+pico-examples on GitHub
+
+
+See Also
+
+
+Pico - Part 4: The Audio Render Loop on Bare Metal
+Pico - Part 7: UART MIDI Input
+Pico - Part 8: USB MIDI with TinyUSB
+Pico - Part 10: Complete Synthesiser Voice
+

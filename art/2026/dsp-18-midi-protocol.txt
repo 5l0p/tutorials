@@ -1,0 +1,359 @@
+DSP - Part 18: MIDI 1.0 Protocol and Parsing
+2026-06-01
+
+
+MIDI is 40 years old and still the lingua franca of music hardware and software. A
+controller sends 3-byte note-on messages; a DAW records them; a synthesiser turns them
+into sound. The wire format is compact and clever, but the running-status optimisation
+and the mix of 1-, 2-, and 3-byte messages make parsing surprisingly tricky to get right
+in a streaming byte-by-byte state machine. This article covers every MIDI 1.0 channel
+and system message, then builds a complete parser struct in C.
+
+
+What You Will Learn
+
+
+How MIDI status and data bytes are distinguished by their high bit.
+The full set of MIDI 1.0 channel messages: Note On/Off, Aftertouch, Control Change, Program Change, Pitch Bend.
+System Common and System Real-Time messages, and why they interrupt running status.
+How running status reduces bandwidth and what it means for a parser.
+How to implement a byte-stream MIDI parser as a state machine in C.
+How to route messages to per-channel handlers.
+
+
+Status Bytes and Data Bytes
+
+
+Every MIDI byte is either a status byte (high bit = 1, value 0x80–0xFF) or a
+data byte (high bit = 0, value 0x00–0x7F). This distinction is the foundation
+of the protocol: data bytes can never be misidentified as the start of a new message.
+
+
+
+/* Status byte encoding:
+   Bits 7:   always 1
+   Bits 6-4: message type (3 bits)
+   Bits 3-0: MIDI channel 0-15 (for channel messages)
+
+   Data bytes: bits 7 = 0, bits 6-0 = value 0-127 */
+
+/* Channel message status bytes (nnnn = channel 0-15): */
+#define MIDI_NOTE_OFF        0x80   /* 0x80 + channel */
+#define MIDI_NOTE_ON         0x90
+#define MIDI_POLY_AFTERTOUCH 0xA0
+#define MIDI_CONTROL_CHANGE  0xB0
+#define MIDI_PROGRAM_CHANGE  0xC0
+#define MIDI_CHAN_AFTERTOUCH  0xD0
+#define MIDI_PITCH_BEND      0xE0
+
+/* System Common messages (no channel nibble): */
+#define MIDI_SYSEX_START     0xF0
+#define MIDI_QUARTER_FRAME   0xF1   /* MTC quarter frame, 1 data byte */
+#define MIDI_SONG_POSITION   0xF2   /* 2 data bytes */
+#define MIDI_SONG_SELECT     0xF3   /* 1 data byte */
+#define MIDI_TUNE_REQUEST    0xF6   /* no data bytes */
+#define MIDI_SYSEX_END       0xF7   /* ends a SysEx message */
+
+/* System Real-Time messages (no data bytes, can appear anywhere in stream): */
+#define MIDI_CLOCK           0xF8
+#define MIDI_START           0xFA
+#define MIDI_CONTINUE        0xFB
+#define MIDI_STOP            0xFC
+#define MIDI_ACTIVE_SENSE    0xFE
+#define MIDI_SYSTEM_RESET    0xFF
+
+
+Message Formats
+
+
+Channel messages vary in length:
+
+
+
+/* 3-byte channel messages: */
+/* Note Off:         [0x8n] [key 0-127] [velocity 0-127] */
+/* Note On:          [0x9n] [key 0-127] [velocity 0-127] */
+/*   Note: Note On with velocity=0 is treated as Note Off */
+/* Poly Aftertouch:  [0xAn] [key 0-127] [pressure 0-127] */
+/* Control Change:   [0xBn] [controller 0-127] [value 0-127] */
+/* Pitch Bend:       [0xEn] [LSB 0-127] [MSB 0-127] */
+/*   Pitch bend value = (MSB << 7) | LSB, range 0-16383, centre 8192 */
+
+/* 2-byte channel messages: */
+/* Program Change:   [0xCn] [program 0-127] */
+/* Chan Aftertouch:  [0xDn] [pressure 0-127] */
+
+
+Running Status
+
+
+To save bandwidth on slow serial links (MIDI's original 31,250 baud), the protocol
+allows running status: once a status byte is received, it remains active for
+subsequent messages of the same type. If the next message has the same status byte,
+that byte is omitted from the stream and only data bytes are sent.
+
+
+
+Example: three consecutive Note On messages on channel 1 (0x90):
+
+
+
+Without running status:  90 3C 64  90 40 7F  90 43 50
+With running status:     90 3C 64     40 7F     43 50
+
+
+
+System Real-Time messages (0xF8–0xFF) are single-byte messages that can be inserted
+anywhere in the stream — even in the middle of a multi-byte message or SysEx. A correct
+parser must handle them without disrupting the current running status.
+
+
+
+System Common messages (0xF0–0xF6) cancel running status. After any System
+Common message, the next data byte cannot be assumed to belong to a previous channel
+message.
+
+
+MIDI Parser State Machine in C
+
+
+#include <stdint.h>
+#include <string.h>
+
+/* Decoded MIDI message */
+typedef struct {
+    uint8_t status;    /* message type (high nibble) + channel (low nibble) */
+    uint8_t data[2];   /* data bytes; data[1] unused for 2-byte messages */
+    int     len;       /* total message length including status: 1, 2, or 3 */
+} MidiMsg;
+
+/* Callback type: called when a complete message has been parsed */
+typedef void (*MidiCallback)(const MidiMsg *msg, void *user);
+
+typedef struct {
+    /* Running status */
+    uint8_t running_status;
+
+    /* Incomplete message accumulation */
+    uint8_t buf[3];
+    int     buf_len;    /* bytes accumulated so far (0, 1, 2) */
+    int     expected;   /* total bytes expected for current message */
+
+    /* SysEx state */
+    int     in_sysex;
+
+    MidiCallback callback;
+    void        *user;
+} MidiParser;
+
+void midi_parser_init(MidiParser *p, MidiCallback cb, void *user) {
+    memset(p, 0, sizeof(*p));
+    p->callback = cb;
+    p->user     = user;
+}
+
+/* Return the expected message length (including status byte) for a status byte.
+   Returns 0 for SysEx (variable length), -1 for unknown. */
+static int msg_length(uint8_t status) {
+    uint8_t type = status & 0xF0;
+    if (status < 0xF0) {
+        /* Channel messages */
+        switch (type) {
+        case 0x80: case 0x90: case 0xA0:
+        case 0xB0: case 0xE0: return 3;
+        case 0xC0: case 0xD0: return 2;
+        }
+    } else {
+        /* System messages */
+        switch (status) {
+        case 0xF0: return 0;   /* SysEx: variable */
+        case 0xF1: return 2;   /* MTC quarter frame */
+        case 0xF2: return 3;   /* Song position pointer */
+        case 0xF3: return 2;   /* Song select */
+        case 0xF6: return 1;   /* Tune request */
+        /* Real-time (0xF8..0xFF) are all 1 byte */
+        case 0xF8: case 0xFA: case 0xFB:
+        case 0xFC: case 0xFE: case 0xFF: return 1;
+        }
+    }
+    return -1;
+}
+
+/* Feed one byte to the parser.  Calls the callback for each complete message. */
+void midi_parser_feed(MidiParser *p, uint8_t byte) {
+    /* System Real-Time: single-byte, can interrupt anything */
+    if (byte >= 0xF8) {
+        if (p->callback) {
+            MidiMsg msg = { byte, {0,0}, 1 };
+            p->callback(&msg, p->user);
+        }
+        return;   /* does NOT clear running status or buffer */
+    }
+
+    /* SysEx end */
+    if (byte == 0xF7) {
+        p->in_sysex       = 0;
+        p->running_status = 0;   /* SysEx clears running status */
+        p->buf_len        = 0;
+        p->expected       = 0;
+        return;
+    }
+
+    /* Status byte (non-realtime) */
+    if (byte & 0x80) {
+        p->buf_len = 0;
+
+        if (byte == 0xF0) {
+            /* SysEx start */
+            p->in_sysex       = 1;
+            p->running_status = 0;
+            return;
+        }
+
+        /* System Common clears running status */
+        if (byte >= 0xF0) p->running_status = 0;
+        else               p->running_status = byte;
+
+        int len = msg_length(byte);
+        if (len == 1) {
+            /* Single-byte message: dispatch immediately */
+            if (p->callback) {
+                MidiMsg msg = { byte, {0,0}, 1 };
+                p->callback(&msg, p->user);
+            }
+            p->expected = 0;
+        } else if (len > 0) {
+            p->buf[0]   = byte;
+            p->buf_len  = 1;
+            p->expected = len;
+        }
+        return;
+    }
+
+    /* Data byte */
+    if (p->in_sysex) return;   /* ignore SysEx data for now */
+
+    /* Running status: if no current status byte in buf, use running_status */
+    if (p->buf_len == 0 && p->running_status != 0) {
+        p->buf[0]   = p->running_status;
+        p->buf_len  = 1;
+        p->expected = msg_length(p->running_status);
+    }
+
+    if (p->buf_len == 0 || p->expected <= 0) return;   /* stray data byte */
+
+    p->buf[p->buf_len++] = byte;
+
+    if (p->buf_len == p->expected) {
+        /* Complete message: dispatch */
+        if (p->callback) {
+            MidiMsg msg;
+            msg.status = p->buf[0];
+            msg.data[0] = (p->expected > 1) ? p->buf[1] : 0;
+            msg.data[1] = (p->expected > 2) ? p->buf[2] : 0;
+            msg.len     = p->expected;
+            p->callback(&msg, p->user);
+        }
+        /* Keep running_status; next message may reuse it */
+        p->buf_len = 0;
+    }
+}
+
+
+Processing Messages: Per-Channel Dispatch
+
+
+/* Example callback that dispatches to per-channel note handlers */
+
+typedef struct {
+    int   active_notes[16][128];  /* active_notes[channel][key] = velocity */
+    float pitch_bend[16];         /* pitch bend [-1.0, +1.0] per channel */
+} MidiState;
+
+void midi_callback(const MidiMsg *msg, void *user) {
+    MidiState *state = (MidiState *)user;
+    uint8_t type    = msg->status & 0xF0;
+    uint8_t channel = msg->status & 0x0F;
+
+    switch (type) {
+    case 0x80:   /* Note Off */
+        state->active_notes[channel][msg->data[0]] = 0;
+        break;
+    case 0x90:   /* Note On (velocity 0 = Note Off) */
+        state->active_notes[channel][msg->data[0]] = msg->data[1];
+        break;
+    case 0xB0:   /* Control Change */
+        /* Controller 7 = volume, 10 = pan, 1 = mod wheel, etc. */
+        break;
+    case 0xC0:   /* Program Change */
+        break;
+    case 0xE0: { /* Pitch Bend: 14-bit signed value, centre = 8192 */
+        int raw = ((int)msg->data[1] << 7) | msg->data[0];
+        state->pitch_bend[channel] = (float)(raw - 8192) / 8192.0f;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+
+Common Gotchas
+
+
+Note On with velocity 0. The MIDI spec states that a Note On message with velocity
+0 should be treated as a Note Off. Many controllers use this instead of 0x80 messages
+when running status is active — it saves a byte because status does not change. Always
+check type == 0x90 && velocity == 0.
+
+
+
+Pitch bend is 14-bit, not 7-bit. The two data bytes encode a 14-bit value:
+(MSB << 7) | LSB. The centre (no bend) is 8192, not 64.
+
+
+
+Controller numbers 120–127 are reserved channel mode messages. Controller 120
+(All Sound Off) and 123 (All Notes Off) must be handled correctly in a synthesiser or
+stuck notes will accumulate during MIDI dropouts.
+
+
+
+Running status does not apply across SysEx. A SysEx message cancels running status;
+the byte after 0xF7 must be a fresh status byte. Some hardware violates this — test
+your parser against live hardware if possible.
+
+
+Summary
+
+
+MIDI 1.0 encodes messages as a status byte followed by 0, 1, or 2 data bytes. Running
+status allows the status byte to be omitted for successive messages of the same type.
+System Real-Time messages are single bytes that can appear anywhere without disrupting
+the current message in progress. A state machine with a three-byte accumulation buffer,
+a running-status register, and special handling for System Real-Time covers the full
+MIDI 1.0 protocol correctly.
+
+
+
+Part 19 puts this parser to work: reading MIDI from the Linux ALSA raw MIDI device and
+the ALSA sequencer API, complete with a poll() loop and programmatic port connection.
+
+
+Further Reading
+
+
+MIDI 1.0 Core Specifications - MIDI Association
+Summary of MIDI Messages - MIDI Association
+MIDI Status Byte Reference - recordingblogs.com
+An Introduction to MIDI - Craig Stuart Sapp (CCRMA)
+MIDI Message Table - MIDI Association
+
+
+See Also
+
+
+MIDI I/O on Linux with ALSA
+Putting It All Together: Monophonic Synth
+SDL2 as Audio Backend
+

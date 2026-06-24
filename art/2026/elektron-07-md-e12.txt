@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 7: Machinedrum E12 — Vector Emulation Machines
-2026-01-01
+2026-06-01
 
 
 The Machinedrum's E12 machines emulate classic drum machine sounds — the E-mu SP1200

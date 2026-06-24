@@ -1,0 +1,431 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Drums - Part 6: Per-Channel Effects with Airwindows Pd Externals</title>
+    <meta name="description" content="Using the airwindows Pd externals as per-channel inserts on drum voices: mackity~ for input stage colour, totape9~ for tape saturation, dubplate2~ for vinyl EQ, zacidlowpass~ for resonant filtering, and chorusensemble~ for pitch widening. Building an effects chain in Pd with normalised 0–1 parameters.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, puredata, audio, effects, drums">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="drums-06-effects.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../puredata.htm">puredata</a>, <a href="../../audio.htm">audio</a>, <a href="../../effects.htm">effects</a>, <a href="../../drums.htm">drums</a></i>
+        <h2>Drums - Part 6: Per-Channel Effects with Airwindows Pd Externals</h2>
+        <p>
+The four drum voices built in Parts 2–5 sound clean. Real drum machines and hardware
+synthesisers colour their output through analogue circuits — input transformers, tape
+heads, vinyl cutting EQ. The airwindows Pd externals wrap Chris Johnson's open-source
+DSP algorithms from the airwindows VST collection as Pd signal objects. This article
+shows how to insert them into the drum voice signal chain.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What the airwindows externals are and how they differ from built-in Pd objects</li>
+<li>The stereo inlet/outlet convention and normalised 0–1 parameter format</li>
+<li>Building and loading the externals</li>
+<li>Inserting <code>mackity~</code>, <code>totape9~</code>, <code>dubplate2~</code>, <code>zacidlowpass~</code>, and <code>chorusensemble~</code> into drum voice chains</li>
+<li>A Pd effects chain template and per-channel enable/bypass</li>
+<li>Controlling parameters from Lua</li>
+</ul>
+
+<h3>The Airwindows Externals</h3>
+
+<p>
+The airwindows project contains hundreds of high-quality DSP plugins released under
+the MIT licence. The tARTlite airwindows module wraps six of them as Pd external
+objects:
+</p>
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Object</th><th>What it does</th><th>Best used on</th></tr>
+<tr><td><code>mackity~</code></td><td>Mackie 1202 input stage emulation — adds warm transformer colour</td><td>Any voice for gentle analogue warmth</td></tr>
+<tr><td><code>totape9~</code></td><td>Tape saturation + head-bump + flutter</td><td>Kick (head bump at low freq), full mix</td></tr>
+<tr><td><code>dubplate2~</code></td><td>Vinyl cut EQ — boosts highs, rolls off lows (RIAA-style)</td><td>Hi-hat, clap (adds vinyl brightness)</td></tr>
+<tr><td><code>zacidlowpass~</code></td><td>Aggressive resonant lowpass with meltdown parameter</td><td>Kick (sub shaping), snare (filtering)</td></tr>
+<tr><td><code>chorusensemble~</code></td><td>Multi-tap mono chorus — widens stereo image</td><td>Hi-hat (shimmer), clap (spread)</td></tr>
+<tr><td><code>xhighpass~</code></td><td>Transparent highpass with gain and nuke controls</td><td>Any voice to remove sub content</td></tr>
+</table>
+
+<h3>Building the Externals</h3>
+
+<pre>
+cd modules/airwindows
+make
+</pre>
+
+<p>
+This produces <code>.pd_linux</code> files alongside the source. Load them into Pd by
+adding the directory to the search path in <code>pd -path /path/to/airwindows/src</code>
+or by adding a <code>[declare -path ../airwindows/src]</code> object at the top of
+the drum machine patch.
+</p>
+
+<h3>The Stereo Convention</h3>
+
+<p>
+Every airwindows object has two signal inlets (L, R) and two signal outlets (L, R).
+Drum voices produce a mono signal. For mono use, feed the same signal to both inlets:
+</p>
+
+<pre>
+[outlet~ of voice]
+|
+[t a a]             ; split to two copies
+|     |
+L inlet  R inlet
+|        |
+[mackity~]
+|        |
+L out   R out
+|        |
+[+~]    ; sum to mono for the drum machine mix bus
+|
+[*~ 0.5]
+</pre>
+
+<p>
+Or, if the drum machine outputs stereo, keep L and R separate from this point forward.
+</p>
+
+<h3>Parameter Format</h3>
+
+<p>
+All airwindows parameters are <b>normalised 0.0–1.0 floats</b>. Parameters are sent
+as named messages to the left inlet:
+</p>
+
+<pre>
+[intrim 0.6(  →  [mackity~]     ; set intrim to 60%
+[output 0.8(  →  [mackity~]     ; set output level to 80%
+</pre>
+
+<p>
+To send from Lua, use the message receiver the Pd patch exposes:
+</p>
+
+<pre>
+pd.send("kick-mackity-intrim", 0.6)
+pd.send("kick-mackity-output", 0.8)
+</pre>
+
+<p>
+In Pd, wire a receiver to the message and forward it:
+</p>
+
+<pre>
+[r $0-eff-intrim]
+|
+[prepend intrim]    ; adds the parameter name prefix
+|
+[mackity~]          ; routes to mackity~'s intrim handler
+</pre>
+
+<h3>mackity~ — Input Stage Colour</h3>
+
+<p>
+The Mackie 1202 is known for a transformer-coupled input stage that adds gentle
+harmonic saturation and a slight low-mid emphasis at moderate gain. Use it as the
+first insert on any voice for analogue warmth:
+</p>
+
+<pre>
+[voice outlet~]
+|
+[t a a]
+|     |
+[mackity~]
+|         |
+[+~][*~ 0.5]   ; sum to mono
+
+; Parameters:
+; intrim (0–1): input gain. Above 0.5 = saturation increases.
+; outpad (0–1): output level. Use 0.7–0.8 to compensate for gain.
+</pre>
+
+<p>
+For a kick drum, <code>intrim=0.55</code> and <code>outpad=0.75</code> adds warmth
+without distortion. <code>intrim=0.8</code> gives audible transformer saturation.
+</p>
+
+<h3>totape9~ — Tape Saturation</h3>
+
+<p>
+Totape9 emulates a tape machine: saturation from high input levels, a head-bump
+low-frequency boost, and optional wow/flutter. The <code>headbmp</code> and
+<code>headfrq</code> parameters control the low-frequency boost that makes tape-recorded
+kick drums sound particularly large:
+</p>
+
+<pre>
+[voice outlet~]
+|
+[t a a]
+|     |
+[totape9~]   ; 9 parameters, all 0–1
+|          |
+[+~][*~ 0.5]
+
+; Key parameters for kick drum:
+; input  (0–1):  drive level. 0.5 = nominal, 0.7+ = saturation
+; headbmp(0–1):  head-bump depth. 0.3–0.6 for sub weight
+; headfrq(0–1):  head-bump frequency. 0.1–0.3 = low freq (50–80 Hz)
+; output (0–1):  output gain
+
+; For hi-hat: low input, minimal headbmp, tilt slightly bright
+; input=0.4, tilt=0.6 (bright), headbmp=0.0, output=0.7
+</pre>
+
+<h3>dubplate2~ — Vinyl Cut EQ</h3>
+
+<p>
+Dubplate emulates the RIAA equalization applied when cutting a vinyl record — a large
+bass cut and treble boost that gives records their characteristic sound. On a hi-hat
+or clap, this adds an airy brightness and a slightly retro character:
+</p>
+
+<pre>
+; Parameters: input, treble, bass
+; input (0–1): input gain
+; treble(0–1): high-frequency boost (0.5 = neutral, 1.0 = maximum boost)
+; bass  (0–1): low-frequency cut (0.5 = neutral, 0.0 = maximum cut)
+
+; For hi-hat: treble=0.7, bass=0.3 → boosted highs, reduced lows = vinyl brightness
+; For clap:   treble=0.6, bass=0.4 → moderate vinyl colour
+</pre>
+
+<h3>zacidlowpass~ — Resonant Lowpass</h3>
+
+<p>
+The zacid lowpass is an aggressive filter with a <code>meltdown</code> parameter that
+pushes the resonance past self-oscillation into a saturated feedback mode. This is
+the 303-style acid filter that can also reshape the character of a kick or snare:
+</p>
+
+<pre>
+; Parameters: cutoff, over, under, meltdown, drive, output
+; cutoff   (0–1): filter cutoff frequency (log mapped)
+; over     (0–1): resonance above cutoff
+; under    (0–1): resonance below cutoff
+; meltdown (0–1): self-oscillation/saturation (above 0.7 = unstable)
+; drive    (0–1): input saturation
+; output   (0–1): output level
+
+; For kick sub shaping:
+; cutoff=0.3, over=0.2, under=0.1, meltdown=0.0, drive=0.4, output=0.7
+; → rolls off highs, leaves sub intact with gentle resonance
+
+; For resonant effect (techno filter sweep):
+; cutoff varies 0–0.6, over=0.5, meltdown=0.3
+</pre>
+
+<p>
+This external is particularly useful for automating the cutoff parameter in real time
+from a Lua sequence, creating filter sweep effects on the kick or snare.
+</p>
+
+<h3>chorusensemble~ — Stereo Widening</h3>
+
+<p>
+A multi-tap chorus that widens a mono signal to a convincing stereo spread. Use on
+hi-hat to add shimmer, or on clap to spread the snap across the stereo field:
+</p>
+
+<pre>
+; Parameters: speed, range, drywet
+; speed  (0–1): LFO rate. 0.2–0.4 = slow shimmer, 0.7+ = fast warble
+; range  (0–1): modulation depth. 0.1–0.3 = subtle, 0.5+ = obvious chorus
+; drywet (0–1): wet mix. 0.3–0.6 = blend, 1.0 = full chorus
+
+; For hi-hat shimmer:
+; speed=0.25, range=0.15, drywet=0.4
+
+; For clap spread:
+; speed=0.1, range=0.25, drywet=0.5
+</pre>
+
+<h3>Bypass and Enable</h3>
+
+<p>
+Add a bypass control to each effect. In Pd, use <code>[spigot]</code> or a wet/dry
+blend:
+</p>
+
+<pre>
+[voice signal]
+|
+[t a a]
+|      |
+[effect~]  dry signal
+|      |
+wet    |
+|      |
+[*~ $wet]  [*~ $dry]
+|                |
+[+~]   ← bypass blend
+|
+output
+</pre>
+
+<p>
+When <code>$wet=0</code> and <code>$dry=1</code> the effect is bypassed. A continuous
+blend is more interesting than a hard bypass.
+</p>
+
+<h3>Per-Channel Effects Chain in Pd</h3>
+
+<pre>
+; effects_chain.pd — reusable effects chain subpatch
+; Inlet: audio signal
+; Outlet: processed signal
+; Receivers: $0-mackity-intrim, $0-totape-input, $0-zacid-cutoff, etc.
+
+[inlet~]
+|
+[t a a]
+|     |
+[mackity~]          ; warm transformer input
+|         |
+[+~][*~ 0.5]        ; collapse to mono (or keep stereo)
+|
+[zacidlowpass~]     ; filter shaping
+|         |
+[+~][*~ 0.5]
+|
+[totape9~]          ; tape saturation
+|         |
+[+~][*~ 0.5]
+|
+[*~ $outLevel]
+|
+[outlet~]
+</pre>
+
+<h3>Controlling Effects from Lua</h3>
+
+<pre>
+-- In module.lua:
+local effects = {
+    kick  = { mackity_intrim=0.55, totape_input=0.5, totape_headbmp=0.3 },
+    snare = { mackity_intrim=0.5, zacid_cutoff=0.8 },
+    hihat = { dubplate_treble=0.7, chorus_drywet=0.35 },
+    clap  = { dubplate_treble=0.6, chorus_drywet=0.45 },
+}
+
+local function applyEffects(voice, params)
+    for param, value in pairs(params) do
+        pd.send(voice .. "-eff-" .. param, value)
+    end
+end
+
+applyEffects("kick",  effects.kick)
+applyEffects("hihat", effects.hihat)
+</pre>
+
+<h3>Adding a New Airwindows Plugin</h3>
+
+<p>
+If you want to wrap an airwindows plugin not currently included, the process from the
+airwindows README is:
+</p>
+
+<ol>
+<li>Find the plugin folder: <code>git ls-tree -d HEAD plugins/LinuxVST/src/ | grep -i keyword</code></li>
+<li>Add it to the sparse checkout: <code>git sparse-checkout add plugins/LinuxVST/src/PluginName</code></li>
+<li>Check its parameters: <code>grep 'kParam' vendor/airwindows/.../PluginName.h</code></li>
+<li>Copy an existing wrapper (e.g. <code>src/mackity~.cpp</code>) and replace all occurrences of "mackity" with the new plugin name, adjust the parameter list.</li>
+<li>Add a Makefile block for the new external.</li>
+<li>Run <code>make</code>.</li>
+</ol>
+
+<h3>Summary</h3>
+
+<p>
+The airwindows Pd externals add analogue character to the clean synthesised drum voices:
+<code>mackity~</code> for transformer warmth on any voice, <code>totape9~</code> for
+tape head-bump on the kick, <code>dubplate2~</code> for vinyl brightness on hi-hat
+and clap, <code>zacidlowpass~</code> for resonant filter sweeps, and
+<code>chorusensemble~</code> for stereo spread. All parameters are normalised 0–1,
+sent as named messages to the object's left inlet. Wrap each effect in a
+dry/wet blend for seamless bypass. Control from Lua by sending to <code>$0-eff-</code>
+namespaced receivers.
+</p>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="drums-02-kick.htm">Kick Drum Synthesis</a> - the voice that benefits most from totape9~ head-bump</li>
+<li><a href="drums-04-hihat.htm">Hi-Hat Synthesis</a> - use dubplate2~ and chorusensemble~ here</li>
+<li><a href="dsp-08-envelope-follower.htm">Envelope Follower &amp; Parameter Smoothing</a> - for smooth parameter automation to the effects</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

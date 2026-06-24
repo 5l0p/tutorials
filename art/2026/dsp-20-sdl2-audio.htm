@@ -1,0 +1,416 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>DSP - Part 20: SDL2 as an Audio Backend</title>
+    <meta name="description" content="Using SDL2 for cross-platform audio: SDL_AudioSpec, callback model, SDL_OpenAudioDevice, device enumeration, and integrating earlier DSP building blocks into a working demo.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="dsp-20-sdl2-audio.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a></i>
+        <h2>DSP - Part 20: SDL2 as an Audio Backend</h2>
+        <p>
+Writing directly to ALSA or CoreAudio is fast but locks you to one platform. SDL2 wraps
+the platform audio APIs on Linux, macOS, and Windows behind a single interface with a
+callback model that matches how real-time audio works. You give SDL2 a function pointer;
+it calls that function every time the hardware needs more samples. Your job is to fill a
+buffer and return. This article covers the full SDL2 audio setup, device enumeration,
+and integrates the biquad filter from Part 5 and the wavetable oscillator from Part 15
+into a self-contained demo.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How SDL_AudioSpec describes the audio format and how to set up a callback-based stream.</li>
+<li>How SDL_OpenAudioDevice works and how to enumerate available devices.</li>
+<li>The threading model: what the callback may and may not do safely.</li>
+<li>How to integrate the biquad filter from Part 5 into the callback.</li>
+<li>How to build a self-contained synthesiser demo that compiles on Linux, macOS, and Windows.</li>
+</ul>
+
+<h3>SDL_AudioSpec and the Callback Model</h3>
+
+<p>
+<code>SDL_AudioSpec</code> is a struct describing the desired audio format. You fill it
+in, pass it to <code>SDL_OpenAudioDevice</code>, and SDL2 negotiates the closest format
+the hardware supports. The <code>obtained</code> parameter receives what was actually
+opened — always check it, because the sample rate or buffer size may differ from what
+you asked for.
+</p>
+
+<pre>
+#include &lt;SDL2/SDL.h&gt;
+#include &lt;math.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdio.h&gt;
+
+/* Audio callback: called by SDL2 on a dedicated audio thread.
+   userdata  = pointer to your synthesis state
+   stream    = output buffer (SDL_AUDIO_F32SYS format: native-endian float)
+   len       = number of bytes to fill */
+typedef void (*SDL_AudioCallback)(void *userdata, Uint8 *stream, int len);
+</pre>
+
+<pre>
+/* Minimal SDL2 audio setup */
+typedef struct {
+    SDL_AudioDeviceID device_id;
+    SDL_AudioSpec     spec;       /* obtained spec */
+} AudioBackend;
+
+int audio_backend_open(AudioBackend *ab, SDL_AudioCallback cb, void *userdata) {
+    if (SDL_Init(SDL_INIT_AUDIO) &lt; 0) {
+        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        return -1;
+    }
+
+    SDL_AudioSpec desired;
+    memset(&amp;desired, 0, sizeof(desired));
+    desired.freq       = 48000;
+    desired.format     = AUDIO_F32SYS;   /* 32-bit float, native endian */
+    desired.channels   = 1;              /* mono */
+    desired.samples    = 512;            /* buffer size in frames */
+    desired.callback   = cb;
+    desired.userdata   = userdata;
+
+    ab-&gt;device_id = SDL_OpenAudioDevice(
+        NULL,          /* NULL = default device */
+        0,             /* 0 = output (not input) */
+        &amp;desired,
+        &amp;ab-&gt;spec,
+        SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE
+    );
+
+    if (ab-&gt;device_id == 0) {
+        fprintf(stderr, "SDL_OpenAudioDevice: %s\n", SDL_GetError());
+        return -1;
+    }
+
+    printf("Opened audio: %d Hz, %d channels, %d-sample buffer\n",
+           ab-&gt;spec.freq, ab-&gt;spec.channels, ab-&gt;spec.samples);
+    return 0;
+}
+
+void audio_backend_start(AudioBackend *ab) {
+    SDL_PauseAudioDevice(ab-&gt;device_id, 0);   /* 0 = unpause = start playing */
+}
+
+void audio_backend_stop(AudioBackend *ab) {
+    SDL_PauseAudioDevice(ab-&gt;device_id, 1);
+    SDL_CloseAudioDevice(ab-&gt;device_id);
+    SDL_Quit();
+}
+</pre>
+
+<h3>Device Enumeration</h3>
+
+<p>
+SDL2 can list all available output devices. This is useful when you want to open a
+specific interface (e.g., a USB audio interface rather than the default):
+</p>
+
+<pre>
+void list_audio_devices(void) {
+    if (SDL_Init(SDL_INIT_AUDIO) &lt; 0) return;
+    int n = SDL_GetNumAudioDevices(0);   /* 0 = output */
+    printf("%d output device(s):\n", n);
+    for (int i = 0; i &lt; n; i++)
+        printf("  [%d] %s\n", i, SDL_GetAudioDeviceName(i, 0));
+}
+
+/* To open a specific device by index, pass its name instead of NULL:
+   SDL_OpenAudioDevice(SDL_GetAudioDeviceName(index, 0), 0, &desired, &obtained, flags)
+*/
+</pre>
+
+<h3>Threading Rules for the Callback</h3>
+
+<p>
+SDL2 calls the audio callback from a dedicated high-priority thread. This has two
+critical implications:
+</p>
+
+<ol>
+<li><b>No blocking.</b> Never call <code>malloc</code>, <code>free</code>,
+    <code>printf</code>, mutexes, or any system call that can sleep inside the callback.
+    These operations can cause priority inversion or jitter.</li>
+<li><b>No unsynchronised shared state.</b> If a control thread (main thread, MIDI
+    thread) modifies parameters that the audio callback reads, you need a lock-free
+    mechanism. The simplest approach for one-producer/one-consumer parameters is an
+    atomic flag or a single-slot lock-free queue. For simple float parameters, writing
+    and reading a single aligned float is atomic on all relevant architectures — but
+    this is not guaranteed by the C standard. A proper implementation uses
+    <code>_Atomic float</code> (C11) or an SDL mutex held only briefly outside the
+    callback.</li>
+</ol>
+
+<pre>
+/* Safe parameter passing: use SDL_LockAudioDevice / SDL_UnlockAudioDevice
+   to temporarily pause the callback while modifying shared state. */
+
+void set_frequency_safe(AudioBackend *ab, float *freq_param, float new_freq) {
+    SDL_LockAudioDevice(ab-&gt;device_id);
+    *freq_param = new_freq;
+    SDL_UnlockAudioDevice(ab-&gt;device_id);
+}
+</pre>
+
+<h3>Integrating Earlier DSP Building Blocks</h3>
+
+<p>
+The callback receives a float buffer. Filling it with synthesised audio is a matter of
+calling the generators and processors built in earlier parts:
+</p>
+
+<pre>
+/* Biquad filter from Part 5 */
+typedef struct {
+    float b0, b1, b2;
+    float a1, a2;
+    float z1, z2;
+} Biquad;
+
+static float biquad_process(Biquad *f, float x) {
+    float y = f-&gt;b0*x + f-&gt;z1;
+    f-&gt;z1   = f-&gt;b1*x - f-&gt;a1*y + f-&gt;z2;
+    f-&gt;z2   = f-&gt;b2*x - f-&gt;a2*y;
+    return y;
+}
+
+/* Minimal wavetable oscillator (single-cycle sine, no band-limiting) */
+#define WT_SIZE 2048
+static float sine_table[WT_SIZE];
+
+static void init_sine_table(void) {
+    for (int i = 0; i &lt; WT_SIZE; i++)
+        sine_table[i] = sinf(2.0f * (float)M_PI * i / WT_SIZE);
+}
+
+typedef struct {
+    double phase;
+    double increment;
+} WTOsc;
+
+static float wt_osc_next(WTOsc *osc) {
+    int i0  = (int)osc-&gt;phase;
+    int i1  = (i0 + 1) &amp; (WT_SIZE - 1);
+    float t = (float)(osc-&gt;phase - (double)i0);
+    float s = sine_table[i0] + t * (sine_table[i1] - sine_table[i0]);
+    osc-&gt;phase += osc-&gt;increment;
+    if (osc-&gt;phase &gt;= WT_SIZE) osc-&gt;phase -= WT_SIZE;
+    return s;
+}
+</pre>
+
+<pre>
+/* Synthesis state shared between main thread and callback */
+typedef struct {
+    WTOsc  osc;
+    Biquad filt;
+    float  freq;     /* set from main thread */
+    int    sample_rate;
+} SynthState;
+
+/* SDL2 audio callback */
+void audio_callback(void *userdata, Uint8 *stream, int len) {
+    SynthState *s = (SynthState *)userdata;
+    float      *buf = (float *)stream;
+    int         frames = len / (int)sizeof(float);
+
+    /* Update oscillator increment from current freq */
+    s-&gt;osc.increment = (double)WT_SIZE * s-&gt;freq / s-&gt;sample_rate;
+
+    for (int i = 0; i &lt; frames; i++) {
+        float x = wt_osc_next(&amp;s-&gt;osc);
+        buf[i]  = biquad_process(&amp;s-&gt;filt, x);
+    }
+}
+</pre>
+
+<h3>Complete Demo</h3>
+
+<pre>
+/* sdl2_synth_demo.c
+   A 440 Hz sine through a 1 kHz lowpass, running for 3 seconds.
+   Compile (Linux):   cc -o demo sdl2_synth_demo.c -lSDL2 -lm
+   Compile (macOS):   cc -o demo sdl2_synth_demo.c -lSDL2 -lm
+   Compile (Windows): cc -o demo sdl2_synth_demo.c -lSDL2 -lSDL2main -lm
+*/
+
+#include &lt;SDL2/SDL.h&gt;
+#include &lt;math.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdio.h&gt;
+
+/* ... paste Biquad, biquad_process, sine_table, WTOsc, wt_osc_next,
+         SynthState, audio_callback from above ... */
+
+/* Lowpass biquad coefficients (cookbook: Part 6) */
+static void biquad_lowpass(Biquad *f, float fc, float q, float sr) {
+    float w0    = 2.0f * (float)M_PI * fc / sr;
+    float alpha = sinf(w0) / (2.0f * q);
+    float cosw0 = cosf(w0);
+    float a0    = 1.0f + alpha;
+    f-&gt;b0 = ((1.0f - cosw0) / 2.0f)  / a0;
+    f-&gt;b1 = (1.0f - cosw0)            / a0;
+    f-&gt;b2 = ((1.0f - cosw0) / 2.0f)  / a0;
+    f-&gt;a1 = (-2.0f * cosw0)           / a0;
+    f-&gt;a2 = (1.0f - alpha)            / a0;
+    f-&gt;z1 = f-&gt;z2 = 0.0f;
+}
+
+int main(void) {
+    init_sine_table();
+
+    SynthState state;
+    memset(&amp;state, 0, sizeof(state));
+    state.freq        = 440.0f;
+    state.sample_rate = 48000;
+    biquad_lowpass(&amp;state.filt, 1000.0f, 0.707f, 48000.0f);
+
+    if (SDL_Init(SDL_INIT_AUDIO) &lt; 0) {
+        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    SDL_AudioSpec desired, obtained;
+    memset(&amp;desired, 0, sizeof(desired));
+    desired.freq     = 48000;
+    desired.format   = AUDIO_F32SYS;
+    desired.channels = 1;
+    desired.samples  = 512;
+    desired.callback = audio_callback;
+    desired.userdata = &amp;state;
+
+    SDL_AudioDeviceID dev = SDL_OpenAudioDevice(
+        NULL, 0, &amp;desired, &amp;obtained,
+        SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+    if (dev == 0) {
+        fprintf(stderr, "SDL_OpenAudioDevice: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    state.sample_rate = obtained.freq;
+
+    SDL_PauseAudioDevice(dev, 0);    /* start playback */
+    SDL_Delay(3000);                 /* run for 3 seconds */
+    SDL_CloseAudioDevice(dev);
+    SDL_Quit();
+    return 0;
+}
+</pre>
+
+<p>
+Gotcha: <code>SDL_Delay()</code> is only appropriate for a demo. In a real synthesiser
+main loop you would process MIDI events, update parameters, and sleep only until the
+next scheduled event. SDL_Delay blocks the calling thread for approximately the
+requested time but is not sample-accurate.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+SDL2 opens a cross-platform audio stream in a dozen lines: fill an SDL_AudioSpec, call
+SDL_OpenAudioDevice, and unpause. The callback model maps cleanly onto the DSP building
+blocks built earlier in this series — just call your generators and filters inside the
+callback. Parameter changes from other threads must use SDL_LockAudioDevice or atomic
+operations to avoid data races. The resulting program compiles without platform-specific
+changes on Linux, macOS, and Windows.
+</p>
+
+<p>
+Part 21 moves to the plug-in world: writing a Pure Data external in C using the m_pd.h
+API, so the filters and oscillators from this series can be used inside Pd patches.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://wiki.libsdl.org/SDL2/SDL_OpenAudioDevice">SDL_OpenAudioDevice Documentation - libsdl.org</a></li>
+<li><a href="https://wiki.libsdl.org/SDL2/SDL_AudioSpec">SDL_AudioSpec Documentation - libsdl.org</a></li>
+<li><a href="https://wiki.libsdl.org/SDL2/CategoryAudio">SDL2 Audio Category Reference - libsdl.org</a></li>
+<li><a href="https://lazyfoo.net/tutorials/SDL/21_sound_effects_and_music/index.php">SDL2 Audio Tutorial - lazyfoo.net</a></li>
+<li><a href="https://www.libsdl.org/release/SDL-1.2.15/docs/html/guideinputeventsintro.html">SDL Audio Guide (covers callback model concepts)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="dsp-05-biquad.htm">Biquad Filters</a></li>
+<li><a href="dsp-15-wavetable.htm">Wavetable Synthesis</a></li>
+<li><a href="dsp-19-midi-linux.htm">MIDI I/O on Linux with ALSA</a></li>
+<li><a href="dsp-23-putting-together.htm">Putting It All Together: Monophonic Synth</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

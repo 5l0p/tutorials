@@ -1,0 +1,408 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>openFrameworks - Part 18: macOS Builds</title>
+    <meta name="description" content="Xcode project generator, CoreAudio backend, app bundle structure, ofToDataPath() and bundle-relative paths, ad-hoc signing for development, notarisation for distribution, and ARM vs x86_64 universal binaries.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="cpp, openframeworks, graphics">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="of-18-macos-builds.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../cpp.htm">cpp</a>, <a href="../../openframeworks.htm">openframeworks</a>, <a href="../../graphics.htm">graphics</a></i>
+        <h2>openFrameworks - Part 18: macOS Builds</h2>
+        <p>
+macOS is in many ways the smoothest desktop platform for openFrameworks work: CoreAudio gives
+you low latency with zero configuration, the Xcode debugger is excellent, and the Metal/OpenGL
+driver stack is stable. But the macOS build process has a few sharp edges that trip up every
+developer sooner or later: app bundle path resolution, code signing requirements, and the
+ARM/x86 split introduced by Apple Silicon. This article maps those edges so your first macOS
+release ships without a day lost to Gatekeeper dialogs or "file not found" crashes on someone
+else's machine.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+  <li>How to generate and open an Xcode project with the oF project generator.</li>
+  <li>How CoreAudio integrates with <code>ofSoundStream</code> and what to set for low latency.</li>
+  <li>The app bundle structure and why bare relative paths break inside a <code>.app</code>.</li>
+  <li>How <code>ofToDataPath()</code> resolves paths correctly inside a bundle.</li>
+  <li>Ad-hoc signing for local development and notarisation for public distribution.</li>
+  <li>Building universal binaries (ARM + x86_64) for Apple Silicon and Intel Macs.</li>
+</ul>
+
+<h3>Project Generator Workflow</h3>
+
+<p>
+Download the macOS oF package from <code>openframeworks.cc</code>. Launch
+<code>projectGenerator/projectGenerator.app</code>. Set the project name and path (within
+the oF <code>apps/myApps/</code> tree), check any addons you need, and click
+<b>Generate</b>. The generator creates an Xcode project (<code>.xcodeproj</code>) and
+associated source files.
+</p>
+
+<p>
+Open the <code>.xcodeproj</code> in Xcode. Select your Mac as the target device, choose
+<b>Debug</b> or <b>Release</b> in the scheme selector, and press <b>Cmd+R</b> to build and run.
+</p>
+
+<p>
+<b>Important:</b> The oF installation path must not contain spaces. Place it at
+<code>/Users/you/of_v0.12.0/</code>, not <code>/Users/you/My Projects/oF/</code>.
+</p>
+
+<p>
+From the command line you can also build with <code>xcodebuild</code>:
+</p>
+
+<pre>
+xcodebuild -project myProject.xcodeproj \
+           -scheme myProject \
+           -configuration Release \
+           build
+</pre>
+
+<h3>CoreAudio Backend</h3>
+
+<p>
+On macOS, <code>ofSoundStream</code> uses RTAudio's CoreAudio backend. CoreAudio is macOS's
+native audio API and is tightly integrated with the OS; you do not need to install any extra
+software or daemon. It supports sample rates from 44100 to 192000 Hz and buffer sizes as low
+as 64 samples without special privileges.
+</p>
+
+<pre>
+ofSoundStreamSettings ss;
+ss.setInListener(this);
+ss.sampleRate        = 44100;
+ss.numInputChannels  = 1;
+ss.numOutputChannels = 2;
+ss.bufferSize        = 256;   // achievable on most Macs; try 128 on Apple Silicon
+soundStream.setup(ss);
+</pre>
+
+<p>
+Device names on macOS follow Apple's naming conventions (e.g. <code>"Built-in Microphone"</code>,
+<code>"MacBook Pro Speakers"</code>). Enumerate them to find the index you need:
+</p>
+
+<pre>
+for (const auto &amp;d : soundStream.getDeviceList()) {
+    ofLogNotice() &lt;&lt; d.deviceID &lt;&lt; ": " &lt;&lt; d.name;
+}
+</pre>
+
+<p>
+<b>Microphone permission:</b> Since macOS Mojave (10.14), accessing the microphone requires
+the <code>NSMicrophoneUsageDescription</code> key in the app's <code>Info.plist</code>. The
+oF Xcode template includes a placeholder; edit the string to describe why your app needs
+microphone access. If this key is absent, CoreAudio silently opens a zero-signal input
+stream - no error, no sound.
+</p>
+
+<h3>The App Bundle Structure</h3>
+
+<p>
+When you build for macOS in Xcode, the output is a <code>.app</code> bundle - a directory
+that looks like a single file in Finder. Its layout:
+</p>
+
+<pre>
+myProject.app/
+  Contents/
+    MacOS/
+      myProject          (the compiled executable)
+    Resources/
+      data/              (your bin/data/ folder, copied here by the Xcode build script)
+        shaders/
+        images/
+        config.yaml
+    Info.plist           (metadata: bundle ID, version, permissions)
+    Frameworks/          (bundled dylibs, if any)
+</pre>
+
+<p>
+The executable runs with its working directory set to <code>Contents/MacOS/</code> - not
+<code>Contents/Resources/data/</code>. A bare relative path like <code>"shaders/plasma.frag"</code>
+will not find anything because the file is in <code>../Resources/data/shaders/</code> relative
+to the executable. This is why <code>ofToDataPath()</code> is not optional on macOS.
+</p>
+
+<h3>ofToDataPath() Inside a Bundle</h3>
+
+<p>
+<code>ofToDataPath(relativePath)</code> on macOS uses
+<code>CFBundleCopyResourcesDirectoryURL()</code> to locate the <code>Resources/</code>
+directory of the running bundle, then appends <code>data/</code> and your relative path.
+The result is the correct absolute path regardless of where the bundle is installed.
+</p>
+
+<pre>
+// WRONG: works in Debug from Xcode (working dir is set specially), breaks in Release:
+std::string p = "shaders/plasma.frag";
+
+// CORRECT: works everywhere, including inside .app bundles:
+std::string p = ofToDataPath("shaders/plasma.frag");
+</pre>
+
+<p>
+The Xcode build phase titled <b>"Copy bin/data to bundle"</b> (added by the oF project
+generator) copies everything from <code>bin/data/</code> into
+<code>Contents/Resources/data/</code> during every build. You only need to keep files in
+<code>bin/data/</code>; the bundle stays in sync automatically.
+</p>
+
+<h3>Ad-Hoc Signing for Development</h3>
+
+<p>
+Since macOS Catalina (10.15), all executables must be signed before they can run. For
+development and local distribution, ad-hoc signing is sufficient - it does not require an
+Apple Developer account.
+</p>
+
+<p>
+Xcode signs the app automatically during every build if you set <b>Signing Certificate</b>
+to <b>Sign to Run Locally</b> (which uses an ad-hoc identity). To sign manually:
+</p>
+
+<pre>
+codesign --force --deep --sign - myProject.app
+# "-" means ad-hoc identity
+</pre>
+
+<p>
+An ad-hoc signed app can run on the machine that signed it and on machines with the same
+Apple ID. It cannot be distributed outside your team without a Developer ID certificate.
+</p>
+
+<h3>Notarisation for Public Distribution</h3>
+
+<p>
+To distribute an oF app outside the Mac App Store (direct download from your website,
+USB stick, Airdrop to a stranger), you need a <b>Developer ID Application</b> certificate,
+which requires a paid Apple Developer account ($99/year).
+</p>
+
+<p>
+The workflow:
+</p>
+
+<ol>
+  <li>Sign the app with your Developer ID certificate:</li>
+</ol>
+
+<pre>
+codesign --force --deep --options runtime \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  myProject.app
+</pre>
+
+<ol start="2">
+  <li>Create a ZIP or DMG for submission:</li>
+</ol>
+
+<pre>
+ditto -c -k --keepParent myProject.app myProject.zip
+</pre>
+
+<ol start="3">
+  <li>Submit for notarisation:</li>
+</ol>
+
+<pre>
+xcrun notarytool submit myProject.zip \
+  --apple-id you@example.com \
+  --password "@keychain:AC_PASSWORD" \
+  --team-id TEAMID \
+  --wait
+</pre>
+
+<ol start="4">
+  <li>Staple the notarisation ticket:</li>
+</ol>
+
+<pre>
+xcrun stapler staple myProject.app
+</pre>
+
+<p>
+After stapling, the app opens on any Mac without a Gatekeeper warning, even without an
+internet connection.
+</p>
+
+<h3>Hardened Runtime Gotchas</h3>
+
+<p>
+Notarisation requires the hardened runtime (<code>--options runtime</code> in the codesign
+call). The hardened runtime restricts certain capabilities by default. You may need
+entitlements for:
+</p>
+
+<ul>
+  <li><b>Microphone:</b> <code>com.apple.security.device.audio-input</code></li>
+  <li><b>Camera:</b> <code>com.apple.security.device.camera</code></li>
+  <li><b>JIT compilation:</b> <code>com.apple.security.cs.allow-jit</code> (needed if you use
+  a scripting language or JIT audio engine inside oF)</li>
+</ul>
+
+<p>
+Add these to an entitlements <code>.plist</code> file and pass it to <code>codesign</code>:
+</p>
+
+<pre>
+codesign --force --deep --options runtime \
+  --entitlements myProject.entitlements \
+  --sign "Developer ID Application: ..." \
+  myProject.app
+</pre>
+
+<h3>Apple Silicon and Universal Binaries</h3>
+
+<p>
+Apple Silicon (M-series) Macs run ARM64 natively; Intel Macs run x86_64. Xcode can build a
+<b>universal binary</b> that contains both architectures in one file, running natively on
+both processor families.
+</p>
+
+<p>
+In Xcode, set <b>Architectures</b> to <b>Standard Architectures (Apple Silicon, Intel)</b>
+in Build Settings. All linked libraries must also be universal or you must provide separate
+builds.
+</p>
+
+<p>
+oF 0.12.x ships universal pre-built library variants for macOS. Verify with:
+</p>
+
+<pre>
+lipo -info libs/openFrameworksCompiled/lib/osx/libopenFrameworksDebug.a
+# Expected: Architectures in the fat file: ... arm64 x86_64
+</pre>
+
+<p>
+If a third-party library you bundle is not universal, build it yourself with:
+</p>
+
+<pre>
+# Build for both archs and combine:
+clang -target arm64-apple-macos11 -c mylib.c -o mylib_arm64.o
+clang -target x86_64-apple-macos10.14 -c mylib.c -o mylib_x86.o
+lipo -create mylib_arm64.o mylib_x86.o -output mylib_universal.o
+</pre>
+
+<p>
+Or build a fat static library:
+</p>
+
+<pre>
+lipo -create libmylib_arm64.a libmylib_x86.a -output libmylib.a
+</pre>
+
+<p>
+Rosetta 2 translates x86_64 binaries to ARM64 at runtime, so an x86_64-only oF app will
+still run on Apple Silicon - but at lower performance and with a launch warning. Build
+universal from the start.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+The macOS workflow is: project generator creates the Xcode project, build with Cmd+R or
+<code>xcodebuild</code>. CoreAudio requires only an <code>NSMicrophoneUsageDescription</code>
+key in <code>Info.plist</code> for audio input. Asset paths must go through
+<code>ofToDataPath()</code> because the app bundle's working directory is not
+<code>Resources/data/</code>. Ad-hoc signing covers local development; a paid Developer ID
+certificate plus notarisation is required for public distribution. Set Architectures to
+Standard Architectures in Xcode to produce a universal ARM64/x86_64 binary. Part 19 covers
+the most constrained target in the series: Android via the NDK.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+  <li><a href="https://openframeworks.cc/setup/xcode/">oF Xcode Setup Guide</a></li>
+  <li><a href="https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution">Apple: Notarising macOS Software</a></li>
+  <li><a href="https://developer.apple.com/documentation/apple-silicon/building-a-universal-macos-binary">Apple: Building a Universal macOS Binary</a></li>
+  <li><a href="https://developer.apple.com/documentation/avfaudio/avaudiosession">AVAudioSession / CoreAudio Documentation</a></li>
+  <li><a href="https://developer.apple.com/documentation/bundleresources/information_property_list/nsmicrophoneusagedescription">NSMicrophoneUsageDescription reference</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+  <li><a href="of-15-cross-platform.htm">Cross-Platform Overview</a></li>
+  <li><a href="of-16-linux-builds.htm">Linux Builds</a></li>
+  <li><a href="of-17-windows-builds.htm">Windows Builds</a></li>
+  <li><a href="of-20-portable-code.htm">Writing Portable oF Code</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

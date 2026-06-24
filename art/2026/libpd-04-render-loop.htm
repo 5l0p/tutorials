@@ -1,0 +1,371 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>libpd - Part 4: The Audio Render Loop</title>
+    <meta name="description" content="How to integrate libpd_process_float into a platform audio callback, handle block-size alignment, and structure the render loop correctly.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, audio, puredata">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="libpd-04-render-loop.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../audio.htm">audio</a>, <a href="../../puredata.htm">puredata</a></i>
+        <h2>libpd - Part 4: The Audio Render Loop</h2>
+        <p>The render loop is where libpd actually does its work: your audio driver calls a callback, you pass buffers to <code>libpd_process_float</code>, and the Pd engine fills them with computed samples. Getting the block sizes, channel interleaving, and callback structure right is essential for glitch-free audio. This article shows how to integrate libpd with PortAudio, SDL2, and ALSA.</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How libpd_process_float works: ticks, interleaved buffers, and the 64-sample boundary</li>
+<li>How to integrate libpd into a PortAudio callback with correct tick calculation</li>
+<li>How to integrate with SDL2's audio callback and ALSA's writei loop</li>
+<li>How to handle block sizes that are not multiples of 64: the alignment buffer pattern</li>
+<li>How to measure DSP load and detect when the render budget is being exceeded</li>
+</ul>
+
+<h3>How libpd_process_float Works</h3>
+
+<p>Pd processes audio in blocks of exactly 64 samples. <code>libpd_process_float</code> runs the scheduler for <code>ticks</code> such blocks:</p>
+
+<pre>
+int libpd_process_float(int ticks,
+                        const float *inBuffer,
+                        float       *outBuffer);
+</pre>
+
+<p>Buffer layout: samples are <b>interleaved by channel</b>. For stereo output with 256 samples (ticks=4), <code>outBuffer</code> must be 256 * 2 = 512 floats, laid out as L0 R0 L1 R1 ... L255 R255.</p>
+
+<p>The return value is 0 on success. A non-zero return means the DSP graph is not running (you forgot to send a <code>[; pd dsp 1]</code> message, or initialisation failed).</p>
+
+<h3>Enabling the DSP Engine</h3>
+
+<p>Pd's DSP engine starts in a stopped state. Enable it before the first audio block:</p>
+
+<pre>
+/* Equivalent to clicking "DSP on" in the Pd GUI */
+libpd_start_message(1);
+libpd_add_float(1.0f);
+libpd_finish_message("pd", "dsp");
+</pre>
+
+<p>To stop DSP (useful when the app is in the background):</p>
+
+<pre>
+libpd_start_message(1);
+libpd_add_float(0.0f);
+libpd_finish_message("pd", "dsp");
+</pre>
+
+<h3>Block-Size Alignment</h3>
+
+<p>Your audio driver's block size must be a multiple of 64. Common sizes (128, 256, 512, 1024) all work. If your driver gives you an arbitrary size, you must buffer:</p>
+
+<pre>
+#define PD_BLOCK 64
+
+static float ringbuf[PD_BLOCK * 2]; /* one Pd tick of stereo */
+static int   ringpos = 0;
+
+void audio_callback(float *out, int nframes, int nch) {
+    int i = 0;
+    while (i &lt; nframes) {
+        int avail = PD_BLOCK - ringpos;
+        int copy  = (nframes - i &lt; avail) ? nframes - i : avail;
+        memcpy(out + i * nch, ringbuf + ringpos * nch,
+               copy * nch * sizeof(float));
+        ringpos += copy;
+        i       += copy;
+        if (ringpos == PD_BLOCK) {
+            libpd_process_float(1, NULL, ringbuf);
+            ringpos = 0;
+        }
+    }
+}
+</pre>
+
+<p>In practice, prefer 256 or 512 as your driver block size and avoid the complexity of rebuffering.</p>
+
+<h3>PortAudio Integration</h3>
+
+<p>PortAudio is the most portable audio I/O library and a natural fit for libpd:</p>
+
+<pre>
+#include &lt;portaudio.h&gt;
+#include &lt;z_libpd.h&gt;
+#include &lt;string.h&gt;
+
+#define SAMPLE_RATE  44100
+#define BLOCK_SIZE   512
+#define CHANNELS     2
+#define TICKS        (BLOCK_SIZE / 64)
+
+static int pa_callback(const void *inBuf, void *outBuf,
+                       unsigned long frames,
+                       const PaStreamCallbackTimeInfo *ti,
+                       PaStreamCallbackFlags flags,
+                       void *userData)
+{
+    float *out = (float *)outBuf;
+    const float *in = (const float *)inBuf;
+
+    /* outBuf is frames * CHANNELS floats; already interleaved */
+    libpd_process_float(TICKS, in, out);
+    return paContinue;
+}
+
+int main(void) {
+    libpd_init();
+    libpd_init_audio(0, CHANNELS, SAMPLE_RATE);
+
+    /* Enable DSP */
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    void *patch = libpd_openfile("synth.pd", ".");
+
+    Pa_Initialize();
+    PaStream *stream;
+    Pa_OpenDefaultStream(&amp;stream, 0, CHANNELS, paFloat32,
+                         SAMPLE_RATE, BLOCK_SIZE, pa_callback, NULL);
+    Pa_StartStream(stream);
+
+    Pa_Sleep(5000); /* play for 5 seconds */
+
+    Pa_StopStream(stream);
+    Pa_CloseStream(stream);
+    Pa_Terminate();
+
+    libpd_closefile(patch);
+    return 0;
+}
+</pre>
+
+<h3>SDL2 Audio Integration</h3>
+
+<p>SDL2's audio callback is similar but uses a different type signature:</p>
+
+<pre>
+#include &lt;SDL2/SDL.h&gt;
+#include &lt;z_libpd.h&gt;
+
+#define SAMPLE_RATE 44100
+#define BLOCK_SIZE  512
+#define CHANNELS    2
+#define TICKS       (BLOCK_SIZE / 64)
+
+static void sdl_audio_callback(void *userdata,
+                                Uint8 *stream,
+                                int len)
+{
+    float *out = (float *)stream;
+    int frames = len / (CHANNELS * sizeof(float));
+    (void)frames; /* should equal BLOCK_SIZE */
+
+    libpd_process_float(TICKS, NULL, out);
+}
+
+int main(void) {
+    libpd_init();
+    libpd_init_audio(0, CHANNELS, SAMPLE_RATE);
+
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    void *patch = libpd_openfile("synth.pd", ".");
+
+    SDL_Init(SDL_INIT_AUDIO);
+
+    SDL_AudioSpec want = {
+        .freq     = SAMPLE_RATE,
+        .format   = AUDIO_F32SYS,
+        .channels = CHANNELS,
+        .samples  = BLOCK_SIZE,
+        .callback = sdl_audio_callback,
+    };
+
+    SDL_AudioSpec got;
+    SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &amp;want, &amp;got, 0);
+    SDL_PauseAudioDevice(dev, 0); /* start playback */
+
+    SDL_Delay(5000);
+
+    SDL_CloseAudioDevice(dev);
+    SDL_Quit();
+    libpd_closefile(patch);
+    return 0;
+}
+</pre>
+
+<h3>ALSA Integration (Linux)</h3>
+
+<p>For bare-metal Linux deployments without PortAudio:</p>
+
+<pre>
+#include &lt;alsa/asoundlib.h&gt;
+#include &lt;z_libpd.h&gt;
+#include &lt;stdlib.h&gt;
+
+#define SAMPLE_RATE 44100
+#define CHANNELS    2
+#define BLOCK_SIZE  512
+#define TICKS       (BLOCK_SIZE / 64)
+
+int main(void) {
+    libpd_init();
+    libpd_init_audio(0, CHANNELS, SAMPLE_RATE);
+
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    void *patch = libpd_openfile("synth.pd", ".");
+
+    snd_pcm_t *pcm;
+    snd_pcm_open(&amp;pcm, "default", SND_PCM_STREAM_PLAYBACK, 0);
+    snd_pcm_set_params(pcm, SND_PCM_FORMAT_FLOAT_LE,
+                       SND_PCM_ACCESS_RW_INTERLEAVED,
+                       CHANNELS, SAMPLE_RATE, 1, 20000);
+
+    float buf[BLOCK_SIZE * CHANNELS];
+
+    for (;;) {
+        libpd_process_float(TICKS, NULL, buf);
+        snd_pcm_writei(pcm, buf, BLOCK_SIZE);
+    }
+
+    snd_pcm_close(pcm);
+    libpd_closefile(patch);
+    return 0;
+}
+</pre>
+
+<h3>Thread Safety in the Render Loop</h3>
+
+<p>The render loop runs on the audio thread. Key rules:</p>
+
+<ul>
+<li>Do NOT call <code>libpd_openfile</code> or <code>libpd_closefile</code> from the audio thread.</li>
+<li>Do NOT allocate memory in the audio callback.</li>
+<li>Message sends (<code>libpd_float</code>, <code>libpd_bang</code>) are safe from the audio thread.</li>
+<li>When sending messages from a UI or control thread, use a lock-free ring buffer to queue them, then drain the queue at the top of each audio callback.</li>
+</ul>
+
+<h3>Measuring DSP Load</h3>
+
+<p>To check if libpd is overrunning its time budget, measure wall-clock time around the process call:</p>
+
+<pre>
+#include &lt;time.h&gt;
+
+struct timespec t0, t1;
+clock_gettime(CLOCK_MONOTONIC, &amp;t0);
+libpd_process_float(TICKS, inBuf, outBuf);
+clock_gettime(CLOCK_MONOTONIC, &amp;t1);
+
+double ms = (t1.tv_sec - t0.tv_sec) * 1000.0
+          + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+
+/* Budget: BLOCK_SIZE / SAMPLE_RATE * 1000 ms */
+double budget = (double)BLOCK_SIZE / SAMPLE_RATE * 1000.0;
+if (ms &gt; budget * 0.8)
+    fprintf(stderr, "DSP load high: %.2f / %.2f ms\n", ms, budget);
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+Call <code>libpd_process_float(ticks, inBuf, outBuf)</code> from your audio callback where
+<code>ticks = blockSize / 64</code>. Buffers are interleaved: all channels for sample 0,
+then all channels for sample 1. If your driver delivers block sizes that are not multiples
+of 64, maintain an alignment buffer that accumulates input until a full 64-sample tick is
+available, then drains output back to the driver. Measure wall time across the call and
+log a warning when it exceeds 80% of the available budget.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="http://www.portaudio.com/docs/v19-doxydocs/index.html">PortAudio documentation</a></li>
+<li><a href="https://wiki.libsdl.org/SDL2/CategoryAudio">SDL2 audio reference</a></li>
+<li><a href="https://www.alsa-project.org/alsa-doc/alsa-lib/">ALSA library documentation</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="libpd-03-init-patch.htm">Initialising libpd &amp; Loading a Patch</a></li>
+<li><a href="libpd-05-send-messages.htm">Sending Messages to Pd</a></li>
+<li><a href="libpd-11-headless.htm">Headless libpd</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

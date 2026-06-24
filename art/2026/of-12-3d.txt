@@ -1,0 +1,415 @@
+openFrameworks - Part 12: 3D: Meshes, Lights, and Cameras
+2026-06-01
+
+
+Moving from 2D to 3D in openFrameworks does not require a new framework or a scene graph
+library. oF provides a small set of orthogonal primitives - ofNode for transforms,
+ofEasyCam for interactive navigation, ofLight for lighting, and
+ofMesh for geometry - that compose cleanly. Understanding them one at a time, and
+then combining them, gets you from a flat canvas to a fully lit, navigable 3D scene in under a
+hundred lines of code.
+
+
+What You Will Learn
+
+
+  How ofNode represents position, orientation, and scale, and how nodes
+  form a parent/child hierarchy.
+  How to use ofEasyCam for mouse-driven 3D navigation.
+  How to add point, directional, and spot lights with ofLight.
+  The ofMesh data model: vertices, normals, texture coordinates, indices.
+  Why depth testing matters and how to enable it correctly.
+  A complete scene: a procedural grid mesh, a camera, and a light.
+
+
+ofNode: The Transform Building Block
+
+
+An ofNode encapsulates a 4×4 transformation matrix that expresses the node's
+position, orientation (as a quaternion), and scale relative to its parent. Every 3D object
+class in oF - ofCamera, ofLight, ofMesh wrapper classes
+- inherits from ofNode.
+
+
+
+ofNode root;
+ofNode child;
+
+root.setPosition(0, 0, 0);
+root.setOrientation(glm::vec3(0, 30, 0));  // 30° around Y axis (Euler angles, degrees)
+root.setScale(1.0f);
+
+child.setParent(root);      // child transforms are relative to root
+child.setPosition(100, 0, 0);  // 100 units along root's local X axis
+
+
+
+Calling node.transformGL() pushes the node's matrix onto the OpenGL matrix stack;
+node.restoreTransformGL() pops it. Everything drawn between those two calls is in
+the node's local space.
+
+
+
+void ofApp::draw() {
+    root.transformGL();
+        // draw something in root's local space
+        child.transformGL();
+            ofDrawBox(0, 0, 0, 20, 20, 20);
+        child.restoreTransformGL();
+    root.restoreTransformGL();
+}
+
+
+
+You can also move nodes each frame using the directional helpers:
+
+
+
+node.move(ofVec3f(0, 1, 0));      // translate in world space
+node.truck(10);                   // move along node's local X axis
+node.boom(5);                     // move along node's local Y axis
+node.dolly(-3);                   // move along node's local Z axis (forward/back)
+node.tilt(1.0f);                  // rotate around local X
+node.pan(0.5f);                   // rotate around local Y
+node.roll(0.2f);                  // rotate around local Z
+
+
+ofEasyCam: Interactive Navigation
+
+
+ofEasyCam extends ofCamera (which extends ofNode) with
+mouse-driven orbit, pan, and zoom. It is the fastest way to get a navigable 3D view.
+
+
+
+// ofApp.h
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void draw();
+private:
+    ofEasyCam cam;
+};
+
+
+
+void ofApp::setup() {
+    ofEnableDepthTest();
+}
+
+void ofApp::draw() {
+    ofBackground(15, 15, 25);
+
+    cam.begin();
+        // everything drawn here is in 3D space
+        ofSetColor(200, 100, 50);
+        ofDrawBox(0, 0, 0, 80, 80, 80);
+        ofSetColor(100, 200, 150);
+        ofDrawSphere(150, 0, 0, 40);
+    cam.end();
+}
+
+
+
+Mouse controls (defaults): left-drag to orbit, middle-drag to pan, scroll wheel to zoom.
+The camera target is the world origin by default; call cam.setTarget(node) to
+follow a specific object.
+
+
+
+Gotcha: ofEasyCam captures mouse input. If you are also handling mouse
+events in your ofApp, the camera will consume drag events before they reach your
+handlers. Call cam.disableMouseInput() to take full control of the camera
+yourself.
+
+
+The Depth Buffer and ofEnableDepthTest
+
+
+Without depth testing, OpenGL draws objects in the order you submit them. A sphere drawn after
+a box will always appear in front of the box, regardless of their actual positions in 3D space.
+Depth testing fixes this: the GPU maintains a per-pixel depth value and discards any fragment
+that is behind something already drawn.
+
+
+
+void ofApp::setup() {
+    ofEnableDepthTest();   // call once; stays enabled until ofDisableDepthTest()
+}
+
+
+
+Enable depth testing whenever you draw overlapping 3D geometry. Disable it temporarily if you
+need to draw 2D overlay UI on top of the 3D scene:
+
+
+
+void ofApp::draw() {
+    cam.begin();
+        ofEnableDepthTest();
+        drawScene();
+        ofDisableDepthTest();
+    cam.end();
+
+    // 2D overlay (no camera, no depth test)
+    ofSetColor(255);
+    ofDrawBitmapString("FPS: " + ofToString((int)ofGetFrameRate()), 10, 20);
+}
+
+
+ofLight: Point, Directional, and Spot
+
+
+oF's lighting uses OpenGL's legacy fixed-function model. It is not physically based, but it is
+easy to use and perfectly adequate for creative work. You need to call
+ofEnableLighting() before drawing lit geometry, and materials respond differently
+to different light types.
+
+
+
+// ofApp.h
+    ofLight  pointLight;
+    ofLight  dirLight;
+
+
+
+void ofApp::setup() {
+    ofEnableDepthTest();
+
+    pointLight.setPointLight();
+    pointLight.setPosition(200, 300, 100);
+    pointLight.setDiffuseColor(ofColor(255, 200, 150));
+    pointLight.setSpecularColor(ofColor(255, 255, 255));
+    pointLight.setAttenuation(1.0f, 0.0f, 0.0001f);  // constant, linear, quadratic
+
+    dirLight.setDirectional();
+    dirLight.setOrientation(glm::vec3(45, -30, 0));   // angles in degrees
+    dirLight.setDiffuseColor(ofColor(100, 120, 200));
+}
+
+void ofApp::draw() {
+    ofBackground(10);
+
+    ofEnableLighting();
+    pointLight.enable();
+    dirLight.enable();
+
+    cam.begin();
+        ofSetColor(200);          // base material colour
+        ofDrawSphere(0, 0, 0, 80);
+
+        ofSetColor(150, 200, 100);
+        ofDrawBox(0, -120, 0, 300, 10, 300);  // floor
+    cam.end();
+
+    ofDisableLighting();
+}
+
+
+
+For a spot light: light.setSpotlight(cutoffAngle, exponent). The cutoff angle is
+in degrees (0–90); the exponent controls how quickly intensity falls off toward the edges of
+the cone.
+
+
+
+Gotcha: Lighting only affects geometry with surface normals. Primitives drawn with
+ofDrawSphere and ofDrawBox generate normals automatically. For
+ofMesh you must add them manually (see below).
+
+
+ofMesh: Vertices, Normals, Texture Coords, Indices
+
+
+ofMesh is an indexed triangle list. You add vertices, optionally add normals and
+texture coordinates at matching positions, add index triples that define triangles, and then
+call draw(). The GPU uploads this data to a VBO internally.
+
+
+
+ofMesh mesh;
+mesh.setMode(OF_PRIMITIVE_TRIANGLES);
+
+// A single triangle
+mesh.addVertex(glm::vec3(  0,  50, 0));
+mesh.addVertex(glm::vec3(-50, -50, 0));
+mesh.addVertex(glm::vec3( 50, -50, 0));
+
+mesh.addNormal(glm::vec3(0, 0, 1));
+mesh.addNormal(glm::vec3(0, 0, 1));
+mesh.addNormal(glm::vec3(0, 0, 1));
+
+mesh.addIndex(0); mesh.addIndex(1); mesh.addIndex(2);
+
+
+A Procedural Grid Mesh
+
+
+A flat grid is the workhorse mesh for terrain, cloth simulation, and audio visualisers.
+Generate one like this:
+
+
+
+// ofApp.h
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void update();
+    void draw();
+private:
+    ofMesh      grid;
+    ofEasyCam   cam;
+    ofLight     sun;
+    int         cols = 60;
+    int         rows = 60;
+    float       spacing = 20.0f;
+};
+
+
+
+void ofApp::setup() {
+    ofEnableDepthTest();
+
+    sun.setDirectional();
+    sun.setOrientation(glm::vec3(40, -20, 0));
+    sun.setDiffuseColor(ofColor(240, 220, 180));
+
+    grid.setMode(OF_PRIMITIVE_TRIANGLES);
+
+    float hw = cols * spacing * 0.5f;
+    float hh = rows * spacing * 0.5f;
+
+    // Vertices and normals
+    for (int r = 0; r <= rows; ++r) {
+        for (int c = 0; c <= cols; ++c) {
+            float x = c * spacing - hw;
+            float z = r * spacing - hh;
+            float y = ofNoise(c * 0.1f, r * 0.1f) * 80.0f;
+
+            grid.addVertex(glm::vec3(x, y, z));
+            grid.addNormal(glm::vec3(0, 1, 0));  // flat normals for now; see update()
+            grid.addTexCoord(glm::vec2((float)c / cols, (float)r / rows));
+        }
+    }
+
+    // Indices: two triangles per quad
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            int i0 = r * (cols + 1) + c;
+            int i1 = i0 + 1;
+            int i2 = i0 + (cols + 1);
+            int i3 = i2 + 1;
+
+            grid.addIndex(i0); grid.addIndex(i1); grid.addIndex(i2);
+            grid.addIndex(i1); grid.addIndex(i3); grid.addIndex(i2);
+        }
+    }
+}
+
+void ofApp::update() {
+    float t = ofGetElapsedTimef() * 0.5f;
+
+    // Animate vertex heights using Perlin noise
+    for (int r = 0; r <= rows; ++r) {
+        for (int c = 0; c <= cols; ++c) {
+            int idx = r * (cols + 1) + c;
+            auto v = grid.getVertex(idx);
+            v.y = ofNoise(c * 0.1f + t, r * 0.1f) * 80.0f;
+            grid.setVertex(idx, v);
+        }
+    }
+
+    // Recompute normals after deformation
+    // Simple approach: average face normals at each vertex
+    // For production use ofMesh::computeNormals() from the ofxMeshNormals addon,
+    // or compute manually:
+    grid.clearNormals();
+    // Re-add flat Y-up normals as a placeholder
+    size_t numVerts = (rows + 1) * (cols + 1);
+    for (size_t i = 0; i < numVerts; ++i) {
+        grid.addNormal(glm::vec3(0, 1, 0));
+    }
+}
+
+void ofApp::draw() {
+    ofBackground(10, 12, 20);
+
+    ofEnableLighting();
+    sun.enable();
+
+    cam.begin();
+        ofSetColor(80, 160, 120);
+        grid.draw();
+    cam.end();
+
+    ofDisableLighting();
+
+    ofSetColor(200);
+    ofDrawBitmapString("FPS: " + ofToString((int)ofGetFrameRate()), 10, 20);
+}
+
+
+Drawing Modes
+
+
+ofMesh supports several primitive modes set with setMode():
+
+
+
+  OF_PRIMITIVE_TRIANGLES - explicit triangle triples in index buffer.
+  OF_PRIMITIVE_TRIANGLE_STRIP - shared vertices between adjacent triangles;
+  more memory-efficient for regular grids.
+  OF_PRIMITIVE_LINES - wireframe; each pair of indices is a line.
+  OF_PRIMITIVE_POINTS - point cloud; size controlled by
+  glPointSize().
+
+
+Combining a Camera, Light, and Mesh
+
+
+The complete structure of a 3D oF sketch is always:
+
+
+
+  In setup(): allocate geometry, configure lights, enable depth test.
+  In update(): update vertex data, move objects, run physics.
+  In draw(): clear screen, enable lighting, call cam.begin(),
+  draw all 3D objects, call cam.end(), disable lighting, draw 2D HUD.
+
+
+
+This ordering is mandatory: any draw call between cam.begin() and
+cam.end() uses the camera's projection and view matrices. Draw calls outside
+that block use oF's default orthographic 2D projection.
+
+
+Summary
+
+
+ofNode gives every object a position, orientation, and scale in a composable
+hierarchy. ofEasyCam wraps that into a mouse-controllable 3D camera with one line
+of setup. ofLight adds diffuse and specular illumination via OpenGL's
+fixed-function pipeline. ofMesh lets you build any geometry as an indexed triangle
+list and stream it to the GPU. Enable depth testing once in setup() and the GPU
+handles correct z-ordering automatically. The next article covers addons - how to extend oF
+with community and first-party libraries.
+
+
+Further Reading
+
+
+  ofNode API Reference
+  ofCamera Documentation
+  ofMesh Documentation
+  oF Book: 3D chapter
+  Learn OpenGL: Coordinate Systems
+
+
+See Also
+
+
+  Shaders & GLSL
+  OpenGL Core Profile
+  Framebuffers & Post-Processing
+  Putting It Together: Audio-Visual Sketch
+

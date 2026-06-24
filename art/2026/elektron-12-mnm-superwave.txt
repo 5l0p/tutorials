@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 12: Monomachine SuperWave Engine
-2026-01-01
+2026-06-01
 
 
 The Monomachine's SuperWave engine stacks multiple detuned oscillators to create an

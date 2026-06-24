@@ -1,0 +1,423 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Containers - Part 7: pivot_root & the Container Rootfs</title>
+    <meta name="description" content="How pivot_root() replaces the filesystem root inside a container, how to build a minimal rootfs with BusyBox, and a complete Go implementation.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="linux, containers">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="containers-07-pivot-root.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../linux.htm">linux</a>, <a href="../../containers.htm">containers</a></i>
+        <h2>Containers - Part 7: pivot_root & the Container Rootfs</h2>
+        <p>
+<code>pivot_root()</code> is the syscall that makes a container's filesystem
+isolation real. Unlike <code>chroot()</code>, which merely changes path resolution,
+<code>pivot_root()</code> restructures the kernel's mount tree so that the old root
+mount becomes inaccessible. Combined with a new mount namespace, there is no
+path back to the host filesystem. This article walks through the syscall, the
+"pivot_root dance" required to use it, building a minimal rootfs with BusyBox,
+and a complete Go runtime implementation.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How <code>pivot_root()</code> works, why it has no glibc wrapper, and the four constraints the kernel enforces</li>
+<li>The six-step "pivot_root dance": bind-mount, create put_old, pivot, chdir, unmount, rmdir</li>
+<li>A complete C implementation combining <code>clone()</code>, mount namespaces, and <code>pivot_root()</code></li>
+<li>How to build a minimal BusyBox rootfs with device nodes</li>
+<li>A complete Go implementation using <code>unix.PivotRoot</code> and the re-exec pattern</li>
+<li>Why <code>pivot_root</code> + unmount is categorically stronger than <code>chroot</code></li>
+</ul>
+
+<h3>How pivot_root Works</h3>
+
+<p>
+The signature is:
+</p>
+
+<pre>
+#include &lt;sys/syscall.h&gt;
+int pivot_root(const char *new_root, const char *put_old);
+</pre>
+
+<p>
+<code>pivot_root()</code> has no glibc wrapper in older versions; call it via
+<code>syscall(SYS_pivot_root, new_root, put_old)</code>. It:
+</p>
+
+<ul>
+<li>Makes <code>new_root</code> the new root mount of the current mount namespace.</li>
+<li>Moves the old root mount to <code>put_old</code> (which must be under <code>new_root</code>).</li>
+<li>After the call, the old root is accessible at <code>put_old</code> and can be unmounted.</li>
+</ul>
+
+<p>
+Constraints enforced by the kernel:
+</p>
+
+<ul>
+<li><code>new_root</code> and <code>put_old</code> must be directories.</li>
+<li><code>new_root</code> must be a mount point (not just a directory).</li>
+<li><code>put_old</code> must be under <code>new_root</code>.</li>
+<li>The filesystem of <code>new_root</code> must not be the same as the current root.</li>
+</ul>
+
+<h3>The pivot_root Dance in C</h3>
+
+<p>
+The standard sequence is:
+</p>
+
+<ol>
+<li>Bind-mount <code>new_root</code> over itself (to make it a mount point if it is not already).</li>
+<li>Create a directory <code>new_root/.old_root</code> to receive the old root.</li>
+<li>Call <code>pivot_root(new_root, new_root/.old_root)</code>.</li>
+<li><code>chdir("/")</code> to move into the new root.</li>
+<li>Unmount <code>/.old_root</code> (the old host root).</li>
+<li>Remove the <code>/.old_root</code> directory.</li>
+</ol>
+
+<pre>
+#define _GNU_SOURCE
+#include &lt;sched.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/mount.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;sys/syscall.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;unistd.h&gt;
+
+static inline int pivot_root(const char *new_root, const char *put_old) {
+    return syscall(SYS_pivot_root, new_root, put_old);
+}
+
+#define STACK_SIZE (1 * 1024 * 1024)
+#define ROOTFS     "/tmp/rootfs"
+
+static int container_main(void *arg) {
+    (void)arg;
+
+    /* 1. Remount everything private */
+    if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
+        perror("mount private"); return 1;
+    }
+
+    /* 2. Bind-mount new_root over itself to make it a mount point */
+    if (mount(ROOTFS, ROOTFS, NULL, MS_BIND | MS_REC, NULL) == -1) {
+        perror("bind mount rootfs"); return 1;
+    }
+
+    /* 3. Create put_old directory */
+    char put_old[256];
+    snprintf(put_old, sizeof(put_old), "%s/.old_root", ROOTFS);
+    mkdir(put_old, 0700);
+
+    /* 4. pivot_root */
+    if (pivot_root(ROOTFS, put_old) == -1) {
+        perror("pivot_root"); return 1;
+    }
+
+    /* 5. chdir into new root */
+    if (chdir("/") == -1) {
+        perror("chdir"); return 1;
+    }
+
+    /* 6. Unmount old root */
+    if (umount2("/.old_root", MNT_DETACH) == -1) {
+        perror("umount old root"); return 1;
+    }
+    rmdir("/.old_root");
+
+    /* Mount /proc for the new PID namespace */
+    mkdir("/proc", 0755);
+    mount("proc", "/proc", "proc", 0, NULL);
+
+    printf("pivot_root complete - running in new rootfs\n");
+
+    char *argv[] = { "/bin/sh", NULL };
+    execv("/bin/sh", argv);
+    perror("execv");
+    return 1;
+}
+
+int main(void) {
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) { perror("malloc"); return 1; }
+
+    pid_t pid = clone(container_main,
+                      stack + STACK_SIZE,
+                      CLONE_NEWNS | CLONE_NEWPID | SIGCHLD,
+                      NULL);
+    if (pid == -1) { perror("clone"); return 1; }
+
+    waitpid(pid, NULL, 0);
+    free(stack);
+    return 0;
+}
+</pre>
+
+<h3>Building a Minimal Rootfs with BusyBox</h3>
+
+<p>
+The rootfs needs at least a shell and basic utilities. A statically-linked
+BusyBox binary provides them all in one file:
+</p>
+
+<pre>
+#!/bin/sh
+set -e
+ROOTFS=/tmp/rootfs
+
+# Create directory structure
+mkdir -p $ROOTFS/{bin,sbin,etc,proc,sys,dev,tmp,usr/bin,usr/sbin}
+
+# Download static BusyBox
+curl -Lo $ROOTFS/bin/busybox \
+  https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
+chmod +x $ROOTFS/bin/busybox
+
+# Install all applets as symlinks
+chroot $ROOTFS /bin/busybox --install -s /bin
+
+# Basic /etc/passwd and /etc/group
+printf 'root:x:0:0:root:/root:/bin/sh\n' &gt; $ROOTFS/etc/passwd
+printf 'root:x:0:\n'                     &gt; $ROOTFS/etc/group
+
+# Create a few device nodes (needed by many programs)
+mknod -m 666 $ROOTFS/dev/null  c 1 3
+mknod -m 666 $ROOTFS/dev/zero  c 1 5
+mknod -m 666 $ROOTFS/dev/urandom c 1 9
+mknod -m 622 $ROOTFS/dev/tty   c 5 0
+
+echo "Rootfs built at $ROOTFS"
+</pre>
+
+<p>
+Run this script as root (mknod requires privileges), then run the C program above
+to pivot into it.
+</p>
+
+<h3>Go Implementation</h3>
+
+<p>
+The Go standard library does not have a <code>pivot_root</code> wrapper in
+<code>syscall</code>, but <code>golang.org/x/sys/unix</code> does:
+</p>
+
+<pre>
+package main
+
+import (
+    "fmt"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "syscall"
+
+    "golang.org/x/sys/unix"
+)
+
+const rootfs = "/tmp/rootfs"
+
+func pivotRoot(newRoot string) error {
+    putOld := filepath.Join(newRoot, ".old_root")
+
+    // Bind-mount newRoot over itself
+    if err := unix.Mount(newRoot, newRoot, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+        return fmt.Errorf("bind mount: %w", err)
+    }
+
+    // Create put_old directory
+    if err := os.MkdirAll(putOld, 0700); err != nil {
+        return fmt.Errorf("mkdir put_old: %w", err)
+    }
+
+    // Pivot
+    if err := unix.PivotRoot(newRoot, putOld); err != nil {
+        return fmt.Errorf("pivot_root: %w", err)
+    }
+
+    // chdir into new root
+    if err := os.Chdir("/"); err != nil {
+        return fmt.Errorf("chdir: %w", err)
+    }
+
+    // Unmount old root
+    if err := unix.Unmount("/.old_root", unix.MNT_DETACH); err != nil {
+        return fmt.Errorf("unmount old root: %w", err)
+    }
+
+    return os.Remove("/.old_root")
+}
+
+func child() error {
+    // Make mounts private
+    if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+        return fmt.Errorf("mount private: %w", err)
+    }
+
+    if err := pivotRoot(rootfs); err != nil {
+        return err
+    }
+
+    // Mount proc
+    os.MkdirAll("/proc", 0755)
+    if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
+        return fmt.Errorf("mount proc: %w", err)
+    }
+
+    cmd := exec.Command("/bin/sh")
+    cmd.Stdin  = os.Stdin
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    return cmd.Run()
+}
+
+func main() {
+    // Re-exec ourselves with a flag so the child runs child()
+    if len(os.Args) &gt; 1 &amp;&amp; os.Args[1] == "child" {
+        if err := child(); err != nil {
+            fmt.Fprintln(os.Stderr, err)
+            os.Exit(1)
+        }
+        return
+    }
+
+    // Parent: launch child in new namespaces
+    cmd := exec.Command("/proc/self/exe", "child")
+    cmd.Stdin  = os.Stdin
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.SysProcAttr = &amp;syscall.SysProcAttr{
+        Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWPID,
+    }
+
+    if err := cmd.Run(); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+}
+</pre>
+
+<p>
+The re-exec pattern (parent launches <code>/proc/self/exe child</code>) is how runc
+and most Go container runtimes handle the namespace setup: the parent creates
+the namespaces, the child re-executes itself inside those namespaces and
+finishes the rootfs configuration.
+</p>
+
+<h3>Why Not Just chroot?</h3>
+
+<p>
+After <code>pivot_root()</code> + <code>umount2(put_old, MNT_DETACH)</code>, the host
+filesystem is not present in the container's mount namespace. Even a privileged
+process inside the container cannot reach the host's <code>/etc</code> or run host
+binaries. With <code>chroot()</code> alone, the host's full mount table is still in the
+kernel - the old root is simply not reachable through path resolution unless
+the process escapes the jail.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+<code>pivot_root()</code> restructures the kernel's mount tree: the new rootfs becomes
+the root of the container's mount namespace and the old root is moved to a
+subdirectory where it can be unmounted. After that unmount, the host filesystem
+is gone from the container's view — not just hidden by path resolution. The
+Go re-exec pattern (parent creates namespaces, child re-executes itself to run
+inside them) is the standard approach used by runc and most Go-based runtimes.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://man7.org/linux/man-pages/man2/pivot_root.2.html">pivot_root(2) - Linux man page</a></li>
+<li><a href="https://man7.org/linux/man-pages/man8/pivot_root.8.html">pivot_root(8) - Linux man page</a></li>
+<li><a href="https://pkg.go.dev/golang.org/x/sys/unix#PivotRoot">unix.PivotRoot - Go documentation</a></li>
+<li><a href="https://www.busybox.net/">BusyBox - the Swiss Army Knife of Embedded Linux</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="containers-06-mount-chroot.htm">Mount Namespaces &amp; chroot</a></li>
+<li><a href="containers-08-overlayfs.htm">OverlayFS &amp; Image Layers</a></li>
+<li><a href="containers-09-virtual-filesystems.htm">Virtual Filesystems: proc, sysfs &amp; devtmpfs</a></li>
+<li><a href="containers-19-mini-runtime.htm">Building a Mini Container Runtime in Go</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

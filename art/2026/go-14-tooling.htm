@@ -1,0 +1,407 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Go - Part 14: Formatting, Linting & Tooling</title>
+    <meta name="description" content="The Go developer toolkit: gofmt, go vet, staticcheck, golangci-lint, gopls, go doc, and pprof - and how to wire them into CI.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="go-14-tooling.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../go.htm">go</a></i>
+        <h2>Go - Part 14: Formatting, Linting & Tooling</h2>
+        <p>
+Go has an unusually strong tooling culture. Formatting is not a matter of team preference
+- <code>gofmt</code> enforces a single canonical style, and code that is not gofmt'd is
+considered wrong. Beyond formatting, the ecosystem includes static analysis, a language
+server, documentation tools, and a profiler, all either shipped with Go or installable
+in one command. If you are coming from C (where the tooling situation is fragmented and
+optional) or from C# (where formatting and analysis depend on which IDE you use), the
+uniformity here is a welcome change.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li><code>gofmt</code>: canonical formatting, how to run it, and why non-gofmt'd code is not accepted</li>
+<li><code>go vet</code>: built-in static checks for common mistakes</li>
+<li><code>staticcheck</code>: a production-grade analyser that catches subtle correctness issues</li>
+<li><code>golangci-lint</code>: aggregated linting with many analysers configured in one file</li>
+<li><code>gopls</code>: the official language server — what it provides and how to configure it</li>
+<li><code>go doc</code> and <code>godoc</code>: generating and reading package documentation</li>
+<li><code>go tool pprof</code>: CPU and memory profiling from first principles</li>
+<li>Wiring all tools into a CI pipeline</li>
+</ul>
+
+<h3>gofmt: Non-Negotiable Formatting</h3>
+
+<p>
+<code>gofmt</code> is the Go formatter. It is not configurable - there are no options for
+tab width, brace placement, or line length. Every Go project in the world uses the same
+formatting. This eliminates formatting debates, reduces diff noise in code review, and
+means any Go code you read anywhere looks the same.
+</p>
+
+<pre>
+# Format all Go files in the current directory tree (in place)
+gofmt -w .
+
+# Show what would change without writing
+gofmt -d .
+
+# Also simplifies certain expressions (use this in CI)
+gofmt -s -w .
+</pre>
+
+<p>
+In CI, verify that code is properly formatted:
+</p>
+
+<pre>
+# Fails if any file needs reformatting
+if [ -n "$(gofmt -l .)" ]; then
+    echo "The following files are not gofmt'd:"
+    gofmt -l .
+    exit 1
+fi
+</pre>
+
+<p>
+Most editors run <code>gofmt</code> (or its superset <code>goimports</code>) on save.
+<code>goimports</code> does everything <code>gofmt</code> does, plus automatically adds
+and removes import statements:
+</p>
+
+<pre>
+go install golang.org/x/tools/cmd/goimports@latest
+goimports -w .
+</pre>
+
+<p>
+C has <code>clang-format</code> which is configurable (which is both its strength and its
+weakness). C# has the editorconfig + Roslyn formatter, which is configurable per project.
+Go's non-configurable approach produces more uniform code across the ecosystem.
+</p>
+
+<h3>go vet: Built-in Static Analysis</h3>
+
+<p>
+<code>go vet</code> is included with Go and runs a set of static analysis checks that
+catch common mistakes not caught by the compiler:
+</p>
+
+<pre>
+go vet ./...
+</pre>
+
+<p>
+Examples of what it catches:
+</p>
+
+<ul>
+<li><code>fmt.Printf("%d", "string")</code> - wrong format verb for the argument type.</li>
+<li>Unreachable code after a return.</li>
+<li>Passing a lock by value (copying a mutex, which makes it useless).</li>
+<li>Incorrect struct tags.</li>
+<li>Calling <code>sync/atomic</code> functions on misaligned 64-bit values.</li>
+</ul>
+
+<p>
+Always run <code>go vet</code> in CI. It costs almost nothing in CI time and catches real
+bugs. In C the equivalent is compiler warnings (<code>-Wall -Wextra</code>) plus tools
+like Clang Static Analyzer. In C# it is Roslyn analyzers and the compiler's diagnostic
+rules.
+</p>
+
+<h3>staticcheck: Production-Grade Static Analysis</h3>
+
+<p>
+<code>staticcheck</code> is the most widely used third-party Go static analyzer. It
+catches a superset of what <code>go vet</code> catches, plus:
+</p>
+
+<ul>
+<li>Deprecated API usage with guidance on what to use instead.</li>
+<li>Redundant code (unused function results, unnecessary type conversions).</li>
+<li>Incorrect use of the standard library (e.g., wrong usage of <code>sync.Mutex</code>, passing a copied value to a method expecting a pointer).</li>
+<li>Performance issues (e.g., unnecessary string allocations in hot paths).</li>
+</ul>
+
+<pre>
+go install honnef.co/go/tools/cmd/staticcheck@latest
+staticcheck ./...
+</pre>
+
+<h3>golangci-lint: Aggregated Linting</h3>
+
+<p>
+<code>golangci-lint</code> is a linter aggregator that runs many linters in parallel and
+reports unified output. It is the de facto standard for Go CI linting. It includes
+<code>go vet</code>, <code>staticcheck</code>, <code>errcheck</code> (detects ignored
+errors), <code>gosec</code> (security checks), and dozens more:
+</p>
+
+<pre>
+# Install
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+# Run with default settings
+golangci-lint run ./...
+
+# Run with a config file (.golangci.yml)
+golangci-lint run --config .golangci.yml ./...
+</pre>
+
+<p>
+A minimal <code>.golangci.yml</code>:
+</p>
+
+<pre>
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+
+issues:
+  exclude-rules:
+    - path: "_test.go"
+      linters:
+        - errcheck
+</pre>
+
+<p>
+In C# projects using MSBuild, the equivalent is configuring Roslyn analyzers via
+<code>.editorconfig</code> and enabling specific diagnostic IDs. Go's approach is more
+explicit but the concept is the same.
+</p>
+
+<h3>gopls: The Language Server</h3>
+
+<p>
+<code>gopls</code> is the official Go language server, implementing the Language Server
+Protocol (LSP). Any LSP-compatible editor (VS Code, Neovim, Emacs, Helix, etc.) uses it
+for autocompletion, go-to-definition, find-all-references, rename, inlay hints, and
+diagnostics.
+</p>
+
+<pre>
+go install golang.org/x/tools/gopls@latest
+</pre>
+
+<p>
+You do not invoke <code>gopls</code> directly - your editor does. Install the Go extension
+for your editor and it will handle gopls. The experience is comparable to the Roslyn
+language server in C# (OmniSharp or the built-in VS C# extension).
+</p>
+
+<h3>go doc: Documentation</h3>
+
+<p>
+<code>go doc</code> prints documentation for packages, types, functions, and methods
+directly in the terminal:
+</p>
+
+<pre>
+go doc fmt                    # package overview
+go doc fmt.Println            # specific function
+go doc -all fmt               # everything in the package
+go doc net/http Server        # type in a package
+go doc -src fmt.Println       # show source
+</pre>
+
+<p>
+The web-based equivalent is <a href="https://pkg.go.dev">pkg.go.dev</a>, which renders
+documentation for any public Go module. In C, documentation is typically in comments
+and man pages. In C# it is XML doc comments rendered by Visual Studio or DocFX.
+</p>
+
+<h3>go tool pprof: Profiling</h3>
+
+<p>
+Go has built-in support for CPU and memory profiling. Add the <code>net/http/pprof</code>
+package to an HTTP server and you get profiling endpoints for free:
+</p>
+
+<pre>
+import _ "net/http/pprof"
+
+// Start the HTTP server (even for non-HTTP programs)
+go func() {
+    log.Println(http.ListenAndServe("localhost:6060", nil))
+}()
+</pre>
+
+<p>
+Then collect a profile:
+</p>
+
+<pre>
+# CPU profile for 30 seconds
+go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+
+# Memory profile
+go tool pprof http://localhost:6060/debug/pprof/heap
+
+# Interactive pprof shell - try 'top', 'web', 'list funcname'
+</pre>
+
+<p>
+Alternatively, write profiles directly from a benchmark or test:
+</p>
+
+<pre>
+func BenchmarkMyFunc(b *testing.B) {
+    for i := 0; i &lt; b.N; i++ {
+        myFunc()
+    }
+}
+
+# Run benchmark and write CPU profile
+go test -bench=BenchmarkMyFunc -cpuprofile=cpu.prof ./...
+go tool pprof cpu.prof
+</pre>
+
+<p>
+In C, profiling typically requires perf, gprof, or Valgrind/callgrind - external tools
+with more setup. In C#, you use dotnet-trace and the performance profiler built into
+Visual Studio. Go's profiler is part of the standard toolchain and is designed to work
+on live production services.
+</p>
+
+<h3>Making Tooling Part of CI</h3>
+
+<p>
+A complete CI pipeline for a Go project runs these steps in order:
+</p>
+
+<pre>
+go mod tidy
+git diff --exit-code go.mod go.sum  # fail if tidy changed anything
+
+go mod verify                        # verify module cache integrity
+
+gofmt -s -l .
+# fail if output is non-empty
+
+go vet ./...
+
+golangci-lint run ./...
+
+go test -race -count=1 ./...
+</pre>
+
+<p>
+Keep CI fast by running these in parallel where possible. <code>go test -race</code> is
+the most expensive step; on a large codebase you may run it only on pull requests, not
+every push.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+<code>gofmt</code> enforces a single canonical style — run it on save, enforce
+it in CI with <code>gofmt -l .</code>. <code>go vet</code> catches structural
+bugs the compiler misses. <code>staticcheck</code> and <code>golangci-lint</code>
+add deeper analysis; configure golangci-lint in <code>.golangci.yml</code> and
+run it in CI. <code>gopls</code> provides IDE features over LSP. Profile with
+<code>go test -cpuprofile</code> or the <code>net/http/pprof</code> handler in
+a running server, then analyse with <code>go tool pprof</code>.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://pkg.go.dev/cmd/gofmt">gofmt documentation - pkg.go.dev</a></li>
+<li><a href="https://staticcheck.dev/">staticcheck - staticcheck.dev</a></li>
+<li><a href="https://golangci-lint.run/">golangci-lint - golangci-lint.run</a></li>
+<li><a href="https://pkg.go.dev/golang.org/x/tools/gopls">gopls - pkg.go.dev</a></li>
+<li><a href="https://go.dev/blog/pprof">Profiling Go Programs - The Go Blog</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="go-17-testing.htm">Testing in Go</a></li>
+<li><a href="go-11-modules.htm">Modules &amp; Dependencies</a></li>
+<li><a href="go-13-cross-compilation.htm">Building &amp; Cross-Compilation</a></li>
+<li><a href="go-15-codegen.htm">Code Generation with go generate</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

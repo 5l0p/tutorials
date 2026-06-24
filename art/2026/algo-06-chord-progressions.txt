@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 6: Generating Chord Progressions
-2026-01-16
+2026-06-01
 
 
 The Markov chain in Part 4 generated melodies by transitioning between scale degrees.

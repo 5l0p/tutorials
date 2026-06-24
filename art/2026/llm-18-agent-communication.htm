@@ -1,0 +1,383 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 18: Agent-to-Agent Communication</title>
+    <meta name="description" content="Make one agent expose itself as an MCP server so another agent can call it as a typed tool, with a shared state store and cycle prevention.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="llm-18-agent-communication.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 18: Agent-to-Agent Communication</h2>
+        <p>
+The previous article spawned sub-agents directly as Go goroutines. That works when all
+agents live in the same binary. A more composable design - and one that works across
+process boundaries - is to have agents expose themselves as MCP servers. The calling
+agent discovers the called agent's capabilities via <code>tools/list</code> and invokes
+them via <code>tools/call</code>. This article builds a two-agent system: a planner agent
+that calls a coder agent via MCP.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How to expose an agent as an MCP server: wrapping its capabilities as typed tools</li>
+<li>How to build the planner agent that discovers and calls the coder agent via MCP</li>
+<li>A shared state store for passing structured data between agents across process boundaries</li>
+<li>Cycle prevention: detecting and breaking agent call loops in the call graph</li>
+<li>Common multi-agent topologies: chain, parallel fan-out, and tree delegation</li>
+</ul>
+
+<h3>Agents as MCP Servers</h3>
+
+<p>
+An agent-as-server exposes one tool per capability it offers. The coder agent might expose:
+</p>
+
+<ul>
+<li><code>generate_code</code> - given a specification, return Go code.</li>
+<li><code>review_code</code> - given code, return a critique.</li>
+<li><code>fix_bug</code> - given code and a bug description, return fixed code.</li>
+</ul>
+
+<p>
+Each tool internally runs an agent loop with a specialised system prompt. From the
+planner's perspective, these are just tools - it does not know or care that they drive
+a full model call internally.
+</p>
+
+<h3>The Coder Agent as MCP Server</h3>
+
+<pre>
+// cmd/coder-server/main.go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    s := server.NewMCPServer("coder-agent", "1.0.0")
+
+    s.AddTool(
+        mcp.NewTool("generate_code",
+            mcp.WithDescription("Generate Go code for a given specification. "+
+                "Returns a complete, working Go program or function."),
+            mcp.WithString("spec",
+                mcp.Required(),
+                mcp.Description("Detailed specification of what the code should do"),
+            ),
+            mcp.WithString("context",
+                mcp.Description("Any relevant existing code or constraints"),
+            ),
+        ),
+        makeCoderHandler(apiKey, generateCodePrompt),
+    )
+
+    s.AddTool(
+        mcp.NewTool("review_code",
+            mcp.WithDescription("Review Go code and return a list of issues, suggestions, and improvements."),
+            mcp.WithString("code",
+                mcp.Required(),
+                mcp.Description("The Go code to review"),
+            ),
+        ),
+        makeCoderHandler(apiKey, reviewCodePrompt),
+    )
+
+    stdio := server.NewStdioServer(s)
+    stdio.Listen(context.Background(), os.Stdin, os.Stdout)
+}
+
+const generateCodePrompt = `You are an expert Go programmer. Generate clean, idiomatic Go code
+that exactly implements the given specification. Return only the code, no explanation.`
+
+const reviewCodePrompt = `You are an expert Go code reviewer. Review the given code and return
+a structured list of: bugs, security issues, performance problems, and style improvements.`
+
+func makeCoderHandler(apiKey, systemPrompt string) server.ToolHandlerFunc {
+    return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+        // Build user message from tool arguments
+        var parts []string
+        for k, v := range req.Params.Arguments {
+            if s, ok := v.(string); ok &amp;&amp; s != "" {
+                parts = append(parts, fmt.Sprintf("%s: %s", k, s))
+            }
+        }
+        userMsg := strings.Join(parts, "\n\n")
+
+        // Run a single-turn LLM call (no tools needed for the coder)
+        result, err := callLLM(apiKey, "gpt-4o-mini", systemPrompt, userMsg)
+        if err != nil {
+            return mcp.NewToolResultError(err.Error()), nil
+        }
+        return mcp.NewToolResultText(result), nil
+    }
+}
+</pre>
+
+<h3>The Planner Agent</h3>
+
+<pre>
+// cmd/planner/main.go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/mcp"
+)
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    ctx := context.Background()
+
+    // Connect to the coder agent via stdio
+    coderClient, err := client.NewStdioMCPClient("./coder-server", nil)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "coder client:", err)
+        os.Exit(1)
+    }
+    defer coderClient.Close()
+
+    _, err = coderClient.Initialize(ctx, mcp.InitializeRequest{
+        Params: mcp.InitializeRequestParams{
+            ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+            ClientInfo:      mcp.Implementation{Name: "planner", Version: "1.0"},
+        },
+    })
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "initialize:", err)
+        os.Exit(1)
+    }
+
+    // Discover coder's tools
+    toolsResult, _ := coderClient.ListTools(ctx, mcp.ListToolsRequest{})
+    openaiTools := mcpToolsToOpenAI(toolsResult.Tools)
+
+    // Build planner agent with coder's tools
+    plannerAgent := NewMCPAgent(
+        apiKey, "gpt-4o-mini",
+        `You are a software project planner. Break user requests into subtasks,
+then use the available tools to delegate coding work to the coder agent.
+Coordinate the work, review results, and deliver a complete solution.`,
+        openaiTools,
+        coderClient,
+    )
+
+    result, err := plannerAgent.Run(ctx,
+        "Build a Go HTTP server that serves a JSON list of TODO items from an in-memory store.")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "planner:", err)
+        os.Exit(1)
+    }
+    fmt.Println(result)
+}
+</pre>
+
+<h3>Shared State via a Central Store</h3>
+
+<p>
+When agents need to share state - one agent writes data that another reads - use a
+central store accessible to both. For processes on the same machine, a Unix socket or
+a local HTTP server works. For a simple in-memory demo, pass a shared Go struct:
+</p>
+
+<pre>
+type SharedState struct {
+    mu   sync.RWMutex
+    data map[string]string
+}
+
+func (s *SharedState) Set(key, value string) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.data[key] = value
+}
+
+func (s *SharedState) Get(key string) (string, bool) {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+    v, ok := s.data[key]
+    return v, ok
+}
+</pre>
+
+<p>
+Expose the shared state to agents via read/write tools. This gives the model explicit
+control over what gets stored and read, rather than having agents share an implicit
+global state.
+</p>
+
+<h3>Preventing Call Cycles</h3>
+
+<p>
+If Agent A can call Agent B, and Agent B can call Agent A, you have a cycle. The system
+can loop infinitely. Prevent this with a call depth tracker:
+</p>
+
+<pre>
+type CallContext struct {
+    Depth    int
+    MaxDepth int
+    Path     []string // names of agents in the current call stack
+}
+
+func (cc *CallContext) CanCall(agentName string) error {
+    if cc.Depth &gt;= cc.MaxDepth {
+        return fmt.Errorf("max call depth %d exceeded", cc.MaxDepth)
+    }
+    for _, name := range cc.Path {
+        if name == agentName {
+            return fmt.Errorf("cycle detected: %s is already in call path %v",
+                agentName, cc.Path)
+        }
+    }
+    return nil
+}
+
+func (cc *CallContext) Push(agentName string) *CallContext {
+    return &amp;CallContext{
+        Depth:    cc.Depth + 1,
+        MaxDepth: cc.MaxDepth,
+        Path:     append(append([]string{}, cc.Path...), agentName),
+    }
+}
+</pre>
+
+<p>
+Pass the <code>CallContext</code> through every tool call that invokes another agent.
+The context is immutable (Push returns a new value), so concurrent calls do not
+interfere.
+</p>
+
+<h3>Call Graph Topology</h3>
+
+<p>
+A two-agent planner/coder system is a tree (no cycles). More complex systems may form
+a directed acyclic graph (DAG). Design your agent system's call graph explicitly - draw
+it on paper before writing code. Common topologies:
+</p>
+
+<ul>
+<li><b>Pipeline</b> - A → B → C. Each agent passes results to the next. No branching.</li>
+<li><b>Star</b> - orchestrator → N specialists. Each specialist is independent. This is article 17's pattern.</li>
+<li><b>DAG</b> - task A and task B both feed into task C. Parallelism before a join step.</li>
+<li><b>Tree</b> - orchestrator → planner → coders. Nested delegation.</li>
+</ul>
+
+<p>
+Avoid cycles in the call graph entirely when possible. If you need bidirectional
+communication (Agent A needs B's output, B needs A's output), restructure as a
+mediator pattern: both agents communicate through a third agent or shared state.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+An agent becomes a composable service by exposing its capabilities as MCP tools — the
+calling agent calls <code>tools/list</code> to discover them and <code>tools/call</code>
+to invoke them, with no knowledge of the internal agent loop. Pass structured data between
+agents via a shared state store (a JSON file or an in-memory map behind a mutex). Prevent
+infinite loops by tracking the call chain depth in context and returning an error when a
+configured limit is exceeded. Prefer tree topologies (unidirectional delegation) over
+cycles.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://spec.modelcontextprotocol.io">MCP Specification</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Directed_acyclic_graph">Wikipedia: Directed Acyclic Graph</a></li>
+<li><a href="https://pkg.go.dev/sync#RWMutex">Go sync.RWMutex - shared state with concurrent readers</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-07-mcp-stdio.htm">MCP over stdio</a> - stdio transport used here for the coder server</li>
+<li><a href="llm-17-multi-agent.htm">Multi-Agent Orchestration</a> - fan-out to parallel sub-agents</li>
+<li><a href="llm-19-supervisor-swarm.htm">Supervisor &amp; Swarm Patterns</a> - structured topologies for larger multi-agent systems</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

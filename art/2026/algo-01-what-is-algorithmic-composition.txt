@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 1: What Is Algorithmic Composition?
-2026-01-11
+2026-06-01
 
 
 Building a drum machine from first principles (Series 9) and recreating Elektron synthesis

@@ -1,5 +1,5 @@
 DSP - Part 1: Audio Fundamentals
-2026-06-09
+2026-06-01
 
 
 Before writing a single line of DSP code you need a solid grip on the numbers that

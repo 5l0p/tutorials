@@ -1,0 +1,350 @@
+Go - Part 2: Syntax & Types
+2026-06-01
+
+
+Go's syntax looks superficially like C but breaks several habits built up over decades of
+C and C# programming. The declaration syntax is reversed, semicolons are mostly invisible,
+and the type system has a few surprises - notably zero values and untyped constants. This
+article works through the fundamentals so that the rest of the series can focus on higher-level
+ideas without stopping to explain the basics.
+
+
+What You Will Learn
+
+
+Go's variable declarations: var, short :=, and when each is appropriate
+Zero values: every declared variable has a defined initial value, unlike C
+Built-in types: integers, floats, complex, bool, byte, rune, string
+Strings and runes: Go strings are UTF-8 byte slices; rune is an alias for int32
+Constants and untyped constants: how Go's constant system differs from C and C#
+Type aliases versus defined types and the distinction between them
+Multiple return values and the blank identifier
+
+
+Variable Declarations
+
+
+In C you write the type first: int x = 5;. In Go the type comes after the
+name, and the semicolon is omitted (the lexer inserts them automatically):
+
+
+
+var x int = 5
+var name string = "Alice"
+var active bool = true
+
+
+
+When the compiler can infer the type from the right-hand side, you can drop it:
+
+
+
+var x = 5        // x is int
+var name = "Alice" // name is string
+
+
+
+Inside a function body you can use the short declaration operator :=, which
+declares and assigns in one step:
+
+
+
+x := 5
+name := "Alice"
+active := true
+
+
+
+:= is only valid inside functions. Package-level variables must use var.
+If you are coming from C#, the := operator looks like C#'s var
+keyword - but there is a key difference: in C# var x = 5; is syntactic sugar
+for int x = 5; and the name var is a hint to the reader. In Go,
+:= also declares the variable; re-using := on an
+already-declared name is only valid if at least one name on the left is new.
+
+
+
+x := 5
+x, y := 10, 20  // OK: y is new
+// x, y := 30, 40  // compile error: no new variables on left side
+
+
+
+In C you declare variables at the top of a block (in C89 strictly; C99 and later relaxed
+this). In Go you declare them wherever they are first needed, like C99 or C#.
+
+
+Zero Values
+
+
+One of Go's most useful rules: every variable is initialised to its zero value if
+you do not provide an explicit initialiser. There is no equivalent of C's uninitialised
+stack variable containing garbage.
+
+
+
+var i int     // 0
+var f float64 // 0.0
+var b bool    // false
+var s string  // ""  (empty string)
+var p *int    // nil
+
+
+
+This extends to structs, slices, maps, and channels: struct fields are zero-valued
+recursively, a nil slice has length and capacity zero (and can be appended to safely), a
+nil map panics on write but returns zero on read. Zero values make Go programs easier to
+reason about because you always know what an uninitialised variable contains.
+
+
+
+C# value types also have zero values, but reference types default to null and
+accessing them throws a NullReferenceException. Go pointers, interfaces,
+slices, and maps are nil when unset, but the language idioms steer you toward checking
+before use.
+
+
+Basic Types
+
+
+Go's built-in types map closely to C's, but the names are different and their sizes are
+defined by the language, not the platform:
+
+
+
+// Integer types - explicit sizes
+int8, int16, int32, int64
+uint8, uint16, uint32, uint64
+
+// Platform-sized integer (pointer width)
+int, uint, uintptr
+
+// Floating point
+float32, float64
+
+// Complex numbers (rarely used)
+complex64, complex128
+
+// Boolean
+bool  // true or false only - no implicit int conversion
+
+// Text
+byte   // alias for uint8
+rune   // alias for int32, represents a Unicode code point
+string // immutable sequence of bytes (not characters)
+
+
+
+In C, int is typically 32 bits on 32-bit platforms and 32 bits on 64-bit
+platforms (platform-defined). In Go, int is 32 bits on a 32-bit platform and
+64 bits on a 64-bit platform - similar behaviour but guaranteed by the specification.
+
+
+
+Importantly, Go has no implicit numeric conversions. In C you can assign an
+int to a long silently. In Go you must be explicit:
+
+
+
+var i int = 42
+var f float64 = float64(i)  // must cast explicitly
+var u uint = uint(f)
+
+
+
+This eliminates a whole class of silent truncation bugs common in C code.
+
+
+Strings and Runes
+
+
+A Go string is an immutable sequence of bytes. It is not a
+char* (C) or a char[]; it is more like a read-only byte slice.
+String literals are UTF-8 encoded. Indexing a string gives you a byte, not a
+character:
+
+
+
+s := "hello"
+fmt.Println(s[0]) // 104 (ASCII 'h')
+fmt.Println(len(s)) // 5
+
+
+
+To work with Unicode code points, use a rune (int32) or range over the string:
+
+
+
+s := "héllo"
+for i, r := range s {
+    fmt.Printf("index %d: rune %c (%d)\n", i, r, r)
+}
+// Note: byte index jumps by 2 at the accented 'é' (2-byte UTF-8)
+
+
+
+C strings are null-terminated byte arrays; you manage their memory manually.
+C# strings are immutable Unicode objects (UTF-16 internally). Go strings are immutable
+byte sequences (UTF-8) - close to C but memory-managed, and closer to what you actually
+want for modern network code.
+
+
+Constants
+
+
+Go constants are declared with const and can be typed or untyped.
+Untyped constants have a "kind" (integer, floating-point, complex, string, boolean) and
+can be used in expressions without explicit conversion:
+
+
+
+const MaxSize = 1024        // untyped integer constant
+const Pi = 3.14159          // untyped floating-point constant
+const Greeting = "hello"    // untyped string constant
+
+const TypedMax int32 = 1024 // typed constant
+
+var x float64 = Pi * 2.0    // works - Pi is untyped, adapts to float64
+var y int = MaxSize          // works - MaxSize adapts to int
+
+
+
+Untyped constants are resolved at compile time to whatever precision is needed. This
+prevents the C problem of #define MAX 1024 producing wrong results when
+used in a context that triggers integer promotion.
+
+
+
+iota is a constant generator that resets to 0 at each const
+block and increments by 1 for each constant in the block. It is Go's equivalent of C's
+enum:
+
+
+
+type Direction int
+
+const (
+    North Direction = iota // 0
+    East                   // 1
+    South                  // 2
+    West                   // 3
+)
+
+// Can be used with bit shifts for flag enums:
+type Permission uint
+
+const (
+    Read    Permission = 1 << iota // 1
+    Write                           // 2
+    Execute                         // 4
+)
+
+
+Type Aliases and Defined Types
+
+
+Go lets you create a new named type from an existing one. This is stronger than a C
+typedef - the new type does not inherit the methods of the underlying type,
+and you cannot mix them without an explicit conversion:
+
+
+
+type Celsius float64
+type Fahrenheit float64
+
+func CToF(c Celsius) Fahrenheit {
+    return Fahrenheit(c*9/5 + 32)
+}
+
+// This would be a compile error:
+// var t Celsius = 100.0
+// var f Fahrenheit = t  // cannot use Celsius as Fahrenheit
+
+
+
+This is a safety feature C lacks entirely: you cannot accidentally pass a temperature in
+Celsius to a function expecting Fahrenheit. In C#, a struct wrapper achieves
+something similar but with more ceremony.
+
+
+
+A type alias (type Celsius = float64) creates an exact synonym -
+they are interchangeable. Aliases are used primarily for gradual API migration.
+
+
+Multiple Return Values
+
+
+Go functions can return multiple values. This is used extensively for the
+(result, error) pattern described in the error-handling article, but it also
+replaces C's output-pointer parameters:
+
+
+
+// In C you'd pass a pointer: int divide(int a, int b, int *result)
+// In Go:
+func divide(a, b int) (int, error) {
+    if b == 0 {
+        return 0, fmt.Errorf("division by zero")
+    }
+    return a / b, nil
+}
+
+result, err := divide(10, 2)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result) // 5
+
+
+
+Named return values are also possible and are used occasionally to document what a
+function returns, or with a bare return to return the current values of the
+named variables - though this latter style is generally discouraged in longer functions
+because it harms readability.
+
+
+Blank Identifier
+
+
+The blank identifier _ discards a value. In C you silently ignore return values
+(which is why unchecked malloc failures go unnoticed). In Go, if a function
+returns two values and you only want one, you must explicitly discard the other:
+
+
+
+result, _ := divide(10, 2) // explicitly ignore error (don't do this in production!)
+
+// Also used in imports to trigger init() side effects:
+import _ "database/sql/driver/postgres"
+
+
+Summary
+
+
+Go's syntax reverses the C declaration order: type comes after name.
+:= declares and assigns in a single statement and is the most
+common form inside functions. Every variable is zero-initialised — no
+uninitialised memory. Strings are immutable UTF-8 byte sequences; iterate with
+range to get runes. Untyped constants are exact values that acquire
+a type only at use. Defined types (type Celsius float64) create
+distinct types; aliases (type T = U) create synonyms.
+
+
+Further Reading
+
+
+Go Specification: Types
+A Tour of Go: Basics
+Constants - The Go Blog
+Go Spec: Short Variable Declarations
+
+
+See Also
+
+
+Why Go? The Language at a Glance
+Structs & Methods
+Error Handling Best Practices
+Generics
+

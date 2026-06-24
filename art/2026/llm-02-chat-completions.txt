@@ -1,5 +1,5 @@
 LLM - Part 2: Chat Completions Deep Dive
-2026-06-11
+2026-06-01
 
 
 The previous article made a single round-trip to the API and printed the result. Real

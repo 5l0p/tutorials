@@ -1,0 +1,304 @@
+Go - Part 18: Clean Code & Project Layout
+2026-06-01
+
+
+The question "where does this file go?" comes up constantly in any project that grows
+beyond a handful of files. Go has strong opinions about a few things (package naming,
+import cycles) and deliberately leaves others to teams (directory structure above the
+package level). This freedom is a source of confusion for developers coming from ecosystems
+with more scaffolding. C# projects are organised into namespaces and assemblies by Visual
+Studio templates; Go leaves you with a blank directory. This article maps the terrain:
+what the language enforces, what the community has converged on, and how to avoid the
+structural mistakes that make codebases painful to work with.
+
+
+What You Will Learn
+
+
+Go package naming rules and conventions - and why they differ from Java/C# namespaces.
+The difference between flat and nested package structures, and when to use each.
+What the internal package does and why it matters for library authors.
+How to avoid god packages and circular imports.
+The cmd/, internal/, and pkg/ directory conventions.
+The ongoing community debate about project layout and what to take from it.
+
+
+Package Naming
+
+
+In Go, a package is a directory. All .go files in a directory share the same
+package name (declared in the package clause). The package name is a single,
+lowercase word - not com.example.MyApp.Infrastructure.Database, not
+DatabaseAccessLayer, just database or, better, something that
+describes what it provides: store, repo, cache.
+
+
+
+The import path is the module path plus the directory path:
+
+
+
+// Module root: github.com/acme/myapp
+// Directory: internal/store
+// Import path: github.com/acme/myapp/internal/store
+// Package name: store
+
+import "github.com/acme/myapp/internal/store"
+
+s := store.New(db) // use the short package name
+
+
+
+Identifiers are qualified with the package name at the call site, so redundancy in names
+is unnecessary. In C# you write UserRepository.GetUser() because the class
+name carries context. In Go you write repo.Get() - the package name
+repo is the qualifier. A function named store.NewStore repeats
+itself; store.New is the idiomatic version.
+
+
+
+Avoid package names that match standard library packages (io, log,
+http). Avoid generic names like util, helpers,
+common - these are signs of a package that has no clear purpose. If you cannot
+describe what a package does in one sentence, split it.
+
+
+Flat vs Nested Packages
+
+
+Go's import cycle rule is absolute: if package A imports B, then B cannot import A,
+directly or transitively. This is enforced by the compiler and is not configurable. It
+forces you to think about dependency direction from the start.
+
+
+
+The most common mistake is creating too many small packages too early. In Java and C#,
+namespaces are free - you can have
+com.example.app.infrastructure.persistence.repository.user without any
+structural cost. In Go, every package boundary is a hard dependency edge. Over-packaging
+leads to awkward import graphs and the temptation to put utility functions in a
+common package that everything imports, making it impossible to break up.
+
+
+
+The Go standard library itself is instructive: net/http is one package, not
+net/http/request, net/http/response, net/http/handler.
+The entire HTTP server and client - thousands of lines - lives in one package. This is not
+a flaw; it is a deliberate choice. The package has a clear purpose (HTTP), and splitting
+it would add import overhead without adding clarity.
+
+
+
+Start flat. Put everything in one package until you feel the pain of having too much in
+one place. That pain - name collisions, tests that require setting up too much state, files
+that import things they should not know about - is the right signal to split a package.
+
+
+The internal Package
+
+
+Go gives internal a special meaning: a package at path .../internal/...
+can only be imported by code in the tree rooted at the parent of internal.
+
+
+
+github.com/acme/myapp/
+    internal/
+        store/       ← can be imported by myapp code only
+        config/      ← same
+    cmd/
+        server/      ← can import internal/store
+    pkg/
+        api/         ← PUBLIC: can be imported by other modules
+
+
+
+If another module tries to import github.com/acme/myapp/internal/store, the
+compiler rejects it with a clear error. This is enforced at compile time, not by convention.
+
+
+
+In C# the equivalent is internal access modifier - symbols marked
+internal are visible within the assembly but not outside it. Go's
+internal is coarser (directory-level) but does not require annotating every
+symbol. Use internal/ aggressively for anything that is not a public API
+you intend to maintain as a contract.
+
+
+Avoiding God Packages
+
+
+A god package is one that knows about everything: it imports the database layer, the HTTP
+handlers, the business logic, and the configuration. In C# this often happens in
+Program.cs or a static Globals class. In Go it typically happens
+in main or in a util or app package.
+
+
+
+The structural solution is dependency direction: low-level packages (storage, cache,
+external APIs) never import high-level packages (business logic, orchestration). The
+dependency graph is a DAG with the same direction as the import statements.
+main is the only place that wires everything together - it knows about every
+layer, but no other package does.
+
+
+
+A practical heuristic: if you are adding an import to a low-level package and the import
+path looks like it belongs in the layer above, you have a design problem. Extract the
+shared concept into a separate package that neither imports the other.
+
+
+The cmd/, internal/, pkg/ Convention
+
+
+The most widely used Go project layout for a non-trivial application looks like this:
+
+
+
+myapp/
+    cmd/
+        server/
+            main.go     ← binary entry point
+        worker/
+            main.go     ← another binary
+    internal/
+        store/
+            store.go
+            store_test.go
+        handler/
+            handler.go
+        config/
+            config.go
+    pkg/
+        api/            ← public API types shared with external consumers
+            types.go
+    go.mod
+    go.sum
+
+
+
+cmd/ contains one directory per binary. Each directory has a main.go
+with package main. The main function should be short: parse
+flags, load configuration, wire dependencies, call run(). The real logic
+lives in internal/.
+
+
+
+internal/ contains all the application logic that is not a public API. Most of your
+code lives here. It is protected from external import by the compiler.
+
+
+
+pkg/ is a matter of community debate. Some projects use it for packages intended to
+be importable by other modules. Others argue it adds no value over a top-level directory
+and use pkg/ only by cargo-culting. The honest advice: if you are writing an
+application (not a library), you probably do not need pkg/. If you are writing
+a library, your public packages live at the module root or in named directories; use
+internal/ for the rest.
+
+
+The Project Layout Debate
+
+
+The GitHub repository golang-standards/project-layout is widely referenced
+as "the standard Go project layout". It is not. The Go team has explicitly stated that
+there is no official standard project layout beyond what the module system requires
+(go.mod at the root). The repository codifies one common pattern, and it is a
+reasonable starting point, but it is not authoritative.
+
+
+
+What is genuinely standard:
+
+
+
+One module per repository (most common), or multiple modules in a workspace (covered in Part 21).
+cmd/ for binaries, if you have more than one binary.
+internal/ for application code not intended as a public API.
+The test file beside the source file (foo.go and foo_test.go in the same directory).
+
+
+
+What is a team decision:
+
+
+
+Whether to use pkg/.
+Whether to organise by technical layer (handler, service, store) or by feature (covered in Part 19).
+How deeply to nest packages.
+
+
+A Worked Small Project Layout
+
+
+Here is the layout for a small URL-shortening service - concrete enough to illustrate the
+principles:
+
+
+
+shortener/
+    cmd/
+        api/
+            main.go         ← HTTP server entry point
+        migrate/
+            main.go         ← runs DB migrations, then exits
+    internal/
+        handler/
+            shorten.go      ← HTTP handlers
+            shorten_test.go
+        shortener/
+            service.go      ← business logic: generate short codes
+            service_test.go
+        store/
+            postgres.go     ← Postgres implementation
+            store.go        ← Store interface
+            store_test.go   ← integration tests
+        config/
+            config.go       ← load config from env
+    go.mod
+    go.sum
+
+
+
+The dependency direction is: handler imports shortener (business
+logic) and store (the interface, not the implementation). shortener
+imports store for the interface. store/postgres.go imports nothing
+from the other internal packages. main imports everything and wires it
+together. No cycles.
+
+
+Summary
+
+
+Go packages are directories. Package names are short, lowercase, and describe what the
+package provides. Start flat and split when you feel genuine pain - not when the number of
+files feels large. Use internal/ to protect implementation details; the
+compiler enforces it. Organise binaries under cmd/. Keep dependency direction
+strict: low-level packages never import high-level ones.
+
+
+
+There is no single official project layout, but the cmd/internal/ convention
+is widely used and sensible. The next article (Part 19) explores vertical slice
+architecture - an alternative to layered organisation where code is grouped by feature
+rather than by technical role.
+
+
+Further Reading
+
+
+Effective Go: Package Names
+Package names - The Go Blog
+Go Specification: Import declarations
+Internal directories - cmd/go documentation
+golang-standards/project-layout - GitHub (community convention, not official)
+
+
+See Also
+
+
+Modules & Dependencies
+Interfaces
+Vertical Slice Architecture
+Go Workspaces
+

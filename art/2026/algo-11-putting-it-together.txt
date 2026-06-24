@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 11: Putting It All Together
-2026-01-21
+2026-06-01
 
 
 The techniques in this series — Brownian walks, Markov chains, harmonic voice leading,

@@ -1,0 +1,602 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Go - Part 20: CLI Tools - flags and cobra</title>
+    <meta name="description" content="Build command-line tools in Go using the stdlib flag package and multi-command CLIs with cobra, including subcommands, persistent flags, shell completion, and a complete worked example.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="go-20-cli-cobra.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../go.htm">go</a></i>
+        <h2>Go - Part 20: CLI Tools - flags and cobra</h2>
+        <p>
+Go is one of the best languages for building command-line tools. The compiler produces a
+single static binary with no runtime dependency, startup is nearly instant, and the
+standard library includes a complete flag-parsing package. For complex tools with
+subcommands - think <code>git</code>, <code>kubectl</code>, <code>docker</code> - the
+ecosystem has converged on <code>cobra</code>, the CLI library used by most major Go
+infrastructure tools. This article takes you from the basic <code>flag</code> package to a
+complete multi-command CLI with persistent flags, shell completion, and a version
+subcommand.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The Unix flag conventions Go follows, and how they differ from Windows conventions.</li>
+<li>Using the stdlib <code>flag</code> package: defining flags, parsing, and custom flag types.</li>
+<li>Why <code>cobra</code> exists and what it adds over the stdlib.</li>
+<li>Building a multi-command CLI with subcommands, persistent flags, and a version command.</li>
+<li>Shell completion with cobra and the <code>completion</code> subcommand.</li>
+<li>A complete worked CLI tool you can use as a starting point.</li>
+</ul>
+
+<h3>Unix Flag Conventions</h3>
+
+<p>
+C programs typically follow POSIX flag conventions: single-character flags preceded by
+a single hyphen (<code>-v</code>), combinable into one argument (<code>-xvf</code>), and
+long-form options with double hyphens (<code>--verbose</code>). C# console apps have no
+enforced convention; some use <code>/flag</code> (Windows legacy), some use GNU-style
+<code>--flag</code>.
+</p>
+
+<p>
+Go's <code>flag</code> package uses a simpler and slightly different convention: both
+<code>-flag</code> and <code>--flag</code> are accepted (one or two hyphens, your choice),
+but single-character flags are not combinable. <code>-xvf</code> is not parsed as
+<code>-x -v -f</code>; it is treated as a single flag named <code>xvf</code>. This is
+a deliberate simplification. For GNU-compatible flag parsing, use <code>pflag</code>
+(which cobra uses internally).
+</p>
+
+<h3>The stdlib flag Package</h3>
+
+<p>
+For simple tools with no subcommands, the stdlib <code>flag</code> package is the right
+choice. It has no dependencies, no installation, and its output is predictable.
+</p>
+
+<pre>
+// cmd/fetch/main.go
+package main
+
+import (
+    "flag"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+    "time"
+)
+
+func main() {
+    // Define flags
+    timeout := flag.Duration("timeout", 10*time.Second, "request timeout")
+    verbose := flag.Bool("verbose", false, "print response headers")
+    output  := flag.String("output", "", "write response body to `file` (default: stdout)")
+
+    // flag.Usage is called when -help or an unknown flag is used
+    flag.Usage = func() {
+        fmt.Fprintf(os.Stderr, "Usage: fetch [flags] &lt;url&gt;\n\n")
+        fmt.Fprintf(os.Stderr, "Flags:\n")
+        flag.PrintDefaults()
+    }
+
+    flag.Parse() // parse os.Args[1:]
+
+    args := flag.Args() // non-flag arguments
+    if len(args) != 1 {
+        flag.Usage()
+        os.Exit(1)
+    }
+    url := args[0]
+
+    if err := fetch(url, *timeout, *verbose, *output); err != nil {
+        fmt.Fprintln(os.Stderr, "error:", err)
+        os.Exit(1)
+    }
+}
+
+func fetch(url string, timeout time.Duration, verbose bool, outPath string) error {
+    client := &amp;http.Client{Timeout: timeout}
+    resp, err := client.Get(url)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    if verbose {
+        for k, vs := range resp.Header {
+            for _, v := range vs {
+                fmt.Printf("%s: %s\n", k, v)
+            }
+        }
+        fmt.Println()
+    }
+
+    out := io.Writer(os.Stdout)
+    if outPath != "" {
+        f, err := os.Create(outPath)
+        if err != nil {
+            return err
+        }
+        defer f.Close()
+        out = f
+    }
+
+    _, err = io.Copy(out, resp.Body)
+    return err
+}
+</pre>
+
+<pre>
+$ go build -o fetch ./cmd/fetch
+$ ./fetch -timeout 5s -verbose https://example.com
+Content-Type: text/html; charset=UTF-8
+...
+
+$ ./fetch -output page.html https://example.com
+$ ./fetch -help
+Usage: fetch [flags] &lt;url&gt;
+
+Flags:
+  -output file
+        write response body to file (default: stdout)
+  -timeout duration
+        request timeout (default: 10s)
+  -verbose
+        print response headers
+</pre>
+
+<h3>Custom Flag Types</h3>
+
+<p>
+The <code>flag</code> package supports custom types via the <code>flag.Value</code>
+interface - two methods: <code>String() string</code> and <code>Set(string) error</code>.
+This is how you accept a comma-separated list, a custom enum, or a URL as a flag value.
+</p>
+
+<pre>
+// stringSlice is a flag.Value that accumulates repeated -header flags
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+    return fmt.Sprintf("%v", *s)
+}
+
+func (s *stringSlice) Set(v string) error {
+    *s = append(*s, v)
+    return nil
+}
+
+// Usage: fetch -header "X-API-Key: abc" -header "Accept: application/json" url
+var headers stringSlice
+flag.Var(&amp;headers, "header", "add `header` to request (repeatable)")
+</pre>
+
+<p>
+In C# you would use a custom <code>TypeConverter</code> or use a library like
+<code>System.CommandLine</code> that handles collection-valued options natively. Go's
+approach requires slightly more code but is explicit and portable.
+</p>
+
+<h3>When to Use cobra</h3>
+
+<p>
+The stdlib <code>flag</code> package has no concept of subcommands. When your tool grows
+to have commands like <code>mytool create</code>, <code>mytool delete</code>, and
+<code>mytool list</code>, you need to route between them yourself - or use a library. The
+standard choice in the Go ecosystem is <code>cobra</code>:
+</p>
+
+<pre>
+go get github.com/spf13/cobra
+</pre>
+
+<p>
+Cobra is used by Docker, kubectl, Hugo, GitHub CLI, and dozens of other major Go tools.
+It provides: subcommands with their own flag sets, persistent flags inherited by all
+subcommands, automatic help generation, shell completion generation, and support for
+command aliases.
+</p>
+
+<h3>A Complete cobra CLI: linkctl</h3>
+
+<p>
+Let us build <code>linkctl</code> - a command-line client for the URL shortener from Part
+19. It will have three subcommands: <code>create</code>, <code>resolve</code>, and
+<code>version</code>, plus a persistent <code>--server</code> flag.
+</p>
+
+<pre>
+linkctl/
+    cmd/
+        linkctl/
+            main.go
+    internal/
+        cli/
+            root.go
+            create.go
+            resolve.go
+            version.go
+    go.mod
+</pre>
+
+<p>
+The root command holds the persistent flag and registers subcommands:
+</p>
+
+<pre>
+// internal/cli/root.go
+package cli
+
+import (
+    "fmt"
+    "os"
+    "github.com/spf13/cobra"
+)
+
+// serverURL is set by the persistent --server flag; all subcommands read it.
+var serverURL string
+
+var rootCmd = &amp;cobra.Command{
+    Use:   "linkctl",
+    Short: "linkctl - manage short links",
+    Long:  "linkctl is a command-line client for the URL shortener service.",
+    // SilenceUsage prevents cobra printing the usage on every error.
+    SilenceUsage: true,
+}
+
+// Execute is the entry point; called from main.
+func Execute() {
+    if err := rootCmd.Execute(); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+}
+
+func init() {
+    // PersistentFlags are inherited by all subcommands.
+    rootCmd.PersistentFlags().StringVar(
+        &amp;serverURL, "server", "http://localhost:8080",
+        "URL of the shortener server",
+    )
+
+    rootCmd.AddCommand(createCmd)
+    rootCmd.AddCommand(resolveCmd)
+    rootCmd.AddCommand(versionCmd)
+    rootCmd.AddCommand(completionCmd)
+}
+</pre>
+
+<pre>
+// internal/cli/create.go
+package cli
+
+import (
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "strings"
+
+    "github.com/spf13/cobra"
+)
+
+var createCmd = &amp;cobra.Command{
+    Use:   "create &lt;url&gt;",
+    Short: "Create a short link",
+    Args:  cobra.ExactArgs(1),  // validates argument count before RunE is called
+    RunE:  runCreate,
+}
+
+func runCreate(cmd *cobra.Command, args []string) error {
+    rawURL := args[0]
+
+    body := fmt.Sprintf(`{"url":%q}`, rawURL)
+    resp, err := http.Post(
+        serverURL+"/links",
+        "application/json",
+        strings.NewReader(body),
+    )
+    if err != nil {
+        return fmt.Errorf("request failed: %w", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusCreated {
+        return fmt.Errorf("server returned %d", resp.StatusCode)
+    }
+
+    var result struct {
+        Code string `json:"code"`
+    }
+    if err := json.NewDecoder(resp.Body).Decode(&amp;result); err != nil {
+        return fmt.Errorf("decoding response: %w", err)
+    }
+
+    fmt.Println(result.Code)
+    return nil
+}
+</pre>
+
+<pre>
+// internal/cli/resolve.go
+package cli
+
+import (
+    "fmt"
+    "net/http"
+
+    "github.com/spf13/cobra"
+)
+
+var resolveCmd = &amp;cobra.Command{
+    Use:   "resolve &lt;code&gt;",
+    Short: "Resolve a short code to its original URL",
+    Args:  cobra.ExactArgs(1),
+    RunE:  runResolve,
+}
+
+func runResolve(cmd *cobra.Command, args []string) error {
+    code := args[0]
+
+    // Use a client that does not follow redirects so we can read the Location header.
+    client := &amp;http.Client{
+        CheckRedirect: func(req *http.Request, via []*http.Request) error {
+            return http.ErrUseLastResponse
+        },
+    }
+    resp, err := client.Get(serverURL + "/" + code)
+    if err != nil {
+        return fmt.Errorf("request failed: %w", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode == http.StatusNotFound {
+        return fmt.Errorf("code %q not found", code)
+    }
+
+    loc := resp.Header.Get("Location")
+    if loc == "" {
+        return fmt.Errorf("no Location header in response")
+    }
+    fmt.Println(loc)
+    return nil
+}
+</pre>
+
+<pre>
+// internal/cli/version.go
+package cli
+
+import (
+    "fmt"
+    "github.com/spf13/cobra"
+)
+
+// Version is set at link time with -ldflags.
+// Build with: go build -ldflags "-X cli.Version=1.2.3"
+var Version = "dev"
+
+var versionCmd = &amp;cobra.Command{
+    Use:   "version",
+    Short: "Print the version and exit",
+    Run: func(cmd *cobra.Command, args []string) {
+        fmt.Println("linkctl", Version)
+    },
+}
+</pre>
+
+<p>
+The version is injected at build time using <code>-ldflags</code>, not hardcoded. In CI:
+</p>
+
+<pre>
+go build -ldflags "-X github.com/acme/linkctl/internal/cli.Version=$(git describe --tags)" \
+    -o linkctl ./cmd/linkctl
+</pre>
+
+<p>
+The entry point is minimal:
+</p>
+
+<pre>
+// cmd/linkctl/main.go
+package main
+
+import "github.com/acme/linkctl/internal/cli"
+
+func main() {
+    cli.Execute()
+}
+</pre>
+
+<h3>Shell Completion</h3>
+
+<p>
+Cobra can generate shell completion scripts for bash, zsh, fish, and PowerShell. Add a
+<code>completion</code> subcommand:
+</p>
+
+<pre>
+// internal/cli/completion.go (add to init() in root.go, or here)
+var completionCmd = &amp;cobra.Command{
+    Use:   "completion [bash|zsh|fish|powershell]",
+    Short: "Generate shell completion script",
+    Args:  cobra.ExactArgs(1),
+    ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
+    RunE: func(cmd *cobra.Command, args []string) error {
+        switch args[0] {
+        case "bash":
+            return rootCmd.GenBashCompletion(cmd.OutOrStdout())
+        case "zsh":
+            return rootCmd.GenZshCompletion(cmd.OutOrStdout())
+        case "fish":
+            return rootCmd.GenFishCompletion(cmd.OutOrStdout(), true)
+        case "powershell":
+            return rootCmd.GenPowerShellCompletion(cmd.OutOrStdout())
+        default:
+            return fmt.Errorf("unknown shell: %s", args[0])
+        }
+    },
+}
+</pre>
+
+<pre>
+# Install completion for the current user (bash)
+$ linkctl completion bash &gt; ~/.bash_completion.d/linkctl
+$ source ~/.bash_completion.d/linkctl
+
+# Now tab-complete works:
+$ linkctl &lt;TAB&gt;
+completion  create  resolve  version
+</pre>
+
+<p>
+In C# <code>System.CommandLine</code> (now the preferred Microsoft CLI library) provides
+similar tab-completion support. Cobra's is more widely used in practice, and the generated
+scripts work with all major shells.
+</p>
+
+<h3>Cobra Patterns and Gotchas</h3>
+
+<p>
+<b>Use <code>RunE</code> not <code>Run</code>.</b> <code>Run</code> does not return an
+error, so you must handle errors internally. <code>RunE</code> returns an error; cobra
+prints it and exits with a non-zero code. Always prefer <code>RunE</code>.
+</p>
+
+<p>
+<b>Persistent vs local flags.</b> <code>PersistentFlags()</code> defines flags inherited
+by all subcommands. <code>Flags()</code> defines flags local to one command. Use persistent
+flags for things like <code>--server</code>, <code>--config</code>, <code>--verbose</code>.
+Use local flags for things like <code>--format</code> on a specific command.
+</p>
+
+<p>
+<b>Cobra and init().</b> The convention of wiring commands in <code>init()</code> is
+common in cobra examples but can make testing harder. For testable CLIs, pass the command
+as a parameter or expose a constructor:
+</p>
+
+<pre>
+// Testable approach: return *cobra.Command from a constructor
+func NewRootCmd(version string) *cobra.Command {
+    var serverURL string
+    root := &amp;cobra.Command{Use: "linkctl"}
+    root.PersistentFlags().StringVar(&amp;serverURL, "server", "http://localhost:8080", "...")
+    root.AddCommand(newCreateCmd(&amp;serverURL))
+    root.AddCommand(newVersionCmd(version))
+    return root
+}
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+The stdlib <code>flag</code> package is the right starting point for simple tools. It
+follows Go's convention of preferring the standard library until you genuinely need more.
+When you need subcommands, cobra is the ecosystem standard - used by the tools you already
+use daily. A well-structured cobra CLI has a thin <code>main</code>, a root command with
+persistent flags, subcommands in separate files, version injection via <code>-ldflags</code>,
+and shell completion built in.
+</p>
+
+<p>
+Go's single static binary output is what makes CLI tooling a strength: you build once and
+distribute one file. No installer, no runtime, no shared libraries. Combined with the
+cross-compilation from Part 13, you can build for Linux, macOS, and Windows from one
+machine in seconds.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://pkg.go.dev/flag">flag - pkg.go.dev</a></li>
+<li><a href="https://github.com/spf13/cobra">cobra - github.com/spf13/cobra</a></li>
+<li><a href="https://pkg.go.dev/github.com/spf13/cobra">cobra - pkg.go.dev</a></li>
+<li><a href="https://go.dev/doc/code">How to Write Go Code - go.dev</a></li>
+<li><a href="https://clig.dev/">Command Line Interface Guidelines - clig.dev</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="go-13-cross-compilation.htm">Building &amp; Cross-Compilation</a></li>
+<li><a href="go-11-modules.htm">Modules &amp; Dependencies</a></li>
+<li><a href="go-18-project-layout.htm">Clean Code &amp; Project Layout</a></li>
+<li><a href="go-21-workspaces.htm">Go Workspaces</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

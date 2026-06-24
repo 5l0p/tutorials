@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 10: Monomachine VO — Virtual Operator FM
-2026-01-01
+2026-06-01
 
 
 The Monomachine's VO (Virtual Operator) engine is 2-operator FM synthesis — a carrier

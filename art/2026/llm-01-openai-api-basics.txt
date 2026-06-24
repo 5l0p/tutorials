@@ -1,5 +1,5 @@
 LLM - Part 1: OpenAI API Basics
-2026-06-09
+2026-06-01
 
 
 The OpenAI API is an HTTP JSON service. Every request is a POST to an endpoint,

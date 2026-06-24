@@ -72,11 +72,89 @@
 <h1>~5l0p/tut</h1>
 <!-- header end -->
         <a href="https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
-        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="c.htm">c</a>, <a href="dsp.htm">dsp</a></i>
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="c.htm">c</a>, <a href="cpp.htm">cpp</a>, <a href="dsp.htm">dsp</a>, <a href="externals.htm">externals</a>, <a href="libpd.htm">libpd</a>, <a href="linux.htm">linux</a>, <a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="raii.htm">raii</a>, <a href="scripting.htm">scripting</a>, <a href="testing.htm">testing</a>, <a href="unity.htm">unity</a>, <a href="vst.htm">vst</a></i>
 <h2>Tutorials</h2>
 <h2>dsp-</h2>
-<p><b><a href="art/2026/dsp-01-audio-fundamentals.htm">DSP - Part 1: Audio Fundamentals</a></b> - 2026-06-09<br>
+<p><b><a href="art/2026/dsp-01-audio-fundamentals.htm">DSP - Part 1: Audio Fundamentals</a></b> - 2026-06-01<br>
 Sample rate, bit depth, the Nyquist theorem, aliasing, and decibel arithmetic - the vocabulary every audio programmer must know.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-22-vst3-plugin.htm">DSP - Part 22: Writing a VST3 Plugin</a></b> - 2026-06-01<br>
+VST3 plugin architecture without CMake magic: IComponent/IAudioProcessor split, IPluginFactory, process() and ProcessData, a stereo gain plugin with one parameter, IEditController, and building with gcc.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-04-polyblep.htm">DSP - Part 4: Anti-Aliasing Oscillators: PolyBLEP</a></b> - 2026-06-01<br>
+Why naive waveforms alias, how the BLEP correction works, and implementing the PolyBLEP function for band-limited sawtooth and square waves in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-11-fft.htm">DSP - Part 11: FFT from Scratch</a></b> - 2026-06-01<br>
+The DFT definition, Cooley-Tukey radix-2 FFT algorithm, bit-reversal permutation, butterfly operations, and windowing functions - all implemented in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-13-denormals.htm">DSP - Part 13: Denormal Numbers and the 1000x Slowdown</a></b> - 2026-06-01<br>
+What IEEE 754 subnormal numbers are, why they cause catastrophic slowdowns in real-time DSP, and how to eliminate them with CPU flags and guard techniques.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-02-audio-callback.htm">DSP - Part 2: The Audio Callback Model</a></b> - 2026-06-01<br>
+How real-time audio processing works through callbacks, why the audio thread has strict rules, and how ring buffers bridge real-time and non-real-time code.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-08-envelope-follower.htm">DSP - Part 8: Envelope Follower & Parameter Smoothing</a></b> - 2026-06-01<br>
+Peak and RMS envelope detection, attack/release timing with exponential coefficients, and one-pole smoothers to eliminate zipper noise on parameter changes.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-10-gate.htm">DSP - Part 10: Dynamics: Gate</a></b> - 2026-06-01<br>
+Implementing a noise gate in C: threshold detection, hold counter, hysteresis, and integrating the gate into a signal chain with a compressor.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-28-testing.htm">DSP - Part 28: Testing DSP Code</a></b> - 2026-06-01<br>
+Unit testing C DSP code with the Unity test framework: numerical tolerance assertions (TEST_ASSERT_FLOAT_WITHIN), impulse-response comparison, offline WAV render-and-compare, running the test binary in CI, and a Makefile target that builds and runs all tests.<br>
+<i><a href="c.htm">c</a>, <a href="cpp.htm">cpp</a>, <a href="testing.htm">testing</a>, <a href="dsp.htm">dsp</a>, <a href="unity.htm">unity</a></i></p>
+<p><b><a href="art/2026/dsp-21-pd-external.htm">DSP - Part 21: Writing a Pure Data External</a></b> - 2026-06-01<br>
+Pure Data external architecture using m_pd.h: object structs, setup() convention, inlets and outlets, signal processing with perform() and dsp_add, a biquad~ object, and a control-rate abstraction.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-12-spectral-processing.htm">DSP - Part 12: Spectral Processing with FFT</a></b> - 2026-06-01<br>
+Overlap-add block processing, spectral gate, spectral freeze, fast convolution, and phase vocoder loop structure - all implemented in C using the FFT from Part 11.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-23-putting-together.htm">DSP - Part 23: Putting It All Together — a Complete Monophonic Synthesiser</a></b> - 2026-06-01<br>
+A complete playable monophonic synth under 500 lines: wavetable oscillator, biquad filter, ADSR envelope, ALSA MIDI input, and SDL2 audio output, with a series retrospective.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-07-filter-cookbook-2.htm">DSP - Part 7: Filter Cookbook: Bandpass, Notch & Shelves</a></b> - 2026-06-01<br>
+Biquad coefficients for bandpass, notch, peaking EQ, low shelf, and high shelf filters, plus cascading sections for a parametric EQ.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-20-sdl2-audio.htm">DSP - Part 20: SDL2 as an Audio Backend</a></b> - 2026-06-01<br>
+Using SDL2 for cross-platform audio: SDL_AudioSpec, callback model, SDL_OpenAudioDevice, device enumeration, and integrating earlier DSP building blocks into a working demo.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-03-oscillators.htm">DSP - Part 3: Oscillators: Basic Waveforms</a></b> - 2026-06-01<br>
+Implementing sine, square, sawtooth, and triangle oscillators in C using the phase accumulator pattern.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-05-biquad.htm">DSP - Part 5: Biquad Filters</a></b> - 2026-06-01<br>
+The biquad as the universal second-order IIR filter: Direct Form I, Direct Form II transposed, and coefficient storage in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/libpd-12-cpp-interop.htm">libpd in C++ Applications</a></b> - 2026-06-01<br>
+How to use libpd cleanly from C++ — RAII wrappers, exception safety, integrating with C++ audio frameworks, and embedding Pure Data as a typed DSP module in a larger C++ codebase.<br>
+<i><a href="libpd.htm">libpd</a>, <a href="cpp.htm">cpp</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="dsp.htm">dsp</a>, <a href="raii.htm">raii</a></i></p>
+<p><b><a href="art/2026/dsp-19-midi-linux.htm">DSP - Part 19: MIDI I/O on Linux with ALSA</a></b> - 2026-06-01<br>
+Reading and writing MIDI on Linux using ALSA raw MIDI devices and the ALSA sequencer: opening devices, polling, the sequencer client/port model, and programmatic port connection.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="linux.htm">linux</a></i></p>
+<p><b><a href="art/2026/dsp-17-granular.htm">DSP - Part 17: Granular Synthesis</a></b> - 2026-06-01<br>
+Granular synthesis from scratch: grain model, Hann envelope, scatter and density, pitch randomisation, fixed-pool grain scheduler in C, time-stretch, and pitch-shift.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-15-wavetable.htm">DSP - Part 15: Wavetable Synthesis</a></b> - 2026-06-01<br>
+Wavetable synthesis from scratch: single-cycle tables, linear and cubic interpolation, band-limited multi-octave tables, and morphing between waveforms in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-24-cpp-pd-externals.htm">C++ PD Externals: Porting DSP Classes to Pure Data</a></b> - 2026-06-01<br>
+How to write Pure Data externals in C++ — wrapping a C++ DSP class with a thin m_pd.h shim, managing object lifetime with placement new, and porting a VST-style processor to a Pd object.<br>
+<i><a href="dsp.htm">dsp</a>, <a href="puredata.htm">puredata</a>, <a href="cpp.htm">cpp</a>, <a href="externals.htm">externals</a>, <a href="vst.htm">vst</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-16-fm-synthesis.htm">DSP - Part 16: FM Synthesis</a></b> - 2026-06-01<br>
+FM synthesis operator model, modulation index and sidebands, two-operator pairs, DX7-style algorithms, six-operator engine, FM envelopes, and worked timbres in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-18-midi-protocol.htm">DSP - Part 18: MIDI 1.0 Protocol and Parsing</a></b> - 2026-06-01<br>
+MIDI 1.0 wire format, status and data bytes, running status, all channel and system messages, and a complete byte-stream state machine in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-14-sample-playback.htm">DSP - Part 14: Sample Playback</a></b> - 2026-06-01<br>
+Loading PCM from a WAV file in C, float buffer storage, one-shot and looping playback, linear and cubic Hermite interpolation, and pitch shifting via playback rate.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/lua-11-lua-audio.htm">Lua - Part 11: Scripting a DSP Pipeline from Lua</a></b> - 2026-06-01<br>
+Declare an audio node graph as a Lua DSL, wire real biquad and oscillator C structs from a C loader, and hot-reload the pipeline at runtime without stopping audio.<br>
+<i><a href="c.htm">c</a>, <a href="lua.htm">lua</a>, <a href="scripting.htm">scripting</a>, <a href="dsp.htm">dsp</a></i></p>
+<p><b><a href="art/2026/dsp-09-compressor.htm">DSP - Part 9: Dynamics: Compressor</a></b> - 2026-06-01<br>
+Implementing a feed-forward mono compressor in C: level detection, gain computer, attack/release smoothing, make-up gain, and stereo linking.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-06-filter-cookbook-1.htm">DSP - Part 6: Filter Cookbook: Lowpass, Highpass & Resonance</a></b> - 2026-06-01<br>
+Deriving biquad coefficients for lowpass and highpass filters from the Audio EQ Cookbook, with resonance and worked C code.<br>
 <i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
 
 <!-- footer begin -->

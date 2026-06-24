@@ -1,0 +1,410 @@
+Containers - Part 20: The OCI Runtime Spec & runc
+2026-06-01
+
+
+Every tool in this series has been reinventing, in miniature, what runc already
+does. runc is the reference implementation of the OCI Runtime Specification, and
+the OCI Runtime Specification is the formal description of everything we have
+built across the previous nineteen articles: which namespaces to create, how to
+set up the rootfs, what capabilities to apply, how to configure cgroups, how to
+load a seccomp filter. The spec does not describe new kernel primitives - it
+describes exactly which of the existing ones to use, in which order, with which
+parameters, expressed as a JSON document called config.json. Understanding
+the spec closes the loop between the kernel-level primitives and the container
+tooling that billions of containers run through every day.
+
+
+What You Will Learn
+
+
+What the Open Container Initiative is and why the spec exists
+The structure of config.json: root, mounts, process, linux sections
+The container lifecycle: creating, starting, killing, and deleting
+How runc implements the spec using the primitives from this series
+How to use runc spec and runc run to run a container
+Where your mini-runtime fits in the OCI ecosystem
+
+
+What the OCI Is
+
+
+The Open Container Initiative (OCI) was formed in June 2015 by Docker, CoreOS,
+and other companies to standardise container formats and runtimes after it became
+clear that multiple incompatible implementations were emerging. The OCI maintains
+three specifications:
+
+
+
+OCI Runtime Specification - what a low-level container runtime (like runc) must do to run a container. This is the focus of this article.
+OCI Image Specification - the format for container images: how layers are stored as tarballs, how the manifest and config JSON describe them. Docker images, containerd images, and Podman images all conform to this spec.
+OCI Distribution Specification - the HTTP API for pushing and pulling images from registries (Docker Hub, GHCR, etc.).
+
+
+
+runc is the reference implementation of the Runtime Specification. It is written
+in Go, sits inside the opencontainers/runc repository on GitHub, and is
+used directly by containerd (which Docker and Kubernetes use), by crun (a fast C
+reimplementation), and by many others. When you run docker run, Docker
+ultimately calls runc to create the container.
+
+
+The config.json Format
+
+
+The OCI Runtime Specification defines a bundle: a directory containing a
+config.json file and a rootfs/ directory (or a path to one). The
+config.json has four major sections. Here is an annotated minimal example:
+
+
+
+{
+  "ociVersion": "1.0.2",
+
+  "root": {
+    "path": "rootfs",        // path to the root filesystem, relative to bundle
+    "readonly": false
+  },
+
+  "mounts": [
+    {
+      "destination": "/proc",
+      "type": "proc",
+      "source": "proc"
+    },
+    {
+      "destination": "/dev",
+      "type": "tmpfs",
+      "source": "tmpfs",
+      "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]
+    },
+    {
+      "destination": "/sys",
+      "type": "sysfs",
+      "source": "sysfs",
+      "options": ["nosuid", "noexec", "nodev", "ro"]
+    },
+    {
+      "destination": "/tmp",
+      "type": "tmpfs",
+      "source": "tmpfs"
+    }
+  ],
+
+  "process": {
+    "terminal": false,
+    "user": { "uid": 0, "gid": 0 },
+    "args": ["/bin/sh"],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "TERM=xterm"
+    ],
+    "cwd": "/",
+    "capabilities": {
+      "bounding":    ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER",
+                      "CAP_KILL", "CAP_NET_BIND_SERVICE", "CAP_SETGID",
+                      "CAP_SETUID", "CAP_SETPCAP", "CAP_SYS_CHROOT"],
+      "effective":   ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER",
+                      "CAP_KILL", "CAP_NET_BIND_SERVICE", "CAP_SETGID",
+                      "CAP_SETUID", "CAP_SETPCAP", "CAP_SYS_CHROOT"],
+      "permitted":   ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER",
+                      "CAP_KILL", "CAP_NET_BIND_SERVICE", "CAP_SETGID",
+                      "CAP_SETUID", "CAP_SETPCAP", "CAP_SYS_CHROOT"],
+      "inheritable": [],
+      "ambient":     []
+    },
+    "rlimits": [
+      { "type": "RLIMIT_NOFILE", "hard": 1024, "soft": 1024 }
+    ],
+    "noNewPrivileges": true
+  },
+
+  "hostname": "mycontainer",
+
+  "linux": {
+    "namespaces": [
+      { "type": "pid"  },
+      { "type": "network" },
+      { "type": "ipc"  },
+      { "type": "uts"  },
+      { "type": "mount" }
+    ],
+    "uidMappings": [
+      { "containerID": 0, "hostID": 1000, "size": 1 }
+    ],
+    "gidMappings": [
+      { "containerID": 0, "hostID": 1000, "size": 1 }
+    ],
+    "resources": {
+      "memory": {
+        "limit": 134217728,
+        "swap":  134217728
+      },
+      "cpu": {
+        "quota":  50000,
+        "period": 100000
+      },
+      "pids": {
+        "limit": 64
+      }
+    },
+    "seccomp": {
+      "defaultAction": "SCMP_ACT_ALLOW",
+      "architectures": ["SCMP_ARCH_X86_64"],
+      "syscalls": [
+        {
+          "names":  ["ptrace", "keyctl", "add_key", "request_key",
+                     "perf_event_open", "userfaultfd", "reboot",
+                     "kexec_load", "kexec_file_load"],
+          "action": "SCMP_ACT_ERRNO",
+          "errnoRet": 1
+        }
+      ]
+    },
+    "rootfsPropagation": "private",
+    "maskedPaths": [
+      "/proc/acpi", "/proc/kcore", "/proc/sysrq-trigger",
+      "/proc/latency_stats", "/proc/timer_list", "/proc/timer_stats",
+      "/proc/fs", "/sys/firmware"
+    ],
+    "readonlyPaths": [
+      "/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"
+    ]
+  }
+}
+
+
+
+Every field maps directly to a kernel operation we have implemented:
+namespaces maps to CLONE_NEW* flags; uidMappings writes
+/proc/PID/uid_map; resources writes to /sys/fs/cgroup/;
+capabilities calls capset(); seccomp compiles to a BPF filter.
+
+
+The Container Lifecycle
+
+
+The OCI spec defines five container states and the operations that transition
+between them:
+
+
+
+creating - runc create <id> <bundle> is running. The container process has been created in its namespaces but has not yet started the entrypoint. It is paused at a synchronisation point (a pipe inside runc, equivalent to our sync_pipe).
+created - runc create has returned. The container process exists, cgroups and namespaces are fully configured, but the entrypoint has not yet been exec'd.
+running - runc start <id> has been called. The entrypoint is executing. runc signals the container process via its internal pipe.
+stopped - the container process has exited (either normally or via runc kill <id> SIGTERM).
+deleted - runc delete <id> has been called. The state files, cgroup directories, and (if managed by runc) the namespace files have been cleaned up.
+
+
+
+# Generate a default config.json in the current directory
+runc spec
+
+# Edit config.json to point rootfs at your prepared root filesystem
+# and set the process.args to what you want to run.
+
+# Create the container (allocates namespaces, configures cgroups, pauses)
+sudo runc create --bundle . mycontainer
+
+# Inspect state
+sudo runc state mycontainer
+# { "id": "mycontainer", "status": "created", "pid": 48291, ... }
+
+# Start (signals the container to exec the entrypoint)
+sudo runc start mycontainer
+
+# List running containers
+sudo runc list
+# ID            PID     STATUS    BUNDLE    ...
+# mycontainer   48291   running   /path...
+
+# Send a signal
+sudo runc kill mycontainer SIGTERM
+
+# Wait for it to stop
+sudo runc state mycontainer
+# { "status": "stopped", ... }
+
+# Clean up
+sudo runc delete mycontainer
+
+
+
+The create/start split exists to allow pre-start hooks (specified in
+config.json under hooks.prestart) to run between namespace creation and
+entrypoint execution. CNI network plugins are typically invoked as prestart
+hooks, which is why you can start a container, inspect its namespaces, and set
+up networking before the process actually starts.
+
+
+How runc Implements the Spec
+
+
+runc is structured around a Go package called libcontainer. Its most
+instructive source files are:
+
+
+
+libcontainer/container_linux.go - the Container type and its Start(), Run(), Kill(), Destroy() methods. The lifecycle state machine lives here.
+libcontainer/factory_linux.go - Create() reads the OCI spec and calls clone() with the appropriate CLONE_NEW* flags.
+libcontainer/process_linux.go - the parent and child initialisation paths, including the sync pipe (called bootstrapData pipe in runc).
+libcontainer/rootfs_linux.go - prepareRootfs() and pivotRoot(); identical logic to our pivot.go.
+libcontainer/cgroups/ - the cgroup manager implementations for v1, v2, and systemd.
+libcontainer/seccomp/seccomp_linux.go - loads the seccomp profile from the OCI JSON spec using libseccomp.
+libcontainer/capabilities/capabilities.go - applies the capabilities spec using the github.com/syndtr/gocapability package.
+
+
+
+Reading runc source alongside this series makes it immediately legible. The runc
+re-exec entrypoint is init (just like ours): when runc sees that its first
+argument is init, it runs libcontainerinit() instead of main().
+
+
+Where Your Mini-Runtime Fits
+
+
+The OCI ecosystem has two layers:
+
+
+
+High-level runtimes (Docker daemon, containerd, Podman, CRI-O) - pull images, manage image layers (overlayfs), handle networking via CNI, maintain container databases, expose APIs. They do not implement the low-level isolation primitives themselves.
+Low-level runtimes (runc, crun, gVisor, Kata Containers) - receive an OCI bundle (rootfs + config.json) from the high-level runtime and implement the isolation. They interact directly with the kernel.
+
+
+
+Your mini-runtime is a low-level runtime. It does everything runc does in its
+core path: namespaces, pivot_root, cgroups, capabilities, seccomp. To make it
+an OCI-compliant runtime you would need to:
+
+
+
+Parse config.json instead of command-line arguments.
+Implement the lifecycle state machine (create/start/kill/delete) with state stored in /run/miniruntime/<id>/state.json.
+Handle the hooks spec for prestart/poststart/poststop.
+Implement --bundle flag support.
+
+
+
+That is approximately what projects like youki (a Rust OCI runtime) and
+crun (a C OCI runtime) have done: they are slim, spec-compliant low-level
+runtimes that can be dropped in place of runc.
+
+
+Running a Container with runc Directly
+
+
+# Install runc
+apt-get install runc      # Debian/Ubuntu
+dnf install runc          # Fedora/RHEL
+
+# Prepare a bundle
+mkdir -p /tmp/mycontainer/rootfs
+docker export $(docker create alpine) | tar -xC /tmp/mycontainer/rootfs
+cd /tmp/mycontainer
+runc spec
+
+# Edit config.json: set process.args to ["/bin/sh"] if not already
+# Verify the rootfs path matches
+
+# Run it (create + start in one step)
+sudo runc run mycontainer
+
+# Inside:
+hostname
+# (whatever you set in config.json hostname field)
+cat /proc/1/status | grep CapEff
+# Shows the capabilities from config.json process.capabilities
+
+# In another terminal, inspect the running container
+sudo runc state mycontainer
+sudo runc list
+
+
+The maskedPaths and readonlyPaths Fields
+
+
+Two fields in the Linux section of config.json that are easy to miss but
+important for security:
+
+
+
+maskedPaths - these paths are bind-mounted over with an empty file (for regular files) or an empty tmpfs (for directories), making their content inaccessible to the container. Common examples: /proc/kcore (exposes physical RAM layout), /proc/sysrq-trigger (could reboot the host), /sys/firmware.
+readonlyPaths - these paths are bind-mounted read-only. /proc/bus, /proc/sys (preventing sysctl changes from inside), /proc/irq.
+
+
+
+# runc implements maskedPaths with bind-mount + remount readonly
+mount --bind /dev/null /proc/kcore
+# or for directories:
+mount -t tmpfs tmpfs /proc/acpi
+
+# readonlyPaths
+mount --bind /proc/sys /proc/sys
+mount --remount,readonly /proc/sys
+
+
+Reflecting on the Series
+
+
+Twenty articles ago, the claim was that containers are not magic. Looking back at
+the full arc of the series, that claim is now a provable fact rather than an
+assertion:
+
+
+
+Tutorials 1–3 established the conceptual model: a container is a process with restricted visibility, resource limits, a changed root, reduced privilege, and syscall filtering. No single container() syscall.
+Tutorials 4–5 covered PID and UTS/IPC namespaces - the first two isolation layers that make a process feel like a separate system.
+Tutorials 6–9 covered mount namespaces, chroot, pivot_root, overlayfs, and virtual filesystems - the filesystem isolation that gives containers their own view of the disk.
+Tutorials 10–12 covered FUSE, 9P, and WebDAV - the userspace filesystem protocols that container runtimes use for cross-environment volume sharing.
+Tutorials 13–14 covered network namespaces (with veth, bridges, and NAT) and user namespaces (with UID/GID mappings and rootless containers).
+Tutorials 15–16 covered cgroups v1 and v2 - the resource control layer that prevents a container from consuming the host.
+Tutorials 17–18 covered capabilities and seccomp - the privilege and syscall restriction layers that contain a compromised container.
+Tutorials 19–19b assembled all of the above into a working mini container runtime in Go.
+This final article maps the runtime against the OCI spec and runc, showing that the primitives we built are exactly the primitives every production container runtime uses.
+
+
+
+The next time you run docker run or kubectl apply, you can trace the
+full path: a high-level runtime fetches an OCI image, extracts it as overlayfs
+layers, writes a config.json, calls runc with that bundle, and runc calls
+clone() with CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | ..., writes
+UID maps, calls pivot_root, mounts /proc and /dev, writes to
+/sys/fs/cgroup/, calls capset(), and calls prctl(PR_SET_SECCOMP)
+before finally calling execve() on the container entrypoint. Every one of
+those steps is something you have now implemented yourself.
+
+
+Summary
+
+
+The OCI Runtime Specification is a formal description of the Linux kernel
+primitives this series has covered. A config.json bundle describes exactly
+which namespaces to create, where to pivot the root, which mounts to set up,
+which capabilities to keep, which cgroup limits to apply, and which seccomp
+policy to enforce. runc reads that JSON and performs the operations. Your
+mini-runtime does the same thing in direct Go code without the JSON layer.
+Understanding the spec means you can read runc source code, debug container
+escapes, write custom runtimes, and reason about the security boundaries of any
+container system - because you know what the kernel is actually doing.
+
+
+Further Reading
+
+
+OCI Runtime Specification (GitHub)
+runc - OCI reference runtime (GitHub)
+youki - OCI runtime in Rust (GitHub)
+crun - OCI runtime in C (GitHub)
+Open Container Initiative - opencontainers.org
+OCI Image Specification (GitHub)
+
+
+See Also
+
+
+What Is a Container?
+pivot_root and Rootfs
+OverlayFS - Union Mounts for Container Layers
+Linux Capabilities
+seccomp - Syscall Filtering
+Building a Mini Container Runtime in Go
+

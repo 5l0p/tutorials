@@ -1,5 +1,5 @@
 LLM - Part 4: Building a Simple Agent Loop
-2026-06-13
+2026-06-01
 
 
 An agent is a program that uses a language model to decide what to do next, executes that

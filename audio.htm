@@ -72,99 +72,246 @@
 <h1>~5l0p/tut</h1>
 <!-- header end -->
         <a href="https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
-        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="c.htm">c</a>, <a href="drums.htm">drums</a>, <a href="dsp.htm">dsp</a>, <a href="elektron.htm">elektron</a>, <a href="embedded.htm">embedded</a>, <a href="generative.htm">generative</a>, <a href="lua.htm">lua</a>, <a href="music-theory.htm">music-theory</a>, <a href="pico.htm">pico</a>, <a href="puredata.htm">puredata</a>, <a href="synthesis.htm">synthesis</a></i>
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="c.htm">c</a>, <a href="cpp.htm">cpp</a>, <a href="drums.htm">drums</a>, <a href="dsp.htm">dsp</a>, <a href="effects.htm">effects</a>, <a href="elektron.htm">elektron</a>, <a href="embedded.htm">embedded</a>, <a href="externals.htm">externals</a>, <a href="generative.htm">generative</a>, <a href="libpd.htm">libpd</a>, <a href="linux.htm">linux</a>, <a href="lua.htm">lua</a>, <a href="music-theory.htm">music-theory</a>, <a href="pico.htm">pico</a>, <a href="puredata.htm">puredata</a>, <a href="raii.htm">raii</a>, <a href="synthesis.htm">synthesis</a>, <a href="vst.htm">vst</a></i>
 <h2>Tutorials</h2>
 <h2>audio-</h2>
-<p><b><a href="art/2026/dsp-01-audio-fundamentals.htm">DSP - Part 1: Audio Fundamentals</a></b> - 2026-06-09<br>
-Sample rate, bit depth, the Nyquist theorem, aliasing, and decibel arithmetic - the vocabulary every audio programmer must know.<br>
-<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
-<p><b><a href="art/2026/pico-01-rp2040-sdk.htm">RPIPicoDSP - Part 1: The RP2040 & Pico SDK</a></b> - 2026-06-09<br>
-A tour of the RP2040 chip, the Raspberry Pi Pico board, and the C SDK - from toolchain setup through CMakeLists.txt to a working LED-blink and USB serial hello-world.<br>
-<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
-<p><b><a href="art/2026/libpd-01-what-is-libpd.htm">libpd - Part 1: What Is libpd?</a></b> - 2026-06-09<br>
-An introduction to libpd, the embeddable version of the Pure Data DSP engine, and the C API surface it exposes.<br>
-<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
-<p><b><a href="art/2026/drums-01-architecture.htm">Drums - Part 1: Electronic Drum Synthesis — Architecture and Approach</a></b> - 2026-06-09<br>
-How classic electronic drum machines synthesise their sounds from first principles: tonal oscillators with pitch sweeps, filtered noise, transient clicks, and the Prok Drums extend-decay envelope pattern. Building blocks for every voice in the series.<br>
-<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
-<p><b><a href="art/2026/algo-11-putting-it-together.htm">Algorithmic Composition - Part 11: Putting It All Together</a></b> - 2026-01-21<br>
-A complete self-generating Krell-style patch in Pure Data driven by Lua scripts, wiring the Brownian melody generator, Markov chord progression, voice leading, Euclidean drum patterns, and the Monomachine synthesis engines from Series 10 into a single autonomous system.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-10-euclidean-rhythms.htm">Algorithmic Composition - Part 10: Euclidean Rhythms</a></b> - 2026-01-20<br>
-Bjorklund's algorithm for distributing k beats across n slots as evenly as possible, the surprising match to world-music rhythmic patterns, generating polyrhythms from coprime period lengths, and integrating Euclidean patterns with the drums-07 sequencer in Lua.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-09-cellular-automata.htm">Algorithmic Composition - Part 9: Cellular Automata</a></b> - 2026-01-19<br>
-1D elementary cellular automata (Rule 30, Rule 110) as pitch and rhythm generators, reading cell states as notes and rests, and Conway's Game of Life for evolving harmonic density — all implemented in Lua with output sent to Pure Data.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-08-l-systems.htm">Algorithmic Composition - Part 8: L-Systems</a></b> - 2026-01-18<br>
-Lindenmayer systems as production grammars for melody generation, mapping symbols to notes and directions, turtle-graphics interpretation of symbol strings, and self-similar musical structure at multiple time scales.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-07-voice-leading.htm">Algorithmic Composition - Part 7: Voice Leading</a></b> - 2026-01-17<br>
-Why chord progressions need smooth voice movement, the nearest-neighbour assignment algorithm for three-voice voice leading, detecting and avoiding parallel fifths and octaves, and a complete Lua implementation.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-06-chord-progressions.htm">Algorithmic Composition - Part 6: Generating Chord Progressions</a></b> - 2026-01-16<br>
-A Markov chain over harmonic function (T, S, D) rather than individual chords, mapping functions to chord degree choices, generating 4-bar progressions, and modal interchange for colour without key change.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-05-harmony-fundamentals.htm">Algorithmic Composition - Part 5: Harmony Fundamentals</a></b> - 2026-01-15<br>
-Why certain intervals sound stable or tense, the overtone series as the physical basis of harmony, triads as stacked scale degrees, and tonic, subdominant, and dominant function — the data structures that chord progression and voice leading articles build on.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-04-markov-chains.htm">Algorithmic Composition - Part 4: Markov Chains for Melody</a></b> - 2026-01-14<br>
-Encoding musical tendency as a first-order Markov transition matrix over scale degrees, sampling from a probability distribution in Lua, building a rhythm chain, and combining pitch and rhythm into a complete melody generator.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-03-random-walks-brownian-motion.htm">Algorithmic Composition - Part 3: Random Walks and Brownian Motion</a></b> - 2026-01-13<br>
-Why pure random pitch selection is musically useless, how Brownian motion models melodic contour as a walk through pitch space, step size and register boundaries as musical parameters, and fractional Brownian motion with the Hurst exponent for controlling phrase shape.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-02-pitch-as-numbers.htm">Algorithmic Composition - Part 2: Pitch as Numbers</a></b> - 2026-01-12<br>
+<p><b><a href="art/2026/algo-02-pitch-as-numbers.htm">Algorithmic Composition - Part 2: Pitch as Numbers</a></b> - 2026-06-01<br>
 MIDI note numbers as the universal pitch representation, the equal temperament frequency formula, building scale tables in Lua, and the quantise function that maps any integer to the nearest in-scale pitch.<br>
 <i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/algo-01-what-is-algorithmic-composition.htm">Algorithmic Composition - Part 1: What Is Algorithmic Composition?</a></b> - 2026-01-11<br>
-What it means to compose rules rather than notes, the spectrum from stochastic to deterministic, and how algorithmic composition connects to the synthesis engines built in Series 9 and 10.<br>
-<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
-<p><b><a href="art/2026/elektron-05-md-trx-misc.htm">Elektron Synthesis - Part 5: Machinedrum TRX-CP Clap, TRX-RS Rimshot, TRX-MA Metallic</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/dsp-01-audio-fundamentals.htm">DSP - Part 1: Audio Fundamentals</a></b> - 2026-06-01<br>
+Sample rate, bit depth, the Nyquist theorem, aliasing, and decibel arithmetic - the vocabulary every audio programmer must know.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-22-vst3-plugin.htm">DSP - Part 22: Writing a VST3 Plugin</a></b> - 2026-06-01<br>
+VST3 plugin architecture without CMake magic: IComponent/IAudioProcessor split, IPluginFactory, process() and ProcessData, a stereo gain plugin with one parameter, IEditController, and building with gcc.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/libpd-08-midi.htm">libpd - Part 8: MIDI with libpd</a></b> - 2026-06-01<br>
+How to send MIDI events into Pd and receive MIDI output from Pd using libpd's MIDI API and hook callbacks.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/libpd-05-send-messages.htm">libpd - Part 5: Sending Messages to Pd</a></b> - 2026-06-01<br>
+How to send bangs, floats, symbols, lists, and typed messages from C into a running Pd patch using the libpd messaging API.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/pico-03-audio-input.htm">RPIPicoDSP - Part 3: Audio Input on the Pico</a></b> - 2026-06-01<br>
+ADC DMA capture, I2S microphone input via PIO with the INMP441 and SPH0645, PDM microphones, and a complete example that reads a mic, computes peak level, and blinks an LED.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/drums-06-effects.htm">Drums - Part 6: Per-Channel Effects with Airwindows Pd Externals</a></b> - 2026-06-01<br>
+Using the airwindows Pd externals as per-channel inserts on drum voices: mackity~ for input stage colour, totape9~ for tape saturation, dubplate2~ for vinyl EQ, zacidlowpass~ for resonant filtering, and chorusensemble~ for pitch widening. Building an effects chain in Pd with normalised 0–1 parameters.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="effects.htm">effects</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/elektron-05-md-trx-misc.htm">Elektron Synthesis - Part 5: Machinedrum TRX-CP Clap, TRX-RS Rimshot, TRX-MA Metallic</a></b> - 2026-06-01<br>
 Recreating the Machinedrum TRX-CP clap, TRX-RS rimshot, and TRX-MA metallic percussion machines in Pure Data. The CP's multi-burst roll with reverb, the RS's dual resonator model of stick striking drum rim, and the MA's pitched metallic resonator.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-03-md-trx-sd.htm">Elektron Synthesis - Part 3: Machinedrum TRX-SD Snare and TRX-XT Hi-Hats</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/drums-05-clap.htm">Drums - Part 5: Clap Synthesis in Pure Data</a></b> - 2026-06-01<br>
+Building a parametric clap in Pure Data: three parallel noise sources (white, SID, pink), a pre-attack roll cluster via metro, dual MAIN/VERB envelope paths, shelf EQ, and a Freeverb reverb tail. Patch switching with a Lua preset system.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/pico-01-rp2040-sdk.htm">RPIPicoDSP - Part 1: The RP2040 & Pico SDK</a></b> - 2026-06-01<br>
+A tour of the RP2040 chip, the Raspberry Pi Pico board, and the C SDK - from toolchain setup through CMakeLists.txt to a working LED-blink and USB serial hello-world.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/drums-02-kick.htm">Drums - Part 2: Kick Drum Synthesis in Pure Data</a></b> - 2026-06-01<br>
+Building a deep, punchy, programmable kick drum in Pure Data: two sine oscillators with pitch envelopes, triangle/pulse oscillators with phase modulation, filtered noise burst, transient click, soft-clip distortion, and a final extend-decay output envelope.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/algo-09-cellular-automata.htm">Algorithmic Composition - Part 9: Cellular Automata</a></b> - 2026-06-01<br>
+1D elementary cellular automata (Rule 30, Rule 110) as pitch and rhythm generators, reading cell states as notes and rests, and Conway's Game of Life for evolving harmonic density — all implemented in Lua with output sent to Pure Data.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/dsp-04-polyblep.htm">DSP - Part 4: Anti-Aliasing Oscillators: PolyBLEP</a></b> - 2026-06-01<br>
+Why naive waveforms alias, how the BLEP correction works, and implementing the PolyBLEP function for band-limited sawtooth and square waves in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/elektron-03-md-trx-sd.htm">Elektron Synthesis - Part 3: Machinedrum TRX-SD Snare and TRX-XT Hi-Hats</a></b> - 2026-06-01<br>
 Recreating the Machinedrum TRX-SD snare and TRX-HH/TRX-XT hi-hat machines in Pure Data: the TRX-SD's dual-resonator body with independent noise/snap envelopes, and the TRX-HH metallic oscillator bank with the XT choke mechanism.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-14-mnm-perc.htm">Elektron Synthesis - Part 14: Monomachine Percussion Toolbox</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/dsp-11-fft.htm">DSP - Part 11: FFT from Scratch</a></b> - 2026-06-01<br>
+The DFT definition, Cooley-Tukey radix-2 FFT algorithm, bit-reversal permutation, butterfly operations, and windowing functions - all implemented in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-13-denormals.htm">DSP - Part 13: Denormal Numbers and the 1000x Slowdown</a></b> - 2026-06-01<br>
+What IEEE 754 subnormal numbers are, why they cause catastrophic slowdowns in real-time DSP, and how to eliminate them with CPU flags and guard techniques.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/libpd-02-building.htm">libpd - Part 2: Building libpd from Source</a></b> - 2026-06-01<br>
+How to clone, configure, and build libpd as a static or shared library and integrate it into a CMake project.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/elektron-14-mnm-perc.htm">Elektron Synthesis - Part 14: Monomachine Percussion Toolbox</a></b> - 2026-06-01<br>
 Recreating the Monomachine's Percussion Toolbox synthesis engine in Pure Data: the MNM's built-in drum synthesis voices for bass drum, snare, and hi-hat, how they differ from the Machinedrum TRX approach, and integrating drum voices into a melodic synthesiser's track architecture.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-08-md-pi.htm">Elektron Synthesis - Part 8: Machinedrum PI — Pitched Instruments</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/pico-08-usb-midi.htm">Pico — Part 8: USB MIDI with TinyUSB</a></b> - 2026-06-01<br>
+Presenting the Pico as a USB MIDI class device using TinyUSB — tusb_config.h, reading MIDI packets, sending note events to the host, and the 4-byte USB MIDI packet format.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/elektron-08-md-pi.htm">Elektron Synthesis - Part 8: Machinedrum PI — Pitched Instruments</a></b> - 2026-06-01<br>
 Recreating the Machinedrum PI (Pitched Instruments) machines in Pure Data: physical modelling approaches for clave (struck metal rod), maracas (particle noise), bongos/congas (membrane resonance model), and the general PI architecture using Karplus-Strong and resonator-bank synthesis.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-11-mnm-fmplus.htm">Elektron Synthesis - Part 11: Monomachine FM+ Extended FM Engine</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/pico-04-render-loop.htm">RPIPicoDSP - Part 4: The Audio Render Loop on Bare Metal</a></b> - 2026-06-01<br>
+DMA interrupt-driven audio, dedicating core 1 to the real-time audio path, avoiding malloc in the ISR, and a complete dual-core setup with USB serial on core 0 and DMA audio on core 1.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/elektron-11-mnm-fmplus.htm">Elektron Synthesis - Part 11: Monomachine FM+ Extended FM Engine</a></b> - 2026-06-01<br>
 Recreating the Monomachine FM+ engine in Pure Data: extended FM synthesis beyond 2-operator VO, including feedback operator chains, algorithm selection between parallel and series operator topologies, and the FM+ parameter set for bass, brass, and complex evolving pads.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-06-md-efm.htm">Elektron Synthesis - Part 6: Machinedrum EFM — FM Drum Synthesis</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/dsp-02-audio-callback.htm">DSP - Part 2: The Audio Callback Model</a></b> - 2026-06-01<br>
+How real-time audio processing works through callbacks, why the audio thread has strict rules, and how ring buffers bridge real-time and non-real-time code.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/pico-02-audio-output.htm">RPIPicoDSP - Part 2: Audio Output on the Pico</a></b> - 2026-06-01<br>
+Three audio output paths - PWM, I2S via PIO, and the I2S interleaved frame format - with a complete DMA-double-buffered I2S example that outputs a 440 Hz sine wave.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/libpd-03-init-patch.htm">libpd - Part 3: Initialising libpd & Loading a Patch</a></b> - 2026-06-01<br>
+How to initialise the libpd engine, open a Pd patch, send initial messages, and manage multiple instances.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/algo-03-random-walks-brownian-motion.htm">Algorithmic Composition - Part 3: Random Walks and Brownian Motion</a></b> - 2026-06-01<br>
+Why pure random pitch selection is musically useless, how Brownian motion models melodic contour as a walk through pitch space, step size and register boundaries as musical parameters, and fractional Brownian motion with the Hurst exponent for controlling phrase shape.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/algo-05-harmony-fundamentals.htm">Algorithmic Composition - Part 5: Harmony Fundamentals</a></b> - 2026-06-01<br>
+Why certain intervals sound stable or tense, the overtone series as the physical basis of harmony, triads as stacked scale degrees, and tonic, subdominant, and dominant function — the data structures that chord progression and voice leading articles build on.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/elektron-06-md-efm.htm">Elektron Synthesis - Part 6: Machinedrum EFM — FM Drum Synthesis</a></b> - 2026-06-01<br>
 Recreating the Machinedrum's EFM (Extended FM) machines in Pure Data: 2-operator FM synthesis applied to bass drum, snare, hi-hat, and cymbal voices. Operator algorithms, index-to-timbre mapping, and how FM produces percussive envelopes naturally through index decay.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-02-md-trx-bd.htm">Elektron Synthesis - Part 2: Machinedrum TRX-BD Bass Drum</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/drums-07-machine.htm">Drums - Part 7: Assembling a Drum Machine in Pure Data and Lua</a></b> - 2026-06-01<br>
+Combining the four drum voices into a sequenced drum machine: a Pd step sequencer with pattern storage, per-step velocity, tempo sync, a Lua UI with step buttons and pattern banks, the simple drum machine patch as a starting point, and a minimal techno pattern to verify the whole system.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="lua.htm">lua</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/dsp-08-envelope-follower.htm">DSP - Part 8: Envelope Follower & Parameter Smoothing</a></b> - 2026-06-01<br>
+Peak and RMS envelope detection, attack/release timing with exponential coefficients, and one-pole smoothers to eliminate zipper noise on parameter changes.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-10-gate.htm">DSP - Part 10: Dynamics: Gate</a></b> - 2026-06-01<br>
+Implementing a noise gate in C: threshold detection, hold counter, hysteresis, and integrating the gate into a signal chain with a compressor.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/elektron-02-md-trx-bd.htm">Elektron Synthesis - Part 2: Machinedrum TRX-BD Bass Drum</a></b> - 2026-06-01<br>
 Reverse-engineering and recreating the Machinedrum TRX-BD bass drum machine in Pure Data: two exponentially-swept oscillators, a transient oscillator for click, filtered noise burst, waveshaping distortion, and parameter-lock-ready receivers for all eight track parameters.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-15-fx.htm">Elektron Synthesis - Part 15: Machinedrum and Monomachine Effects in Pd</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/algo-06-chord-progressions.htm">Algorithmic Composition - Part 6: Generating Chord Progressions</a></b> - 2026-06-01<br>
+A Markov chain over harmonic function (T, S, D) rather than individual chords, mapping functions to chord degree choices, generating 4-bar progressions, and modal interchange for colour without key change.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/pico-07-midi-uart.htm">Pico — Part 7: UART MIDI Input</a></b> - 2026-06-01<br>
+UART MIDI at 31250 baud on the RP2040 — IRQ handler, MIDI byte-stream state machine with running status, and a lock-free ring buffer to the audio core.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/dsp-21-pd-external.htm">DSP - Part 21: Writing a Pure Data External</a></b> - 2026-06-01<br>
+Pure Data external architecture using m_pd.h: object structs, setup() convention, inlets and outlets, signal processing with perform() and dsp_add, a biquad~ object, and a control-rate abstraction.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/elektron-15-fx.htm">Elektron Synthesis - Part 15: Machinedrum and Monomachine Effects in Pd</a></b> - 2026-06-01<br>
 Recreating the effects processing of the Elektron Machinedrum and Monomachine in Pure Data: MD track compression, global delay and reverb, MNM per-voice chorus/flanger/delay/EQ, the MNM's stereo effects bus, and how to route all voices through a shared effects chain with send/return architecture.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-04-md-trx-cy.htm">Elektron Synthesis - Part 4: Machinedrum TRX-CY Cymbal and TRX-CB Cowbell</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/libpd-01-what-is-libpd.htm">libpd - Part 1: What Is libpd?</a></b> - 2026-06-01<br>
+An introduction to libpd, the embeddable version of the Pure Data DSP engine, and the C API surface it exposes.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/elektron-04-md-trx-cy.htm">Elektron Synthesis - Part 4: Machinedrum TRX-CY Cymbal and TRX-CB Cowbell</a></b> - 2026-06-01<br>
 Recreating the Machinedrum TRX-CY cymbal and TRX-CB cowbell in Pure Data: the CY's dense inharmonic oscillator bank with ring modulation and very long exponential decay, and the CB's classic two-oscillator resonant bandpass cowbell architecture from the TR-808.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-13-mnm-digipro.htm">Elektron Synthesis - Part 13: Monomachine DigiPro Engine</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/elektron-13-mnm-digipro.htm">Elektron Synthesis - Part 13: Monomachine DigiPro Engine</a></b> - 2026-06-01<br>
 Recreating the Monomachine DigiPro synthesis engine in Pure Data: phase distortion synthesis (Casio CZ-style), wavetable scanning, and the DigiPro machine variants (DP SIN, DP TRI, DP SAW, DP SQR, DP TBLX). How phase shaping transforms a sine wave into complex timbres.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-12-mnm-superwave.htm">Elektron Synthesis - Part 12: Monomachine SuperWave Engine</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/elektron-12-mnm-superwave.htm">Elektron Synthesis - Part 12: Monomachine SuperWave Engine</a></b> - 2026-06-01<br>
 Recreating the Monomachine SuperWave engine in Pure Data: multiple detuned oscillators generating a super-saw or super-square sound, detune spread control, mix between centre and edge oscillators, and how to build a dense unison synthesiser voice from [osc~] instances with shared filter and amplitude envelope.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-09-mnm-sid.htm">Elektron Synthesis - Part 9: Monomachine SID Engine</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/dsp-12-spectral-processing.htm">DSP - Part 12: Spectral Processing with FFT</a></b> - 2026-06-01<br>
+Overlap-add block processing, spectral gate, spectral freeze, fast convolution, and phase vocoder loop structure - all implemented in C using the FFT from Part 11.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/libpd-10-vst3.htm">libpd - Part 10: libpd Inside a VST3 Plugin</a></b> - 2026-06-01<br>
+How to embed libpd as the DSP engine of a VST3 plugin, mapping parameter changes to Pd messages and processing audio through IAudioProcessor.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/libpd-07-arrays.htm">libpd - Part 7: Arrays & Tables</a></b> - 2026-06-01<br>
+How to read and write Pd array and table data from C using libpd, and how to use tables as wavetables for oscillator lookup.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/drums-04-hihat.htm">Drums - Part 4: Hi-Hat Synthesis in Pure Data</a></b> - 2026-06-01<br>
+Building the classic metallic hi-hat in Pure Data: six detuned square wave oscillators, SID-style noise blending, three-band filter split with independent decay envelopes, open/closed hat via decay time, and an optional flanger effect.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/dsp-23-putting-together.htm">DSP - Part 23: Putting It All Together — a Complete Monophonic Synthesiser</a></b> - 2026-06-01<br>
+A complete playable monophonic synth under 500 lines: wavetable oscillator, biquad filter, ADSR envelope, ALSA MIDI input, and SDL2 audio output, with a series retrospective.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-07-filter-cookbook-2.htm">DSP - Part 7: Filter Cookbook: Bandpass, Notch & Shelves</a></b> - 2026-06-01<br>
+Biquad coefficients for bandpass, notch, peaking EQ, low shelf, and high shelf filters, plus cascading sections for a parametric EQ.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/pico-09-multicore.htm">Pico — Part 9: Multicore Communication</a></b> - 2026-06-01<br>
+RP2040 SIO FIFO, hardware spinlocks, and the double-buffer swap pattern for passing parameter updates from core 0 to the audio engine on core 1 without glitches.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/algo-08-l-systems.htm">Algorithmic Composition - Part 8: L-Systems</a></b> - 2026-06-01<br>
+Lindenmayer systems as production grammars for melody generation, mapping symbols to notes and directions, turtle-graphics interpretation of symbol strings, and self-similar musical structure at multiple time scales.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/pico-06-fm-synth.htm">Pico — Part 6: 4-Operator FM Synthesis</a></b> - 2026-06-01<br>
+A 4-operator FM engine in C at 44.1 kHz on the RP2040 — operator structs, ADSR envelopes in fixed-point, the algorithm graph, and a measured CPU budget.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/elektron-09-mnm-sid.htm">Elektron Synthesis - Part 9: Monomachine SID Engine</a></b> - 2026-06-01<br>
 Recreating the Monomachine's SID synthesis engine in Pure Data: emulating the MOS6581/8580 SID chip from the Commodore 64, including triangle/sawtooth/square/noise waveforms, pulse width modulation, ring modulation, hard sync, and the SID's characteristic multimode resonant filter.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-07-md-e12.htm">Elektron Synthesis - Part 7: Machinedrum E12 — Vector Emulation Machines</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/dsp-20-sdl2-audio.htm">DSP - Part 20: SDL2 as an Audio Backend</a></b> - 2026-06-01<br>
+Using SDL2 for cross-platform audio: SDL_AudioSpec, callback model, SDL_OpenAudioDevice, device enumeration, and integrating earlier DSP building blocks into a working demo.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-03-oscillators.htm">DSP - Part 3: Oscillators: Basic Waveforms</a></b> - 2026-06-01<br>
+Implementing sine, square, sawtooth, and triangle oscillators in C using the phase accumulator pattern.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-05-biquad.htm">DSP - Part 5: Biquad Filters</a></b> - 2026-06-01<br>
+The biquad as the universal second-order IIR filter: Direct Form I, Direct Form II transposed, and coefficient storage in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/libpd-12-cpp-interop.htm">libpd in C++ Applications</a></b> - 2026-06-01<br>
+How to use libpd cleanly from C++ — RAII wrappers, exception safety, integrating with C++ audio frameworks, and embedding Pure Data as a typed DSP module in a larger C++ codebase.<br>
+<i><a href="libpd.htm">libpd</a>, <a href="cpp.htm">cpp</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="dsp.htm">dsp</a>, <a href="raii.htm">raii</a></i></p>
+<p><b><a href="art/2026/dsp-19-midi-linux.htm">DSP - Part 19: MIDI I/O on Linux with ALSA</a></b> - 2026-06-01<br>
+Reading and writing MIDI on Linux using ALSA raw MIDI devices and the ALSA sequencer: opening devices, polling, the sequencer client/port model, and programmatic port connection.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="linux.htm">linux</a></i></p>
+<p><b><a href="art/2026/algo-07-voice-leading.htm">Algorithmic Composition - Part 7: Voice Leading</a></b> - 2026-06-01<br>
+Why chord progressions need smooth voice movement, the nearest-neighbour assignment algorithm for three-voice voice leading, detecting and avoiding parallel fifths and octaves, and a complete Lua implementation.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/elektron-07-md-e12.htm">Elektron Synthesis - Part 7: Machinedrum E12 — Vector Emulation Machines</a></b> - 2026-06-01<br>
 Understanding and recreating the Machinedrum E12 machines in Pure Data: how E12 uses a vector/interpolation model between sampled spectral snapshots to emulate classic drum machines, the E12 parameter set, and a Pd wavetable implementation.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-10-mnm-vo.htm">Elektron Synthesis - Part 10: Monomachine VO — Virtual Operator FM</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/algo-04-markov-chains.htm">Algorithmic Composition - Part 4: Markov Chains for Melody</a></b> - 2026-06-01<br>
+Encoding musical tendency as a first-order Markov transition matrix over scale degrees, sampling from a probability distribution in Lua, building a rhythm chain, and combining pitch and rhythm into a complete melody generator.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/algo-11-putting-it-together.htm">Algorithmic Composition - Part 11: Putting It All Together</a></b> - 2026-06-01<br>
+A complete self-generating Krell-style patch in Pure Data driven by Lua scripts, wiring the Brownian melody generator, Markov chord progression, voice leading, Euclidean drum patterns, and the Monomachine synthesis engines from Series 10 into a single autonomous system.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/algo-01-what-is-algorithmic-composition.htm">Algorithmic Composition - Part 1: What Is Algorithmic Composition?</a></b> - 2026-06-01<br>
+What it means to compose rules rather than notes, the spectrum from stochastic to deterministic, and how algorithmic composition connects to the synthesis engines built in Series 9 and 10.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/dsp-17-granular.htm">DSP - Part 17: Granular Synthesis</a></b> - 2026-06-01<br>
+Granular synthesis from scratch: grain model, Hann envelope, scatter and density, pitch randomisation, fixed-pool grain scheduler in C, time-stretch, and pitch-shift.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/libpd-06-receive-messages.htm">libpd - Part 6: Receiving Messages from Pd</a></b> - 2026-06-01<br>
+How to set up libpd hook callbacks to receive bangs, floats, symbols, lists, and print output from a running Pd patch.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/dsp-15-wavetable.htm">DSP - Part 15: Wavetable Synthesis</a></b> - 2026-06-01<br>
+Wavetable synthesis from scratch: single-cycle tables, linear and cubic interpolation, band-limited multi-octave tables, and morphing between waveforms in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/libpd-09-ofxpd.htm">libpd - Part 9: libpd in openFrameworks: ofxPd</a></b> - 2026-06-01<br>
+How to use the ofxPd addon to embed libpd inside an openFrameworks application, route audio, and exchange messages.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/libpd-04-render-loop.htm">libpd - Part 4: The Audio Render Loop</a></b> - 2026-06-01<br>
+How to integrate libpd_process_float into a platform audio callback, handle block-size alignment, and structure the render loop correctly.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/drums-03-snare.htm">Drums - Part 3: Snare Drum Synthesis in Pure Data</a></b> - 2026-06-01<br>
+Building a parametric snare in Pure Data: two sine oscillators for the body tone, SID-style noise through dual LPF/HPF filter envelopes, a resonant body filter, dual short delay lines for snare rattle, and two-stage distortion.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/algo-10-euclidean-rhythms.htm">Algorithmic Composition - Part 10: Euclidean Rhythms</a></b> - 2026-06-01<br>
+Bjorklund's algorithm for distributing k beats across n slots as evenly as possible, the surprising match to world-music rhythmic patterns, generating polyrhythms from coprime period lengths, and integrating Euclidean patterns with the drums-07 sequencer in Lua.<br>
+<i><a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="music-theory.htm">music-theory</a>, <a href="generative.htm">generative</a></i></p>
+<p><b><a href="art/2026/dsp-24-cpp-pd-externals.htm">C++ PD Externals: Porting DSP Classes to Pure Data</a></b> - 2026-06-01<br>
+How to write Pure Data externals in C++ — wrapping a C++ DSP class with a thin m_pd.h shim, managing object lifetime with placement new, and porting a VST-style processor to a Pd object.<br>
+<i><a href="dsp.htm">dsp</a>, <a href="puredata.htm">puredata</a>, <a href="cpp.htm">cpp</a>, <a href="externals.htm">externals</a>, <a href="vst.htm">vst</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/drums-01-architecture.htm">Drums - Part 1: Electronic Drum Synthesis — Architecture and Approach</a></b> - 2026-06-01<br>
+How classic electronic drum machines synthesise their sounds from first principles: tonal oscillators with pitch sweeps, filtered noise, transient clicks, and the Prok Drums extend-decay envelope pattern. Building blocks for every voice in the series.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/pico-05-porting-dsp.htm">Pico — Part 5: Porting DSP Code from the Desktop</a></b> - 2026-06-01<br>
+What changes when you move a biquad filter and sine oscillator from a desktop float to the RP2040's soft-float Cortex-M0+, and how to measure exactly what you spent.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/dsp-16-fm-synthesis.htm">DSP - Part 16: FM Synthesis</a></b> - 2026-06-01<br>
+FM synthesis operator model, modulation index and sidebands, two-operator pairs, DX7-style algorithms, six-operator engine, FM envelopes, and worked timbres in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-18-midi-protocol.htm">DSP - Part 18: MIDI 1.0 Protocol and Parsing</a></b> - 2026-06-01<br>
+MIDI 1.0 wire format, status and data bytes, running status, all channel and system messages, and a complete byte-stream state machine in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/elektron-10-mnm-vo.htm">Elektron Synthesis - Part 10: Monomachine VO — Virtual Operator FM</a></b> - 2026-06-01<br>
 Recreating the Monomachine VO (Virtual Operator) FM synthesis engine in Pure Data: 2-operator FM with carrier/modulator ratio, feedback FM, ADSR index envelopes, the four VO machine variants (VO SIN, VO TRP, VO EA, VO EB), and musical parameter mapping for bass, lead, and keyboard sounds.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
-<p><b><a href="art/2026/elektron-01-overview.htm">Elektron Synthesis - Part 1: Machinedrum and Monomachine Architecture</a></b> - 2026-01-01<br>
+<p><b><a href="art/2026/pico-10-synth-voice.htm">Pico — Part 10: Complete Synthesiser Voice</a></b> - 2026-06-01<br>
+Series capstone — a complete monophonic synthesiser on the RP2040 with wavetable oscillator, resonant lowpass filter, dual ADSR envelopes, USB MIDI input, and I2S audio output.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/dsp-14-sample-playback.htm">DSP - Part 14: Sample Playback</a></b> - 2026-06-01<br>
+Loading PCM from a WAV file in C, float buffer storage, one-shot and looping playback, linear and cubic Hermite interpolation, and pitch shifting via playback rate.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/libpd-11-headless.htm">libpd - Part 11: Headless libpd</a></b> - 2026-06-01<br>
+How to run libpd without a GUI or audio device - offline rendering to WAV, server-side audio generation, and automated testing of Pd patches from C.<br>
+<i><a href="c.htm">c</a>, <a href="audio.htm">audio</a>, <a href="puredata.htm">puredata</a></i></p>
+<p><b><a href="art/2026/dsp-09-compressor.htm">DSP - Part 9: Dynamics: Compressor</a></b> - 2026-06-01<br>
+Implementing a feed-forward mono compressor in C: level detection, gain computer, attack/release smoothing, make-up gain, and stereo linking.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/elektron-01-overview.htm">Elektron Synthesis - Part 1: Machinedrum and Monomachine Architecture</a></b> - 2026-06-01<br>
 An engineering overview of the Elektron Machinedrum and Monomachine synthesisers: their machine-type architectures, synthesis families (TRX, EFM, E12, PI; GND, SFX, VO, DIGI), how parameter-per-step locks work, and the approach for recreating each machine type as a Pd patch or external.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="elektron.htm">elektron</a></i></p>
+<p><b><a href="art/2026/dsp-06-filter-cookbook-1.htm">DSP - Part 6: Filter Cookbook: Lowpass, Highpass & Resonance</a></b> - 2026-06-01<br>
+Deriving biquad coefficients for lowpass and highpass filters from the Audio EQ Cookbook, with resonance and worked C code.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
 
 <!-- footer begin -->
 </body>

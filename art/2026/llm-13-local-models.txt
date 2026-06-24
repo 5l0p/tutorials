@@ -1,5 +1,5 @@
 LLM - Part 13: Local Models with llama.cpp
-2026-06-22
+2026-06-01
 
 
 Every article in this series has called https://api.openai.com. That endpoint

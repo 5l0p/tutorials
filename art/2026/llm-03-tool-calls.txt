@@ -1,5 +1,5 @@
 LLM - Part 3: Tool Calls (Function Calling)
-2026-06-12
+2026-06-01
 
 
 Tool calling - also called function calling - is the mechanism that transforms a language

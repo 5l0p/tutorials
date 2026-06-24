@@ -1,5 +1,5 @@
 Containers - Part 1: What Is a Container?
-2026-06-09
+2026-06-01
 
 
 When you run docker run nginx, nothing magic happens. The kernel does not

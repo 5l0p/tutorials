@@ -1,0 +1,269 @@
+Go - Part 11: Modules & Dependencies
+2026-06-01
+
+
+Before Go 1.11, Go projects lived in a single global $GOPATH workspace where
+all dependencies were fetched by path with no version pinning. This was workable for small
+projects but a maintenance nightmare for anything larger. Modules replaced GOPATH as the
+standard dependency mechanism in Go 1.11 (2018) and became the default in Go 1.16 (2021).
+If you have used NuGet in C# or cargo in Rust, modules will feel familiar; if you are
+coming purely from C, this is the package manager you never had.
+
+
+What You Will Learn
+
+
+The structure of go.mod: module path, Go version, require, exclude, replace
+How go.sum works and why you must commit it
+Adding and upgrading dependencies with go get
+Minimal Version Selection: how Go chooses dependency versions
+Major version paths (/v2+) and why they exist
+The replace directive for local development and fork patching
+How to configure private modules with GOPRIVATE
+
+
+The go.mod File
+
+
+Every Go module has a go.mod file at its root. This file declares the module
+path, the minimum Go version, and the module's direct dependencies:
+
+
+
+module github.com/acme/myapp
+
+go 1.22
+
+require (
+    github.com/gorilla/mux v1.8.1
+    golang.org/x/crypto v0.23.0
+)
+
+
+
+The module path is a unique identifier for your module. By convention it is the URL of
+the repository hosting the code. For a private project that will never be published, it
+can be any string - but using a domain you control prevents collisions.
+
+
+
+Creating a new module is one command:
+
+
+
+mkdir myproject
+cd myproject
+go mod init github.com/acme/myproject
+
+
+
+This is analogous to dotnet new creating a .csproj, or
+cargo new creating a Cargo.toml. In C there is no equivalent -
+you manage library paths, linker flags, and includes manually or with a build system like
+CMake.
+
+
+The go.sum File
+
+
+Alongside go.mod, the module system maintains go.sum - a file of
+cryptographic hashes (SHA-256) of each dependency version's content and its module zip.
+The go command verifies these hashes on every build. This prevents
+"dependency substitution" attacks where a malicious actor changes a package's content
+after it has been tagged.
+
+
+
+# Example go.sum entries:
+github.com/gorilla/mux v1.8.1 h1:TuBL1KLATiKgcZnzmkUN+OyZbiEvtolZGYK2cVstDZo=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+
+
+
+Commit both go.mod and go.sum to version control. The
+go.sum file is not meant to be edited by hand - the tooling maintains it.
+This is similar to NuGet's packages.lock.json in locked mode, or npm's
+package-lock.json.
+
+
+Adding and Updating Dependencies
+
+
+Add a dependency with go get:
+
+
+
+# Add a specific version
+go get github.com/gorilla/mux@v1.8.1
+
+# Add the latest tagged release
+go get github.com/gorilla/mux@latest
+
+# Add the latest commit on a branch (useful during development)
+go get github.com/gorilla/mux@main
+
+
+
+This updates go.mod and go.sum immediately. In C# the equivalent
+is dotnet add package gorilla.mux --version 1.8.1.
+
+
+
+Remove unused dependencies and update go.mod and go.sum to
+reflect the actual transitive dependencies needed:
+
+
+
+go mod tidy
+
+
+
+Run go mod tidy before every commit. It adds missing modules and removes ones
+that are no longer needed. Most CI pipelines verify that go mod tidy produces
+no changes - if it does, the check fails.
+
+
+Semantic Versioning
+
+
+Go modules follow semantic versioning: v1.2.3 means major version 1, minor
+version 2, patch version 3. The go command applies the Minimum Version Selection
+(MVS) algorithm rather than the "latest compatible" algorithm used by npm or cargo:
+
+
+
+Go selects the minimum version of each dependency that satisfies all requirements in the dependency graph.
+Upgrades only happen explicitly via go get or go get -u.
+This produces reproducible builds: the same go.mod always selects the same versions on any machine.
+
+
+
+In NuGet, resolution can choose different versions on different machines if not pinned.
+Go's MVS avoids this class of "works on my machine" bugs.
+
+
+Major Version Paths (v2+)
+
+
+Go's module system has an unusual rule: when a module releases v2 or higher (a breaking
+change), the module path must include the major version suffix:
+
+
+
+# v1 import path:
+import "github.com/acme/mylib"
+
+# v2 import path (different module path):
+import "github.com/acme/mylib/v2"
+
+
+
+And the go.mod of the library at v2 declares:
+
+
+
+module github.com/acme/mylib/v2
+
+
+
+This means v1 and v2 of the same library can be used simultaneously in the same binary -
+they are treated as separate modules. This prevents the "dependency hell" scenario where
+two dependencies require incompatible major versions of a third library.
+
+
+
+This is a significant difference from NuGet, where you can only have one version of an
+assembly loaded at a time. Go's approach is more complex to understand but avoids a
+large class of build failures.
+
+
+The replace Directive
+
+
+The replace directive in go.mod substitutes one module version
+for another. Common uses:
+
+
+
+Point to a local copy of a dependency while developing a fix.
+Use a fork of a dependency.
+Work around a broken release.
+
+
+
+// go.mod
+replace github.com/upstream/lib = ../local-lib-fork
+
+// Or pin to a specific local path:
+replace github.com/upstream/lib v1.2.3 = /home/user/patches/lib
+
+
+
+replace only affects the top-level module - it does not propagate to
+consumers of your library. If you publish a library with a replace directive,
+downstream users are unaffected. This is intentional: replace is a local development tool,
+not a distribution mechanism. For multi-module development without publishing, use Go
+Workspaces (covered in the workspaces article).
+
+
+Private Modules
+
+
+By default, go get fetches modules via the public proxy at
+proxy.golang.org. For private repositories, set the GONOSUMCHECK
+and GONOSUMDB environment variables, or configure GOPRIVATE:
+
+
+
+# Tell the go command to bypass the proxy and checksum DB for private repos
+GOPRIVATE=github.com/acme/* go get github.com/acme/internal-lib
+
+
+
+This makes the go command fetch directly from the version control system using your
+existing credentials. In a CI environment you typically set GOPRIVATE as an
+environment variable and configure SSH keys or token authentication to the private
+repository.
+
+
+Useful Module Commands
+
+
+go mod init github.com/user/project  # initialise a new module
+go mod tidy                           # add missing, remove unused
+go mod verify                         # check that cached modules match go.sum
+go mod download                       # download modules to local cache
+go list -m all                        # list all modules in the dependency graph
+go mod graph                          # print dependency graph (useful with dot)
+go mod why github.com/some/module     # explain why a module is needed
+
+
+Summary
+
+
+go.mod declares your module path, Go version, and direct
+dependencies. go.sum records the cryptographic hashes of every
+dependency version — commit it. Go uses Minimal Version Selection: it picks
+the lowest version that satisfies all constraints, making builds reproducible.
+Major version changes break the import path (module/v2), so old
+and new major versions can coexist. Use replace during development
+to point a dependency at a local directory; remove it before committing.
+
+
+Further Reading
+
+
+Go Modules Reference - golang.org
+Using Go Modules - The Go Blog
+Minimal Version Selection - Russ Cox
+go.mod file reference - golang.org
+
+
+See Also
+
+
+Vendoring
+Building & Cross-Compilation
+Go Workspaces
+Formatting, Linting & Tooling
+

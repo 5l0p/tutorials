@@ -1,0 +1,430 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Go - Part 2: Syntax & Types</title>
+    <meta name="description" content="Go's variable declarations, constants, zero values, and built-in types explained for developers coming from C or C#.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="go-02-syntax-types.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../go.htm">go</a></i>
+        <h2>Go - Part 2: Syntax & Types</h2>
+        <p>
+Go's syntax looks superficially like C but breaks several habits built up over decades of
+C and C# programming. The declaration syntax is reversed, semicolons are mostly invisible,
+and the type system has a few surprises - notably zero values and untyped constants. This
+article works through the fundamentals so that the rest of the series can focus on higher-level
+ideas without stopping to explain the basics.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Go's variable declarations: <code>var</code>, short <code>:=</code>, and when each is appropriate</li>
+<li>Zero values: every declared variable has a defined initial value, unlike C</li>
+<li>Built-in types: integers, floats, complex, bool, byte, rune, string</li>
+<li>Strings and runes: Go strings are UTF-8 byte slices; <code>rune</code> is an alias for <code>int32</code></li>
+<li>Constants and untyped constants: how Go's constant system differs from C and C#</li>
+<li>Type aliases versus defined types and the distinction between them</li>
+<li>Multiple return values and the blank identifier</li>
+</ul>
+
+<h3>Variable Declarations</h3>
+
+<p>
+In C you write the type first: <code>int x = 5;</code>. In Go the type comes after the
+name, and the semicolon is omitted (the lexer inserts them automatically):
+</p>
+
+<pre>
+var x int = 5
+var name string = "Alice"
+var active bool = true
+</pre>
+
+<p>
+When the compiler can infer the type from the right-hand side, you can drop it:
+</p>
+
+<pre>
+var x = 5        // x is int
+var name = "Alice" // name is string
+</pre>
+
+<p>
+Inside a function body you can use the short declaration operator <code>:=</code>, which
+declares and assigns in one step:
+</p>
+
+<pre>
+x := 5
+name := "Alice"
+active := true
+</pre>
+
+<p>
+<code>:=</code> is only valid inside functions. Package-level variables must use <code>var</code>.
+If you are coming from C#, the <code>:=</code> operator looks like C#'s <code>var</code>
+keyword - but there is a key difference: in C# <code>var x = 5;</code> is syntactic sugar
+for <code>int x = 5;</code> and the name <code>var</code> is a hint to the reader. In Go,
+<code>:=</code> also <em>declares</em> the variable; re-using <code>:=</code> on an
+already-declared name is only valid if at least one name on the left is new.
+</p>
+
+<pre>
+x := 5
+x, y := 10, 20  // OK: y is new
+// x, y := 30, 40  // compile error: no new variables on left side
+</pre>
+
+<p>
+In C you declare variables at the top of a block (in C89 strictly; C99 and later relaxed
+this). In Go you declare them wherever they are first needed, like C99 or C#.
+</p>
+
+<h3>Zero Values</h3>
+
+<p>
+One of Go's most useful rules: every variable is initialised to its <b>zero value</b> if
+you do not provide an explicit initialiser. There is no equivalent of C's uninitialised
+stack variable containing garbage.
+</p>
+
+<pre>
+var i int     // 0
+var f float64 // 0.0
+var b bool    // false
+var s string  // ""  (empty string)
+var p *int    // nil
+</pre>
+
+<p>
+This extends to structs, slices, maps, and channels: struct fields are zero-valued
+recursively, a nil slice has length and capacity zero (and can be appended to safely), a
+nil map panics on write but returns zero on read. Zero values make Go programs easier to
+reason about because you always know what an uninitialised variable contains.
+</p>
+
+<p>
+C# value types also have zero values, but reference types default to <code>null</code> and
+accessing them throws a <code>NullReferenceException</code>. Go pointers, interfaces,
+slices, and maps are nil when unset, but the language idioms steer you toward checking
+before use.
+</p>
+
+<h3>Basic Types</h3>
+
+<p>
+Go's built-in types map closely to C's, but the names are different and their sizes are
+defined by the language, not the platform:
+</p>
+
+<pre>
+// Integer types - explicit sizes
+int8, int16, int32, int64
+uint8, uint16, uint32, uint64
+
+// Platform-sized integer (pointer width)
+int, uint, uintptr
+
+// Floating point
+float32, float64
+
+// Complex numbers (rarely used)
+complex64, complex128
+
+// Boolean
+bool  // true or false only - no implicit int conversion
+
+// Text
+byte   // alias for uint8
+rune   // alias for int32, represents a Unicode code point
+string // immutable sequence of bytes (not characters)
+</pre>
+
+<p>
+In C, <code>int</code> is typically 32 bits on 32-bit platforms and 32 bits on 64-bit
+platforms (platform-defined). In Go, <code>int</code> is 32 bits on a 32-bit platform and
+64 bits on a 64-bit platform - similar behaviour but guaranteed by the specification.
+</p>
+
+<p>
+Importantly, Go has <b>no implicit numeric conversions</b>. In C you can assign an
+<code>int</code> to a <code>long</code> silently. In Go you must be explicit:
+</p>
+
+<pre>
+var i int = 42
+var f float64 = float64(i)  // must cast explicitly
+var u uint = uint(f)
+</pre>
+
+<p>
+This eliminates a whole class of silent truncation bugs common in C code.
+</p>
+
+<h3>Strings and Runes</h3>
+
+<p>
+A Go <code>string</code> is an immutable sequence of bytes. It is not a
+<code>char*</code> (C) or a <code>char[]</code>; it is more like a read-only byte slice.
+String literals are UTF-8 encoded. Indexing a string gives you a <code>byte</code>, not a
+character:
+</p>
+
+<pre>
+s := "hello"
+fmt.Println(s[0]) // 104 (ASCII 'h')
+fmt.Println(len(s)) // 5
+</pre>
+
+<p>
+To work with Unicode code points, use a <code>rune</code> (int32) or range over the string:
+</p>
+
+<pre>
+s := "héllo"
+for i, r := range s {
+    fmt.Printf("index %d: rune %c (%d)\n", i, r, r)
+}
+// Note: byte index jumps by 2 at the accented 'é' (2-byte UTF-8)
+</pre>
+
+<p>
+C strings are null-terminated byte arrays; you manage their memory manually.
+C# strings are immutable Unicode objects (UTF-16 internally). Go strings are immutable
+byte sequences (UTF-8) - close to C but memory-managed, and closer to what you actually
+want for modern network code.
+</p>
+
+<h3>Constants</h3>
+
+<p>
+Go constants are declared with <code>const</code> and can be typed or <em>untyped</em>.
+Untyped constants have a "kind" (integer, floating-point, complex, string, boolean) and
+can be used in expressions without explicit conversion:
+</p>
+
+<pre>
+const MaxSize = 1024        // untyped integer constant
+const Pi = 3.14159          // untyped floating-point constant
+const Greeting = "hello"    // untyped string constant
+
+const TypedMax int32 = 1024 // typed constant
+
+var x float64 = Pi * 2.0    // works - Pi is untyped, adapts to float64
+var y int = MaxSize          // works - MaxSize adapts to int
+</pre>
+
+<p>
+Untyped constants are resolved at compile time to whatever precision is needed. This
+prevents the C problem of <code>#define MAX 1024</code> producing wrong results when
+used in a context that triggers integer promotion.
+</p>
+
+<p>
+<code>iota</code> is a constant generator that resets to 0 at each <code>const</code>
+block and increments by 1 for each constant in the block. It is Go's equivalent of C's
+<code>enum</code>:
+</p>
+
+<pre>
+type Direction int
+
+const (
+    North Direction = iota // 0
+    East                   // 1
+    South                  // 2
+    West                   // 3
+)
+
+// Can be used with bit shifts for flag enums:
+type Permission uint
+
+const (
+    Read    Permission = 1 &lt;&lt; iota // 1
+    Write                           // 2
+    Execute                         // 4
+)
+</pre>
+
+<h3>Type Aliases and Defined Types</h3>
+
+<p>
+Go lets you create a new named type from an existing one. This is stronger than a C
+<code>typedef</code> - the new type does not inherit the methods of the underlying type,
+and you cannot mix them without an explicit conversion:
+</p>
+
+<pre>
+type Celsius float64
+type Fahrenheit float64
+
+func CToF(c Celsius) Fahrenheit {
+    return Fahrenheit(c*9/5 + 32)
+}
+
+// This would be a compile error:
+// var t Celsius = 100.0
+// var f Fahrenheit = t  // cannot use Celsius as Fahrenheit
+</pre>
+
+<p>
+This is a safety feature C lacks entirely: you cannot accidentally pass a temperature in
+Celsius to a function expecting Fahrenheit. In C#, a <code>struct</code> wrapper achieves
+something similar but with more ceremony.
+</p>
+
+<p>
+A <b>type alias</b> (<code>type Celsius = float64</code>) creates an exact synonym -
+they are interchangeable. Aliases are used primarily for gradual API migration.
+</p>
+
+<h3>Multiple Return Values</h3>
+
+<p>
+Go functions can return multiple values. This is used extensively for the
+<code>(result, error)</code> pattern described in the error-handling article, but it also
+replaces C's output-pointer parameters:
+</p>
+
+<pre>
+// In C you'd pass a pointer: int divide(int a, int b, int *result)
+// In Go:
+func divide(a, b int) (int, error) {
+    if b == 0 {
+        return 0, fmt.Errorf("division by zero")
+    }
+    return a / b, nil
+}
+
+result, err := divide(10, 2)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result) // 5
+</pre>
+
+<p>
+Named return values are also possible and are used occasionally to document what a
+function returns, or with a bare <code>return</code> to return the current values of the
+named variables - though this latter style is generally discouraged in longer functions
+because it harms readability.
+</p>
+
+<h3>Blank Identifier</h3>
+
+<p>
+The blank identifier <code>_</code> discards a value. In C you silently ignore return values
+(which is why unchecked <code>malloc</code> failures go unnoticed). In Go, if a function
+returns two values and you only want one, you must explicitly discard the other:
+</p>
+
+<pre>
+result, _ := divide(10, 2) // explicitly ignore error (don't do this in production!)
+
+// Also used in imports to trigger init() side effects:
+import _ "database/sql/driver/postgres"
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+Go's syntax reverses the C declaration order: type comes after name.
+<code>:=</code> declares and assigns in a single statement and is the most
+common form inside functions. Every variable is zero-initialised — no
+uninitialised memory. Strings are immutable UTF-8 byte sequences; iterate with
+<code>range</code> to get runes. Untyped constants are exact values that acquire
+a type only at use. Defined types (<code>type Celsius float64</code>) create
+distinct types; aliases (<code>type T = U</code>) create synonyms.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://go.dev/ref/spec#Types">Go Specification: Types</a></li>
+<li><a href="https://go.dev/tour/basics">A Tour of Go: Basics</a></li>
+<li><a href="https://go.dev/blog/constants">Constants - The Go Blog</a></li>
+<li><a href="https://go.dev/ref/spec#Short_variable_declarations">Go Spec: Short Variable Declarations</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="go-01-why-go.htm">Why Go? The Language at a Glance</a></li>
+<li><a href="go-03-structs-methods.htm">Structs &amp; Methods</a></li>
+<li><a href="go-05-error-handling.htm">Error Handling Best Practices</a></li>
+<li><a href="go-10-generics.htm">Generics</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

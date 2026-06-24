@@ -72,53 +72,68 @@
 <h1>~5l0p/tut</h1>
 <!-- header end -->
         <a href="https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
-        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="agents.htm">agents</a>, <a href="go.htm">go</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="llm.htm">llm</a></i>
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="agents.htm">agents</a>, <a href="go.htm">go</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="llm.htm">llm</a>, <a href="testing.htm">testing</a></i>
 <h2>Tutorials</h2>
 <h2>agents-</h2>
-<p><b><a href="art/2026/llm-15-langchain-concepts.htm">LLM - Part 15: LangChain & LangGraph Concepts</a></b> - 2026-06-24<br>
-A conceptual tour of chains, graphs, and agent patterns from the LangChain ecosystem - and how they map to what you have already built in Go.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-14-full-agent.htm">LLM - Part 14: Putting It Together: A Full Agent</a></b> - 2026-06-23<br>
-Assemble skills, MCP, memory, and RAG into a single configurable Go binary - the reference implementation for this series.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-13-local-models.htm">LLM - Part 13: Local Models with llama.cpp</a></b> - 2026-06-22<br>
-Run llama.cpp as a local OpenAI-compatible server, swap the base URL in your Go agent, and understand the trade-offs between local and cloud models.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-12-cag.htm">LLM - Part 12: CAG: Cache-Augmented Generation</a></b> - 2026-06-21<br>
-How OpenAI prompt caching works, when CAG is better than RAG, and how to structure prompts to maximise cache hit rates.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-11-rag.htm">LLM - Part 11: RAG: Retrieval-Augmented Generation</a></b> - 2026-06-20<br>
-Generate embeddings with OpenAI, implement cosine similarity in Go, build a JSON-backed vector store, and wire retrieval into the agent loop.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-10-memory.htm">LLM - Part 10: Adding Memory to Agents</a></b> - 2026-06-19<br>
-Implement short-term message history, a file-backed long-term key-value store, and a summarisation strategy for context window management.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-09-mcp-websocket.htm">LLM - Part 9: MCP over WebSocket</a></b> - 2026-06-18<br>
-Build an MCP server and client using WebSocket transport for bidirectional streaming, and handle reconnection gracefully.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-08-mcp-http.htm">LLM - Part 8: MCP over HTTP</a></b> - 2026-06-17<br>
-Run an MCP server over HTTP with Server-Sent Events, add basic authentication, and understand when HTTP transport fits better than stdio.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-07-mcp-stdio.htm">LLM - Part 7: MCP over stdio</a></b> - 2026-06-16<br>
-Build a Go MCP server using stdio transport, register tools, and connect it to an agent with mcp-go.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-06-mcp-intro.htm">LLM - Part 6: Intro to MCP Servers</a></b> - 2026-06-15<br>
-What the Model Context Protocol is, why it exists, and how its three transport types relate to the agent loop you already have.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-05-skills.htm">LLM - Part 5: Skills & Structured Tool Libraries</a></b> - 2026-06-14<br>
-Organise tools as named structs with a common interface, build a registry for routing, and compose a small standard library of reusable skills.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-04-agent-loop.htm">LLM - Part 4: Building a Simple Agent Loop</a></b> - 2026-06-13<br>
-Implement the think→act→observe cycle as a Go for-loop, with termination conditions, error handling, and a file-system agent example.<br>
-<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-03-tool-calls.htm">LLM - Part 3: Tool Calls (Function Calling)</a></b> - 2026-06-12<br>
+<p><b><a href="art/2026/llm-03-tool-calls.htm">LLM - Part 3: Tool Calls (Function Calling)</a></b> - 2026-06-01<br>
 Define tools as JSON schemas, handle the model's call requests, and return results to complete the tool-use loop in Go.<br>
 <i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-02-chat-completions.htm">LLM - Part 2: Chat Completions Deep Dive</a></b> - 2026-06-11<br>
+<p><b><a href="art/2026/llm-10-memory.htm">LLM - Part 10: Adding Memory to Agents</a></b> - 2026-06-01<br>
+Implement short-term message history, a file-backed long-term key-value store, and a summarisation strategy for context window management.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-14-full-agent.htm">LLM - Part 14: Putting It Together: A Full Agent</a></b> - 2026-06-01<br>
+Assemble skills, MCP, memory, and RAG into a single configurable Go binary - the reference implementation for this series.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-06-mcp-intro.htm">LLM - Part 6: Intro to MCP Servers</a></b> - 2026-06-01<br>
+What the Model Context Protocol is, why it exists, and how its three transport types relate to the agent loop you already have.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-12-cag.htm">LLM - Part 12: CAG: Cache-Augmented Generation</a></b> - 2026-06-01<br>
+How OpenAI prompt caching works, when CAG is better than RAG, and how to structure prompts to maximise cache hit rates.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-07-mcp-stdio.htm">LLM - Part 7: MCP over stdio</a></b> - 2026-06-01<br>
+Build a Go MCP server using stdio transport, register tools, and connect it to an agent with mcp-go.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-09-mcp-websocket.htm">LLM - Part 9: MCP over WebSocket</a></b> - 2026-06-01<br>
+Build an MCP server and client using WebSocket transport for bidirectional streaming, and handle reconnection gracefully.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-04-agent-loop.htm">LLM - Part 4: Building a Simple Agent Loop</a></b> - 2026-06-01<br>
+Implement the think→act→observe cycle as a Go for-loop, with termination conditions, error handling, and a file-system agent example.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-20-testing-agents.htm">LLM - Part 20: Testing Agent Code</a></b> - 2026-06-01<br>
+Mocking the OpenAI/llama.cpp API with a local HTTP stub, deterministic replay from recorded fixtures, table-driven agent tests in Go, golden-output comparison, and testing tool dispatch logic in isolation.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="testing.htm">testing</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-15-langchain-concepts.htm">LLM - Part 15: LangChain & LangGraph Concepts</a></b> - 2026-06-01<br>
+A conceptual tour of chains, graphs, and agent patterns from the LangChain ecosystem - and how they map to what you have already built in Go.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-13-local-models.htm">LLM - Part 13: Local Models with llama.cpp</a></b> - 2026-06-01<br>
+Run llama.cpp as a local OpenAI-compatible server, swap the base URL in your Go agent, and understand the trade-offs between local and cloud models.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-11-rag.htm">LLM - Part 11: RAG: Retrieval-Augmented Generation</a></b> - 2026-06-01<br>
+Generate embeddings with OpenAI, implement cosine similarity in Go, build a JSON-backed vector store, and wire retrieval into the agent loop.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-17-multi-agent.htm">LLM - Part 17: Multi-Agent Orchestration</a></b> - 2026-06-01<br>
+Spawn sub-agents as goroutines, aggregate results via channels, cancel with context, and build a parallel research orchestrator.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-02-chat-completions.htm">LLM - Part 2: Chat Completions Deep Dive</a></b> - 2026-06-01<br>
 Understand roles, temperature, token limits, and how to build a stateful REPL that manages conversation history.<br>
 <i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
-<p><b><a href="art/2026/llm-01-openai-api-basics.htm">LLM - Part 1: OpenAI API Basics</a></b> - 2026-06-09<br>
+<p><b><a href="art/2026/llm-05-skills.htm">LLM - Part 5: Skills & Structured Tool Libraries</a></b> - 2026-06-01<br>
+Organise tools as named structs with a common interface, build a registry for routing, and compose a small standard library of reusable skills.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-19-supervisor-swarm.htm">LLM - Part 19: Supervisor & Swarm Patterns</a></b> - 2026-06-01<br>
+Implement a hierarchical supervisor agent and a peer swarm with consensus, with failure recovery and a reference architecture in ASCII.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-01-openai-api-basics.htm">LLM - Part 1: OpenAI API Basics</a></b> - 2026-06-01<br>
 Make your first call to the OpenAI API in Go using only the standard library - no SDK required.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-16-mini-langchain.htm">LLM - Part 16: Implementing a Mini LangChain in Go</a></b> - 2026-06-01<br>
+Build chains, prompt templates, a router, and an LLM-backed step in ~200 lines of Go - implementing the core LangChain patterns from scratch.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-18-agent-communication.htm">LLM - Part 18: Agent-to-Agent Communication</a></b> - 2026-06-01<br>
+Make one agent expose itself as an MCP server so another agent can call it as a typed tool, with a shared state store and cycle prevention.<br>
+<i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
+<p><b><a href="art/2026/llm-08-mcp-http.htm">LLM - Part 8: MCP over HTTP</a></b> - 2026-06-01<br>
+Run an MCP server over HTTP with Server-Sent Events, add basic authentication, and understand when HTTP transport fits better than stdio.<br>
 <i><a href="go.htm">go</a>, <a href="llm.htm">llm</a>, <a href="llama.cpp.htm">llama.cpp</a>, <a href="agents.htm">agents</a></i></p>
 
 <!-- footer begin -->

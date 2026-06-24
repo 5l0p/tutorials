@@ -1,5 +1,5 @@
 LLM - Part 6: Intro to MCP Servers
-2026-06-15
+2026-06-01
 
 
 The Model Context Protocol (MCP) is an open standard - proposed by Anthropic and adopted

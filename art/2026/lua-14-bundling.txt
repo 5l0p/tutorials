@@ -1,0 +1,469 @@
+Lua - Part 14: Bundling Lua Modules for Offline Use
+2026-06-01
+
+
+When you ship a C application that embeds Lua, the Lua scripts and their dependencies
+travel with the binary. Users should not need to install LuaRocks. This article shows
+three complementary strategies: vendoring .lua files directly, using the
+LuaRocks --tree flag for a local module directory, and precompiling
+scripts to bytecode with luac.
+
+
+What You Will Learn
+
+
+How Lua's package.path and package.cpath work and how to control them from C
+Vendoring .lua files into a lua_modules/ tree
+The LuaRocks --tree flag for offline installs
+Building a LuaRocks tarball cache for air-gapped environments
+Precompiling .lua files to bytecode with luac
+Loading bytecode from a C host with luaL_loadbuffer
+A worked example: embedding inspect and penlight
+
+
+How package.path Works
+
+
+When Lua executes require("foo"), it searches for foo.lua
+(or foo/init.lua) in each path listed in package.path. The
+default path is set at compile time but can be overridden:
+
+
+
+-- Print the default package.path:
+print(package.path)
+-- e.g.: ./?.lua;/usr/share/lua/5.4/?.lua;/usr/share/lua/5.4/?/init.lua
+
+
+
+From C, you can set package.path before running any user scripts. This
+is the mechanism that makes vendored modules discoverable:
+
+
+
+static void set_package_path(lua_State *L, const char *app_dir) {
+    /* Build: <app_dir>/lua_modules/?.lua;<app_dir>/lua_modules/?/init.lua */
+    char path[1024];
+    snprintf(path, sizeof(path),
+        "%s/lua_modules/?.lua;%s/lua_modules/?/init.lua",
+        app_dir, app_dir);
+
+    lua_getglobal(L, "package");       /* stack: package */
+    lua_pushstring(L, path);           /* stack: package, path */
+    lua_setfield(L, -2, "path");       /* package.path = path */
+    lua_pop(L, 1);                     /* stack: (empty) */
+}
+
+
+
+Call this immediately after luaL_openlibs, before loading any user script:
+
+
+
+lua_State *L = luaL_newstate();
+luaL_openlibs(L);
+set_package_path(L, app_dir);
+luaL_dofile(L, "scripts/main.lua");
+
+
+Strategy 1: Vendoring .lua Files Directly
+
+
+The simplest approach: copy the .lua files of each dependency into a
+lua_modules/ directory in your project. For single-file libraries like
+inspect.lua, this is one file per library.
+
+
+
+lua_modules/
+  inspect.lua          # from github.com/kikito/inspect.lua
+  penlight/
+    init.lua
+    utils.lua
+    pretty.lua
+    tablex.lua
+    stringx.lua
+    path.lua
+    dir.lua
+    text.lua
+    lexer.lua
+    config.lua
+
+
+
+Record the upstream source and version in lua_modules/SOURCES.md:
+
+
+
+## inspect.lua
+- Source: https://github.com/kikito/inspect.lua
+- Version: 3.1.3 (tag v3.1.3)
+- License: MIT
+- Files: inspect.lua
+
+## Penlight
+- Source: https://github.com/lunarmodules/Penlight
+- Version: 1.14.0
+- License: MIT
+- Files: penlight/*.lua
+
+
+
+Usage in Lua scripts requires no change — require("inspect") and
+require("penlight.utils") work as usual once package.path
+is set to include lua_modules/.
+
+
+Strategy 2: LuaRocks --tree for Offline Installs
+
+
+LuaRocks can install to a project-local directory instead of the system:
+
+
+
+luarocks install --tree lua_modules inspect
+luarocks install --tree lua_modules penlight
+luarocks install --tree lua_modules busted  # for tests
+
+
+
+This creates:
+
+
+
+lua_modules/
+  share/
+    lua/
+      5.4/
+        inspect.lua
+        pl/
+          init.lua
+          utils.lua
+          ...
+  lib/
+    lua/
+      5.4/
+        # C extension modules (.so files)
+
+
+
+The include path becomes:
+
+
+
+lua_modules/share/lua/5.4/?.lua;lua_modules/share/lua/5.4/?/init.lua
+
+
+
+For C modules (those with native extensions), also set package.cpath:
+
+
+
+static void set_package_paths(lua_State *L, const char *modules_dir) {
+    char lpath[1024], cpath[1024];
+
+    snprintf(lpath, sizeof(lpath),
+        "%s/share/lua/5.4/?.lua;%s/share/lua/5.4/?/init.lua",
+        modules_dir, modules_dir);
+
+    snprintf(cpath, sizeof(cpath),
+        "%s/lib/lua/5.4/?.so",
+        modules_dir);
+
+    lua_getglobal(L, "package");
+
+    lua_pushstring(L, lpath);
+    lua_setfield(L, -2, "path");
+
+    lua_pushstring(L, cpath);
+    lua_setfield(L, -2, "cpath");
+
+    lua_pop(L, 1);
+}
+
+
+
+Commit lua_modules/ to version control. Contributors and CI can build
+without network access.
+
+
+Strategy 3: LuaRocks Tarball Cache for Air-Gapped Environments
+
+
+In environments with no internet access (secure build servers, embedded systems
+without package managers), pre-download the LuaRocks tarballs:
+
+
+
+# On a machine with internet access:
+luarocks download --source inspect
+luarocks download --source penlight
+# Downloads: inspect-3.1.3-0.src.rock, penlight-1.14.0-1.src.rock
+
+# Copy the .src.rock files to the target machine, then install from disk:
+luarocks install --tree lua_modules inspect-3.1.3-0.src.rock
+luarocks install --tree lua_modules penlight-1.14.0-1.src.rock
+
+
+
+Check the rock files into a rocks/ directory in the repository:
+
+
+
+rocks/
+  inspect-3.1.3-0.src.rock
+  penlight-1.14.0-1.src.rock
+
+
+
+Add a Makefile target:
+
+
+
+.PHONY: deps
+
+deps:
+	luarocks install --tree lua_modules rocks/inspect-3.1.3-0.src.rock
+	luarocks install --tree lua_modules rocks/penlight-1.14.0-1.src.rock
+
+
+
+This is fully reproducible and requires no network access.
+
+
+Precompiling to Bytecode with luac
+
+
+luac compiles .lua source files to Lua bytecode
+(.luac files). Bytecode loads faster (the parser is skipped) and the
+source text is not present in the binary (tamper-resistance, not security).
+
+
+
+# Compile a single file:
+luac -o scripts/main.luac scripts/main.lua
+
+# Compile all .lua files in a directory tree:
+find scripts lua_modules -name "*.lua" | while read f; do
+    out="${f%.lua}.luac"
+    luac -o "$out" "$f"
+    echo "compiled $f → $out"
+done
+
+
+
+Important: bytecode is version-specific. A .luac file compiled
+with Lua 5.4 will not load on Lua 5.3. Compile bytecode for the exact interpreter
+version that the C host embeds.
+
+
+
+Loading bytecode from a C host is identical to loading source — luaL_dofile
+and require both handle .luac files transparently:
+
+
+
+/* luaL_dofile handles both .lua and .luac files */
+if (luaL_dofile(L, "scripts/main.luac") != LUA_OK) {
+    fprintf(stderr, "error: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+}
+
+
+Loading Bytecode from a Buffer
+
+
+For fully self-contained deployments, embed the bytecode in the C binary as a byte
+array. Generate the array from luac output with xxd:
+
+
+
+luac -o /tmp/init.luac scripts/init.lua
+xxd -i /tmp/init.luac  src/init_bytecode.h
+
+
+
+This generates:
+
+
+
+/* src/init_bytecode.h */
+unsigned char _tmp_init_luac[] = {
+    0x1b, 0x4c, 0x75, 0x61, 0x54, 0x00, 0x19, 0x93, /* ... */
+};
+unsigned int _tmp_init_luac_len = 472;
+
+
+
+Load it with luaL_loadbuffer:
+
+
+
+#include "init_bytecode.h"
+
+void load_init_script(lua_State *L) {
+    int rc = luaL_loadbuffer(L,
+        (const char *)_tmp_init_luac,
+        _tmp_init_luac_len,
+        "init");   /* chunk name, appears in error messages */
+
+    if (rc != LUA_OK) {
+        fprintf(stderr, "load error: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return;
+    }
+
+    /* luaL_loadbuffer leaves a function on the stack; call it */
+    if (lua_pcall(L, 0, LUA_MULTRET, 0) != LUA_OK) {
+        fprintf(stderr, "run error: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+}
+
+
+
+Add the generation step to the Makefile:
+
+
+
+src/init_bytecode.h: scripts/init.lua
+	luac -o /tmp/init.luac $<
+	xxd -i /tmp/init.luac | sed 's/_tmp_init_luac/init_bytecode/g' > $@
+
+
+Worked Example: Embedding inspect and penlight
+
+
+A complete C host that embeds Lua with inspect and penlight
+vendored in lua_modules/:
+
+
+
+/* src/main.c */
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static void set_package_paths(lua_State *L) {
+    /* Path relative to executable — adjust for your deployment layout */
+    const char *base = ".";
+
+    char lpath[512];
+    snprintf(lpath, sizeof(lpath),
+        "%s/lua_modules/share/lua/5.4/?.lua;"
+        "%s/lua_modules/share/lua/5.4/?/init.lua;"
+        "%s/lua_modules/?.lua",
+        base, base, base);
+
+    lua_getglobal(L, "package");
+    lua_pushstring(L, lpath);
+    lua_setfield(L, -2, "path");
+    lua_pop(L, 1);
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <script.lua>\n", argv[0]);
+        return 1;
+    }
+
+    lua_State *L = luaL_newstate();
+    luaL_openlibs(L);
+    set_package_paths(L);
+
+    /* Test: require inspect and penlight from vendor tree */
+    const char *test =
+        "local inspect = require('inspect')\n"
+        "local utils   = require('pl.utils')\n"
+        "local data = {name='synth', voices=4, tuning=440.0}\n"
+        "print(inspect(data))\n"
+        "utils.assert_arg(1, data.voices, 'number')\n"
+        "print('penlight assert_arg: ok')\n";
+
+    if (luaL_dostring(L, test) != LUA_OK) {
+        fprintf(stderr, "error: %s\n", lua_tostring(L, -1));
+        lua_close(L);
+        return 1;
+    }
+
+    if (luaL_dofile(L, argv[1]) != LUA_OK) {
+        fprintf(stderr, "error: %s\n", lua_tostring(L, -1));
+        lua_close(L);
+        return 1;
+    }
+
+    lua_close(L);
+    return 0;
+}
+
+
+
+CMakeLists.txt:
+
+
+
+cmake_minimum_required(VERSION 3.21)
+project(lua_host C)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LUA REQUIRED lua5.4)
+
+add_executable(lua_host src/main.c)
+target_include_directories(lua_host PRIVATE ${LUA_INCLUDE_DIRS})
+target_link_libraries(lua_host PRIVATE ${LUA_LIBRARIES} m)
+
+# Copy lua_modules to the build directory so the executable finds them
+add_custom_command(TARGET lua_host POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/lua_modules"
+        "$<TARGET_FILE_DIR:lua_host>/lua_modules"
+    COMMENT "Copying lua_modules to build directory"
+)
+
+
+Makefile Targets for Bytecode Precompilation
+
+
+LUA     = lua5.4
+LUAC    = luac5.4
+
+LUA_SRCS = $(shell find scripts lua_modules -name "*.lua")
+LUA_BINS = $(LUA_SRCS:.lua=.luac)
+
+.PHONY: bytecode clean-bytecode
+
+bytecode: $(LUA_BINS)
+
+%.luac: %.lua
+	$(LUAC) -o $@ $<
+
+clean-bytecode:
+	find scripts lua_modules -name "*.luac" -delete
+
+
+Summary
+
+
+Set package.path from C immediately after luaL_openlibs so
+require can find vendored modules. For simple dependencies, copy
+.lua files into a lua_modules/ directory and commit them.
+For more complex dependencies, use luarocks install --tree lua_modules to
+install into the project directory. For air-gapped environments, pre-download
+.src.rock files with luarocks download --source and install
+from disk. Precompile with luac for faster load times and to remove
+source text; embed the resulting bytecode in the C binary with xxd -i and
+luaL_loadbuffer for fully self-contained deployments. Record upstream
+source, version, and licence for every vendored module.
+
+
+See Also
+
+
+Running Lua from C - the C host setup this article extends
+Module Tables and Hot-Reload - how modules are loaded and reloaded
+Testing Lua Code - using busted vendored with this technique
+Vendoring C and C++ Dependencies - the same pattern applied to C libraries
+

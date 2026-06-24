@@ -1,5 +1,5 @@
 LLM - Part 11: RAG: Retrieval-Augmented Generation
-2026-06-20
+2026-06-01
 
 
 Retrieval-Augmented Generation (RAG) solves a fundamental problem: the model's context

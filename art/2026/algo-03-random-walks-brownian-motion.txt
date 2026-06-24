@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 3: Random Walks and Brownian Motion
-2026-01-13
+2026-06-01
 
 
 The simplest generative melody picks each note at random from a scale. The result is

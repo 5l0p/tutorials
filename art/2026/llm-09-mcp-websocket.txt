@@ -1,5 +1,5 @@
 LLM - Part 9: MCP over WebSocket
-2026-06-18
+2026-06-01
 
 
 HTTP with SSE (article 08) is a one-and-a-half-way channel: the client pushes requests

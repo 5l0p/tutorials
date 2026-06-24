@@ -1,0 +1,353 @@
+openFrameworks - Part 20: Writing Portable oF Code
+2026-06-01
+
+
+The four previous articles covered each platform individually. This one distills what you
+learned into a toolkit of practical patterns: the right #ifdef idioms, how to
+hide platform differences behind an interface, when endianness matters for binary I/O, and a
+one-page checklist you can run against any codebase before you claim it is cross-platform.
+The goal is not zero platform-specific code - every non-trivial project has some - but
+platform-specific code that is contained, labelled, and does not leak into the rest of the
+application.
+
+
+What You Will Learn
+
+
+  The full set of oF TARGET_* preprocessor flags and how to nest them correctly.
+  How to abstract platform differences behind a C++ interface so the rest of your app stays clean.
+  The role of ofToDataPath() across all four platforms and the one edge case where it behaves differently.
+  Endianness for binary file I/O and a portable byte-swap pattern.
+  A portability audit checklist.
+
+
+The TARGET_* Preprocessor Flags
+
+
+oF defines a set of macros in libs/openFrameworks/utils/ofConstants.h that
+identify the compilation target. These are available in any file that includes
+ofMain.h:
+
+
+
+TARGET_LINUX          // Linux desktop (x86 or ARM)
+TARGET_LINUX_ARM      // ARM Linux specifically (Raspberry Pi etc.)
+TARGET_OSX            // macOS (any architecture)
+TARGET_WIN32          // Windows (32-bit or 64-bit; historical name)
+TARGET_ANDROID        // Android via NDK
+TARGET_IOS            // iOS (oF experimental support)
+TARGET_EMSCRIPTEN     // Emscripten / WebAssembly
+
+
+
+Use them with standard C preprocessor conditionals:
+
+
+
+#include "ofMain.h"
+
+void openSerialPort(const std::string &portName) {
+#ifdef TARGET_WIN32
+    // Windows COM port: "COM3", "COM10", etc.
+    HANDLE h = CreateFileA(portName.c_str(), GENERIC_READ | GENERIC_WRITE,
+                           0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        ofLogError("serial") << "Cannot open " << portName;
+    }
+#else
+    // POSIX: "/dev/ttyUSB0", "/dev/cu.usbserial-0001", etc.
+    int fd = open(portName.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+    if (fd < 0) {
+        ofLogError("serial") << "Cannot open " << portName << ": "
+                             << strerror(errno);
+    }
+#endif
+}
+
+
+
+Nesting platform blocks: Prefer a ladder of #elif over deep nesting.
+
+
+
+#if defined(TARGET_WIN32)
+    const char *sep = "\\";
+#elif defined(TARGET_OSX)
+    const char *sep = "/";
+#elif defined(TARGET_LINUX)
+    const char *sep = "/";
+#else
+    #error "Unsupported platform"
+#endif
+
+
+
+Avoid duplicating code across branches. If the only difference is a constant or a
+function name, abstract that and share the rest:
+
+
+
+// Bad: duplicated logic
+#ifdef TARGET_WIN32
+    doThing(windowsValue, sharedArg1, sharedArg2);
+#else
+    doThing(posixValue, sharedArg1, sharedArg2);
+#endif
+
+// Good: isolate the difference
+#ifdef TARGET_WIN32
+    const int value = windowsValue;
+#else
+    const int value = posixValue;
+#endif
+doThing(value, sharedArg1, sharedArg2);
+
+
+Abstracting Differences Behind an Interface
+
+
+When a platform difference is substantial - a different API, a different threading model, a
+different audio backend - isolate it completely behind a pure virtual interface. The rest of
+the application talks only to the interface and never sees the platform.
+
+
+
+// IPlatform.h - the interface (no platform-specific headers)
+#pragma once
+#include <string>
+#include <functional>
+
+class IPlatform {
+public:
+    virtual ~IPlatform() = default;
+
+    // Returns the path to a directory safe for writing user data.
+    virtual std::string userDataDir() const = 0;
+
+    // Shows a native OS file picker; calls callback with chosen path (empty = cancelled).
+    virtual void openFilePicker(std::function<void(std::string)> callback) = 0;
+};
+
+
+
+// PlatformLinux.h
+#pragma once
+#include "IPlatform.h"
+
+class PlatformLinux : public IPlatform {
+public:
+    std::string userDataDir() const override;
+    void openFilePicker(std::function<void(std::string)> callback) override;
+};
+
+
+
+// PlatformLinux.cpp
+#include "PlatformLinux.h"
+#include "ofMain.h"
+#include <cstdlib>
+
+std::string PlatformLinux::userDataDir() const {
+    const char *xdg = std::getenv("XDG_DATA_HOME");
+    if (xdg) return std::string(xdg) + "/mysketch";
+    const char *home = std::getenv("HOME");
+    return std::string(home ? home : "/tmp") + "/.local/share/mysketch";
+}
+
+void PlatformLinux::openFilePicker(std::function<void(std::string)> callback) {
+    // Use zenity on Linux; real implementation uses popen + zenity --file-selection
+    callback("");  // stub
+}
+
+
+
+// main.cpp or ofApp.cpp - factory function
+#include "IPlatform.h"
+
+std::unique_ptr<IPlatform> makePlatform() {
+#ifdef TARGET_WIN32
+    return std::make_unique<PlatformWindows>();
+#elif defined(TARGET_OSX)
+    return std::make_unique<PlatformMac>();
+#elif defined(TARGET_ANDROID)
+    return std::make_unique<PlatformAndroid>();
+#else
+    return std::make_unique<PlatformLinux>();
+#endif
+}
+
+
+
+The rest of ofApp calls platform-userDataDir() and never sees a
+#ifdef. This pattern is sometimes called a platform abstraction layer (PAL).
+
+
+ofToDataPath() Across All Platforms
+
+
+ofToDataPath(relative) resolves to:
+
+
+
+  Linux/Windows: <executable_dir>/data/relative (or the explicit
+  data path set with ofSetDataPathRoot()).
+  macOS bundle: <bundle>/Contents/Resources/data/relative.
+  Android: A cache directory where the APK's assets/ folder has been
+  extracted. On first run, oF copies all assets from the APK to the device filesystem.
+
+
+
+One gotcha: on Android the extraction happens asynchronously on first launch. If you call
+ofToDataPath() before the extraction is complete (e.g., from a thread started
+before setup() is called), the path may not yet exist. Always access assets
+from setup() or later.
+
+
+
+Writing files: ofToDataPath() returns a path you can also write
+to, but on Android the extracted assets directory may be read-only depending on the device.
+For files your app generates (recordings, presets), write to the app's external storage
+directory instead:
+
+
+
+#ifdef TARGET_ANDROID
+    #include "ofxAndroidUtils.h"
+    std::string writePath = ofxAndroidGetExternalStorageDir() + "/mysketch/";
+#else
+    std::string writePath = ofToDataPath("output/");
+#endif
+
+
+Endianness for Binary File I/O
+
+
+All mainstream desktop and mobile platforms supported by oF are little-endian (x86, ARM).
+In practice you are unlikely to encounter a big-endian oF target today. However, if you
+write binary files (sample data, custom preset formats) and want them to be portable across
+architectures or to external hardware that might be big-endian:
+
+
+
+#include <cstdint>
+#include <cstring>
+
+// Portable little-endian write (works on any endianness)
+void writeLE32(std::ostream &f, uint32_t v) {
+    uint8_t b[4] = {
+        (uint8_t)(v & 0xFF),
+        (uint8_t)((v >> 8) & 0xFF),
+        (uint8_t)((v >> 16) & 0xFF),
+        (uint8_t)((v >> 24) & 0xFF)
+    };
+    f.write(reinterpret_cast<const char*>(b), 4);
+}
+
+// Portable little-endian read
+uint32_t readLE32(std::istream &f) {
+    uint8_t b[4];
+    f.read(reinterpret_cast<char*>(b), 4);
+    return (uint32_t)b[0]
+         | ((uint32_t)b[1] << 8)
+         | ((uint32_t)b[2] << 16)
+         | ((uint32_t)b[3] << 24);
+}
+
+
+
+For floating-point binary I/O, write as IEEE 754 little-endian using the same pattern via
+memcpy from the float to a uint32_t:
+
+
+
+void writeFloat(std::ostream &f, float v) {
+    uint32_t bits;
+    std::memcpy(&bits, &v, 4);
+    writeLE32(f, bits);
+}
+
+
+Other Common Portability Pitfalls
+
+
+Long vs int for 32-bit values. On Linux x86_64, long is 64 bits. On
+Windows x64, long is 32 bits. Use int32_t / uint32_t
+from <cstdint> for any value that must be exactly 32 bits.
+
+
+
+POSIX-only headers. <unistd.h>, <dirent.h>,
+<sys/socket.h> do not exist on Windows. Guard them or use
+std::filesystem (C++17) instead of POSIX file APIs.
+
+
+
+__attribute__ vs __declspec. GCC/Clang use __attribute__((...)); MSVC
+uses __declspec(...). Abstract them:
+
+
+
+#ifdef TARGET_WIN32
+    #define OF_EXPORT __declspec(dllexport)
+#else
+    #define OF_EXPORT __attribute__((visibility("default")))
+#endif
+
+
+
+Filesystem case sensitivity. Linux filesystems are case-sensitive; macOS (HFS+/APFS)
+and Windows (NTFS) are case-insensitive by default. A file named Shaders/Plasma.frag
+and referenced as shaders/plasma.frag will load on macOS and Windows but fail on
+Linux. Standardise on lowercase filenames and match exactly.
+
+
+Portability Audit Checklist
+
+
+  All asset paths go through ofToDataPath(). No bare string literals that look like paths.
+  All path separators in string literals are forward slashes.
+  File and directory names are lowercase (avoids Linux case-sensitivity failures).
+  No hardcoded absolute paths anywhere in source code.
+  Platform-specific headers are inside #ifdef TARGET_* guards.
+  No use of <unistd.h>, <dirent.h>, or other POSIX-only headers outside a Linux/macOS guard.
+  No use of long for values that must be exactly 32 bits; use int32_t.
+  File and directory names have no spaces (avoids Makefile quoting issues).
+  Shader GLSL version is explicitly declared and available on all target platforms.
+  Font files are in bin/data/, not assumed at a system path.
+  On Android: reloadTextures() is implemented and recreates all GPU resources.
+  On macOS: NSMicrophoneUsageDescription is present in Info.plist if audio input is used.
+  Binary I/O uses explicit endian-safe read/write functions, not raw fread of multi-byte types.
+
+
+Summary
+
+
+Portable oF code has three ingredients: use TARGET_* macros to isolate
+platform differences, hide those differences behind a clean interface so the rest of the
+application is platform-agnostic, and use ofToDataPath() everywhere for asset
+resolution. Endianness is not a day-to-day concern on current oF targets, but explicit
+endian-safe I/O costs nothing and future-proofs binary formats. The checklist above takes ten
+minutes to run and catches the issues that cause "works on my machine" bugs. Part 21 introduces
+SDL2 as a lighter alternative to the full oF stack for projects that only need a window, an
+event loop, and a rendering surface.
+
+
+Further Reading
+
+
+  ofConstants.h on GitHub
+  cppreference: <cstdint>
+  cppreference: std::filesystem
+  ISO C++ FAQ: Mixing C and C++
+  XDG Base Directory Specification
+
+
+See Also
+
+
+  Cross-Platform Overview
+  Linux Builds
+  Windows Builds
+  macOS Builds
+  Android
+

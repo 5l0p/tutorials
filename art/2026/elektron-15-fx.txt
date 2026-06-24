@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 15: Machinedrum and Monomachine Effects in Pd
-2026-01-01
+2026-06-01
 
 
 Both the Machinedrum and Monomachine include built-in effects processing — not just

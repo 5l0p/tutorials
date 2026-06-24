@@ -1,0 +1,295 @@
+DSP - Part 4: Anti-Aliasing Oscillators: PolyBLEP
+2026-06-01
+
+
+The naive sawtooth and square oscillators from the previous article produce rich, bright
+tones - but also a constant high-frequency hash that the ear registers as harshness.
+That hash is aliasing: harmonics above the Nyquist frequency folding back into
+the audible range. This article explains why it happens, derives the PolyBLEP correction,
+and gives a complete band-limited oscillator implementation in C.
+
+
+What You Will Learn
+
+
+Why naive sawtooth and square waves alias and how those harmonics fold back into the audible range
+What a BLEP (Band-Limited Step) is and how it corrects discontinuities in waveforms
+How the PolyBLEP polynomial approximation works mathematically
+A complete band-limited sawtooth and square oscillator implementation in C
+How to compare aliased and band-limited output numerically and audibly
+The limitations of PolyBLEP and when to use wavetable synthesis instead
+
+
+Why Naive Waveforms Alias
+
+
+A perfect sawtooth wave has harmonics at every integer multiple of the fundamental:
+
+
+
+Saw(f) = sum over n=1..inf of: sin(2*pi*n*f*t) / n
+
+
+
+At 440 Hz the harmonics are 440, 880, 1320, 1760, ... Hz, going on forever. At a 44100 Hz
+sample rate the Nyquist limit is 22050 Hz. Every harmonic above that limit folds back:
+
+
+
+Harmonic at 23000 Hz  →  alias at |23000 - 44100| = 21100 Hz
+Harmonic at 25000 Hz  →  alias at |25000 - 44100| = 19100 Hz
+
+
+
+These aliases are harmonically unrelated to 440 Hz, so they sound inharmonic and harsh.
+The problem gets worse as the fundamental rises: at 4000 Hz the 6th harmonic (24000 Hz)
+already aliases.
+
+
+The BLEP Approach
+
+
+The Band-Limited stEP (BLEP) technique corrects aliasing at the waveform's
+discontinuities - the hard jumps - rather than trying to band-limit the entire harmonic
+series. The idea is:
+
+
+
+A naive step function from -1 to +1 has a Fourier transform that rolls off as 1/f.
+A band-limited step (a step that contains only frequencies below Nyquist) is the
+    integral of a sinc function, convolved to fit around the discontinuity.
+We compute the difference between the ideal (infinite bandwidth) step and the
+    band-limited step, and subtract that residual from our naive waveform.
+
+
+
+The PolyBLEP approximation (Valimaki and Huovilainen, 2007) replaces the exact
+BLEP residual with a two-segment polynomial that is cheap to evaluate and close enough
+for audio use.
+
+
+The PolyBLEP Function
+
+
+The PolyBLEP residual is computed at the moment of a discontinuity. The parameter
+t is the fractional phase distance from the discontinuity - how far past
+the jump we are - normalised to [-1, +1] over one sample. The parameter dt
+is the phase increment per sample (freq / sample_rate).
+
+
+
+/* Returns the PolyBLEP residual to subtract from the naive waveform.
+   t   = current phase, normalised to [0, 1)
+   dt  = phase increment per sample (freq / sample_rate)
+   The residual applies near the discontinuity at t=0 (and t=1). */
+static float poly_blep(float t, float dt) {
+    /* t is in [0, dt): just past the discontinuity */
+    if (t < dt) {
+        t /= dt;
+        return t + t - t * t - 1.0f;
+    }
+    /* t is in [1-dt, 1): just before the next discontinuity */
+    if (t > 1.0f - dt) {
+        t = (t - 1.0f) / dt;
+        return t * t + t + t + 1.0f;
+    }
+    return 0.0f;
+}
+
+
+
+The function returns a small correction value (typically in the range [-1, +1]) that,
+when added to the naive waveform sample, smooths the discontinuity in a spectrally
+correct way.
+
+
+Band-Limited Sawtooth
+
+
+The sawtooth has one discontinuity per cycle: the jump from +1 back to -1 at phase = 1.
+The naive sample is 2*phase - 1. We apply the PolyBLEP correction at that
+one point:
+
+
+
+float osc_saw_blep(float phase, float dt) {
+    float saw = 2.0f * phase - 1.0f;
+    saw -= poly_blep(phase, dt);
+    return saw;
+}
+
+
+
+That single subtraction eliminates most of the aliasing. The correction is non-zero only
+within one sample of the discontinuity, so the overhead is minimal.
+
+
+Band-Limited Square Wave
+
+
+The square wave has two discontinuities per cycle: an upward step at phase = 0 and a
+downward step at phase = 0.5. The PolyBLEP correction is applied at both:
+
+
+
+float osc_square_blep(float phase, float dt) {
+    float sq = (phase < 0.5f) ? 1.0f : -1.0f;
+
+    /* Upward step at phase = 0 */
+    sq += poly_blep(phase, dt);
+
+    /* Downward step at phase = 0.5 - shift phase by 0.5, wrap */
+    float phase2 = phase + 0.5f;
+    if (phase2 >= 1.0f) phase2 -= 1.0f;
+    sq -= poly_blep(phase2, dt);
+
+    return sq;
+}
+
+
+Complete Band-Limited Oscillator in C
+
+
+#include <math.h>
+#include <stdint.h>
+
+#define SAMPLE_RATE 48000
+
+typedef struct {
+    float phase;
+    float freq;
+    float amplitude;
+} BLOsc;
+
+void blosc_init(BLOsc *osc, float freq, float amplitude) {
+    osc->phase     = 0.0f;
+    osc->freq      = freq;
+    osc->amplitude = amplitude;
+}
+
+static float poly_blep(float t, float dt) {
+    if (t < dt) {
+        t /= dt;
+        return t + t - t * t - 1.0f;
+    }
+    if (t > 1.0f - dt) {
+        t = (t - 1.0f) / dt;
+        return t * t + t + t + 1.0f;
+    }
+    return 0.0f;
+}
+
+float blosc_saw(BLOsc *osc) {
+    float dt  = osc->freq / (float)SAMPLE_RATE;
+    float out = 2.0f * osc->phase - 1.0f;
+    out -= poly_blep(osc->phase, dt);
+    osc->phase += dt;
+    if (osc->phase >= 1.0f) osc->phase -= 1.0f;
+    return out * osc->amplitude;
+}
+
+float blosc_square(BLOsc *osc) {
+    float dt  = osc->freq / (float)SAMPLE_RATE;
+    float out = (osc->phase < 0.5f) ? 1.0f : -1.0f;
+    out += poly_blep(osc->phase, dt);
+    float p2 = osc->phase + 0.5f;
+    if (p2 >= 1.0f) p2 -= 1.0f;
+    out -= poly_blep(p2, dt);
+    osc->phase += dt;
+    if (osc->phase >= 1.0f) osc->phase -= 1.0f;
+    return out * osc->amplitude;
+}
+
+void blosc_render_saw(BLOsc *osc, float *buf, int n) {
+    for (int i = 0; i < n; i++)
+        buf[i] = blosc_saw(osc);
+}
+
+
+Comparing Aliased and Band-Limited Output
+
+
+To verify the correction works, write one second of both the naive and PolyBLEP saw to
+files and inspect them in a spectrum analyser (Audacity, for example). The naive version
+will show noise above ~10 kHz for a 440 Hz fundamental. The PolyBLEP version will show
+the harmonic series rolling off cleanly, with no visible energy above Nyquist.
+
+
+
+#include <stdio.h>
+
+static void write_raw_f32(const char *path, float *buf, int n) {
+    FILE *f = fopen(path, "wb");
+    fwrite(buf, sizeof(float), n, f);
+    fclose(f);
+}
+
+int main(void) {
+    int N = SAMPLE_RATE;  /* 1 second */
+    float buf[SAMPLE_RATE];
+
+    /* Naive saw */
+    float phase = 0.0f, dt = 440.0f / SAMPLE_RATE;
+    for (int i = 0; i < N; i++) {
+        buf[i] = 2.0f * phase - 1.0f;
+        phase += dt;
+        if (phase >= 1.0f) phase -= 1.0f;
+    }
+    write_raw_f32("saw_naive.raw", buf, N);
+
+    /* PolyBLEP saw */
+    BLOsc osc;
+    blosc_init(&osc, 440.0f, 1.0f);
+    blosc_render_saw(&osc, buf, N);
+    write_raw_f32("saw_blep.raw", buf, N);
+
+    printf("Written saw_naive.raw and saw_blep.raw\n");
+    printf("Import as 32-bit float mono at %d Hz in Audacity\n", SAMPLE_RATE);
+    return 0;
+}
+
+
+Limitations of PolyBLEP
+
+
+PolyBLEP is a two-point (one sample each side) approximation. It handles the
+discontinuity well but does not perfectly reproduce all harmonics. For very high
+fundamental frequencies (above ~8 kHz at 44100 Hz sample rate) more sophisticated
+band-limiting is needed - minimum-phase BLEP tables or direct additive synthesis.
+For the frequency ranges where subtractive synthesis actually operates, PolyBLEP is
+effectively inaudibly accurate.
+
+
+
+The triangle wave does not need PolyBLEP because it has no amplitude discontinuities.
+Its derivative discontinuities contribute only to the upper harmonics, which are already
+extremely quiet at -40 dB relative to the fundamental.
+
+
+Summary
+
+
+Naive waveforms alias because their discontinuities generate harmonics above
+Nyquist that fold back. A BLEP subtracts the ideal step and adds a band-limited
+version in its place. PolyBLEP approximates this correction with a polynomial
+evaluated in the two samples around the discontinuity — typically two to four
+lines of C per waveform type. The result eliminates most aliasing at low
+computational cost. For more aggressive suppression use multi-table wavetable
+synthesis.
+
+
+Further Reading
+
+
+Alias-Free Digital Synthesis of Classic Analog Waveforms - Valimaki & Huovilainen (2007)
+Band-Limited Sawtooth - Julius O. Smith III
+Band-limited waveforms - musicdsp.org
+
+
+See Also
+
+
+Oscillators: Basic Waveforms
+Wavetable Synthesis
+Audio Fundamentals
+

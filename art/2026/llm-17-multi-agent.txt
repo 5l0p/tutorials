@@ -1,0 +1,339 @@
+LLM - Part 17: Multi-Agent Orchestration
+2026-06-01
+
+
+A single agent handles one task at a time. Multi-agent systems run several agents
+simultaneously, each specialised for a subtask, with results aggregated by an
+orchestrator. Go is particularly well-suited for this: goroutines and channels give
+you lightweight concurrency primitives that map cleanly to the orchestrator → sub-agent
+relationship. This article builds an orchestrator agent that decomposes a research task
+into parallel sub-agent calls and synthesises the results.
+
+
+What You Will Learn
+
+
+The orchestrator pattern: one agent that decomposes tasks and spawns specialised sub-agents
+How to launch sub-agents as goroutines and collect results via channels
+How to cancel sub-agents with context when the orchestrator times out or fails
+Designing the spawn_subagent tool: schema, dispatch, result aggregation
+How to synthesise parallel results into a coherent final answer
+Prompt engineering for orchestrators: decomposition instructions and model selection
+
+
+The Orchestrator Pattern
+
+
+The orchestrator is itself an agent with a specialised tool: spawn_subagent.
+When the orchestrator wants to research several topics in parallel, it calls this tool
+multiple times (possibly in a single response if the model batches tool calls), and the
+Go side fans out goroutines.
+
+
+
+Orchestrator agent
+  ↓ calls spawn_subagent("topic A")
+  ↓ calls spawn_subagent("topic B")  ← parallel
+  ↓ calls spawn_subagent("topic C")
+  ↓ waits for all results
+  ↓ synthesises final answer
+
+
+Sub-Agent Type
+
+
+package agent
+
+import (
+    "context"
+    "fmt"
+)
+
+type SubAgent struct {
+    APIKey       string
+    Model        string
+    SystemPrompt string
+    Tools        []Tool
+}
+
+func (sa *SubAgent) Run(ctx context.Context, task string) (string, error) {
+    // Reuses the agent loop from article 04
+    a := NewAgent(sa.APIKey, sa.Model, sa.SystemPrompt, sa.Tools)
+    return a.RunWithContext(ctx, task)
+}
+
+
+Fan-Out with Goroutines and Channels
+
+
+When multiple spawn_subagent calls arrive in the same tool-call batch,
+run them concurrently:
+
+
+
+type SubAgentResult struct {
+    Task   string
+    Result string
+    Err    error
+}
+
+func runSubAgentsFanOut(
+    ctx context.Context,
+    sa *SubAgent,
+    tasks []string,
+) []SubAgentResult {
+    results := make([]SubAgentResult, len(tasks))
+    var wg sync.WaitGroup
+
+    for i, task := range tasks {
+        wg.Add(1)
+        go func(idx int, t string) {
+            defer wg.Done()
+            result, err := sa.Run(ctx, t)
+            results[idx] = SubAgentResult{Task: t, Result: result, Err: err}
+        }(i, task)
+    }
+
+    wg.Wait()
+    return results
+}
+
+
+The spawn_subagent Tool
+
+
+The tool collects task descriptions. The actual fan-out happens when the act step
+processes the complete batch of tool calls from one model response.
+
+
+
+type SpawnSubAgentSkill struct {
+    SubAgent *SubAgent
+    // pendingTasks accumulates tasks from one act cycle
+    pendingTasks []string
+}
+
+func (s *SpawnSubAgentSkill) Definition() Tool {
+    return Tool{
+        Type: "function",
+        Function: ToolFunction{
+            Name: "spawn_subagent",
+            Description: "Spawn a sub-agent to handle a specific research task. " +
+                "Call this multiple times in parallel to research different topics simultaneously. " +
+                "Each sub-agent works independently. Returns the sub-agent's findings.",
+            Parameters: ToolParameters{
+                Type: "object",
+                Properties: map[string]ToolParam{
+                    "task": {
+                        Type:        "string",
+                        Description: "A clear, specific task description for the sub-agent",
+                    },
+                },
+                Required: []string{"task"},
+            },
+        },
+    }
+}
+
+func (s *SpawnSubAgentSkill) Execute(argsJSON string) (string, error) {
+    var args struct{ Task string `json:"task"` }
+    json.Unmarshal([]byte(argsJSON), &args)
+    // This is called once per task in the batch.
+    // We run the sub-agent synchronously here; the parallelism is
+    // achieved because the orchestrator loop calls Execute for all
+    // tool calls in a batch concurrently (see OrchestratorLoop below).
+    return s.SubAgent.Run(context.Background(), args.Task)
+}
+
+
+Parallel Tool Call Execution in the Agent Loop
+
+
+The standard agent loop (article 04) executes tool calls sequentially. To benefit from
+parallel sub-agents, the act step must run tool executions concurrently:
+
+
+
+func (a *OrchestratorAgent) act(ctx context.Context, calls []ToolCall) error {
+    type result struct {
+        idx    int
+        output string
+        err    error
+    }
+
+    resultsCh := make(chan result, len(calls))
+
+    for i, tc := range calls {
+        go func(idx int, tc ToolCall) {
+            out, err := a.Registry.Execute(tc.Function.Name, tc.Function.Arguments)
+            resultsCh <- result{idx: idx, output: out, err: err}
+        }(i, tc)
+    }
+
+    // Collect results in order
+    results := make([]result, len(calls))
+    for range calls {
+        r := <-resultsCh
+        results[r.idx] = r
+    }
+
+    for i, r := range results {
+        output := r.output
+        if r.err != nil {
+            output = fmt.Sprintf(`{"error": "%s"}`, r.err.Error())
+        }
+        a.History.Add(Message{
+            Role:       "tool",
+            Content:    output,
+            ToolCallID: calls[i].ID,
+        })
+    }
+    return nil
+}
+
+
+Cancellation with Context
+
+
+Long-running sub-agents should respect cancellation. Pass a context with a timeout from
+the orchestrator to each sub-agent:
+
+
+
+func (a *OrchestratorAgent) RunWithTimeout(
+    userMsg string,
+    subAgentTimeout time.Duration,
+) (string, error) {
+    ctx, cancel := context.WithTimeout(context.Background(), subAgentTimeout)
+    defer cancel()
+    return a.runWithContext(ctx, userMsg)
+}
+
+
+
+Inside the sub-agent's API call:
+
+
+
+func (sa *SubAgent) Run(ctx context.Context, task string) (string, error) {
+    // Use http.NewRequestWithContext so the HTTP call is cancelled
+    // if ctx is cancelled
+    req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, body)
+    // ...
+}
+
+
+A Complete Research Orchestrator
+
+
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    // Sub-agents use a lighter model for speed and cost
+    subAgent := &SubAgent{
+        APIKey: apiKey,
+        Model:  "gpt-4o-mini",
+        SystemPrompt: "You are a research assistant. Answer the given question " +
+            "concisely in 2-3 paragraphs with specific facts.",
+        Tools: nil, // research-only, no tools needed
+    }
+
+    reg := NewRegistry()
+    reg.Register(&SpawnSubAgentSkill{SubAgent: subAgent})
+
+    orchestrator := &OrchestratorAgent{
+        APIKey: apiKey,
+        Model:  "gpt-4o-mini",
+        SystemPrompt: `You are a research orchestrator. When given a broad question, break it into
+3-5 specific sub-questions and spawn sub-agents to research each one in parallel.
+Then synthesise their findings into a comprehensive answer.`,
+        Registry:      reg,
+        MaxIterations: 10,
+    }
+
+    result, err := orchestrator.Run(
+        "What are the key differences between Go, Rust, and Zig for systems programming?",
+    )
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+    fmt.Println(result)
+}
+
+
+Rate Limiting Parallel Calls
+
+
+Spawning many sub-agents simultaneously may hit API rate limits. Use a semaphore to
+limit concurrent API calls:
+
+
+
+type semaphore chan struct{}
+
+func newSemaphore(n int) semaphore {
+    s := make(semaphore, n)
+    for i := 0; i < n; i++ {
+        s <- struct{}{}
+    }
+    return s
+}
+
+func (s semaphore) Acquire() { <-s }
+func (s semaphore) Release() { s <- struct{}{} }
+
+// In the fan-out loop:
+sem := newSemaphore(5) // max 5 concurrent sub-agents
+for _, task := range tasks {
+    wg.Add(1)
+    go func(t string) {
+        defer wg.Done()
+        sem.Acquire()
+        defer sem.Release()
+        // ... run sub-agent
+    }(task)
+}
+
+
+Task Decomposition Quality
+
+
+The orchestrator's ability to decompose tasks well depends on its system prompt and model.
+Tips for better decomposition:
+
+
+
+Tell the orchestrator explicitly how many sub-tasks to create (3–5 is usually right).
+Instruct it to make sub-tasks independent and non-overlapping.
+For complex tasks, add a planning step: the orchestrator first writes a plan, then spawns agents according to the plan.
+Use a stronger model (gpt-4o, o1) for the orchestrator and a cheaper model for sub-agents.
+
+
+Summary
+
+
+An orchestrator is an agent with a spawn_subagent tool. When called, the tool
+launches a goroutine that runs a sub-agent independently, sends the result to a channel,
+and returns it to the orchestrator. Launch all sub-agents before waiting for any, using
+sync.WaitGroup or a fan-in channel, to overlap their latencies. Cancel via
+context when the deadline is exceeded. The orchestrator model selects what to run in
+parallel and writes the synthesis prompt; use a strong model there and a cheap model for
+sub-agents.
+
+
+Further Reading
+
+
+MetaGPT: Meta Programming for Multi-Agent Collaborative Framework (2023)
+Go sync package - WaitGroup, Mutex
+Go context package - cancellation and timeouts
+
+
+See Also
+
+
+Building a Simple Agent Loop - the loop each sub-agent runs
+Agent-to-Agent Communication - agents exposing MCP servers for typed inter-agent calls
+Supervisor & Swarm Patterns - more structured multi-agent topologies
+

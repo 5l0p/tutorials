@@ -1,5 +1,5 @@
 libpd - Part 1: What Is libpd?
-2026-06-09
+2026-06-01
 
 Pure Data (Pd) is a visual dataflow programming language designed for real-time audio and signal processing. libpd strips away the graphical interface and packages the DSP engine as a portable C library, letting you run Pd patches inside any application - games, plugins, servers, or embedded devices - without launching the Pd GUI. This article explains what libpd is, what it exposes through its C API, and where it fits in an audio software stack.
 

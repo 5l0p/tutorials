@@ -1,5 +1,5 @@
 LLM - Part 7: MCP over stdio
-2026-06-16
+2026-06-01
 
 
 stdio is the simplest MCP transport: the client spawns the server as a child process and

@@ -1,5 +1,5 @@
 Go - Part 1: Why Go? The Language at a Glance
-2026-06-09
+2026-06-01
 
 
 Go was designed at Google in 2007 by Robert Griesemer, Rob Pike, and Ken Thompson - the

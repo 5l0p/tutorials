@@ -1,0 +1,339 @@
+openFrameworks - Part 23: Framebuffers & Post-Processing
+2026-06-01
+
+
+Every effect that requires a frame to know about the previous frame - blur, motion trail,
+fluid advection, video feedback, reaction-diffusion - lives in the space between framebuffer
+objects. An FBO is a render target you control: you draw into it, then read it back as a
+texture, possibly draw into a second FBO using the first as input, and finally display the
+result on screen. This article builds the concept from first principles, shows how
+ofFbo wraps the raw OpenGL API, then constructs a full ping-pong feedback loop
+and a post-processing blur pass.
+
+
+What You Will Learn
+
+
+  What a framebuffer object is and how it differs from the default screen framebuffer.
+  How to create and use an FBO with raw OpenGL.
+  How ofFbo wraps the raw API and when each approach is appropriate.
+  The ping-pong buffer pattern for iterative effects and feedback loops.
+  A full-screen quad post-processing shader (Gaussian blur, colour grade).
+  Performance considerations: attachment formats, tile-based GPUs, and when FBOs are expensive.
+
+
+What Is a Framebuffer Object?
+
+
+By default, all OpenGL draw calls write to the default framebuffer - the window's
+surface. A Framebuffer Object (FBO) is an off-screen render target you create
+yourself. It has one or more attachments: colour textures (you can attach multiple
+colour textures and write to them simultaneously from a fragment shader), and optionally a
+depth/stencil texture or renderbuffer.
+
+
+
+The crucial property: an FBO's colour attachment is a regular GL_TEXTURE_2D.
+After rendering into it, you bind the texture unit and sample from it in any subsequent
+shader, exactly like any other texture. This makes the two-pass pattern - render scene to
+FBO, post-process FBO texture to screen - trivial.
+
+
+Raw OpenGL FBO: Setup
+
+
+// ofApp.h
+#pragma once
+#include "ofMain.h"
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void draw();
+    void exit();
+
+private:
+    // Raw FBO handles
+    GLuint fbo         = 0;
+    GLuint colorTex    = 0;
+    GLuint depthRbo    = 0;    // renderbuffer for depth (not needed as a texture)
+
+    int fbWidth  = 1280;
+    int fbHeight = 720;
+
+    ofShader postShader;
+};
+
+
+
+// ofApp.cpp - setup()
+void ofApp::setup() {
+    ofBackground(0);
+    postShader.load("shaders/post");
+
+    // 1. Create colour texture attachment
+    glGenTextures(1, &colorTex);
+    glBindTexture(GL_TEXTURE_2D, colorTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, fbWidth, fbHeight, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // 2. Create depth renderbuffer
+    glGenRenderbuffers(1, &depthRbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, depthRbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, fbWidth, fbHeight);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    // 3. Create FBO and attach
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRbo);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        ofLogError("FBO") << "Framebuffer incomplete: " << status;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+
+
+// draw()
+void ofApp::draw() {
+    // --- Pass 1: render scene into FBO ---
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, fbWidth, fbHeight);
+    glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // ... draw 3D scene here ...
+    ofSetColor(200, 100, 50);
+    ofDrawSphere(fbWidth / 2, fbHeight / 2, 0, 100);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);   // back to screen framebuffer
+    glViewport(0, 0, ofGetWidth(), ofGetHeight());
+
+    // --- Pass 2: post-process to screen ---
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, colorTex);
+
+    postShader.begin();
+        postShader.setUniform1i("uScene", 0);   // texture unit 0
+        postShader.setUniform2f("uRes", fbWidth, fbHeight);
+        // draw a full-screen quad (see below)
+        ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
+    postShader.end();
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void ofApp::exit() {
+    glDeleteTextures(1, &colorTex);
+    glDeleteRenderbuffers(1, &depthRbo);
+    glDeleteFramebuffers(1, &fbo);
+}
+
+
+Using ofFbo
+
+
+ofFbo wraps the setup above in a few lines. Use it when oF's default
+configuration (RGBA8 colour, depth renderbuffer) is sufficient:
+
+
+
+// ofApp.h
+    ofFbo scene;
+    ofFbo pingA, pingB;
+    ofShader feedbackShader;
+    ofShader postShader;
+
+
+
+// setup()
+    ofFbo::Settings s;
+    s.width  = ofGetWidth();
+    s.height = ofGetHeight();
+    s.internalformat = GL_RGBA;
+    s.useDepth = true;
+    scene.allocate(s);
+    pingA.allocate(s);
+    pingB.allocate(s);
+
+    scene.begin(); ofClear(0, 0, 0, 255); scene.end();
+    pingA.begin(); ofClear(0, 0, 0, 255); pingA.end();
+    pingB.begin(); ofClear(0, 0, 0, 255); pingB.end();
+
+
+
+// draw()
+    // --- Pass 1: render current frame into scene FBO ---
+    scene.begin();
+        ofClear(0, 0, 0, 255);
+        ofSetColor(200, 100, 50);
+        ofDrawCircle(ofGetMouseX(), ofGetMouseY(), 40 + 20 * sin(ofGetElapsedTimef()));
+    scene.end();
+
+    // --- Pass 2: use scene + previous pingA as inputs to feedbackShader, write to pingB ---
+    pingB.begin();
+        feedbackShader.begin();
+            feedbackShader.setUniformTexture("uScene",    scene.getTexture(), 0);
+            feedbackShader.setUniformTexture("uPrevious", pingA.getTexture(), 1);
+            feedbackShader.setUniform1f("uDecay", 0.97f);
+            ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
+        feedbackShader.end();
+    pingB.end();
+
+    // --- Pass 3: post-process pingB to screen ---
+    postShader.begin();
+        postShader.setUniformTexture("uInput", pingB.getTexture(), 0);
+        ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
+    postShader.end();
+
+    // Swap ping-pong buffers
+    std::swap(pingA, pingB);
+
+
+The Feedback Shader
+
+
+// shaders/feedback.frag
+#version 120
+
+uniform sampler2D uScene;
+uniform sampler2D uPrevious;
+uniform float     uDecay;   // 0.9 to 0.99 gives nice trail lengths
+uniform vec2      uRes;
+
+varying vec2 vTexCoord;
+
+void main() {
+    vec2 uv = vTexCoord / uRes;
+
+    vec4 current  = texture2D(uScene,    uv);
+    vec4 previous = texture2D(uPrevious, uv) * uDecay;  // fade previous frame
+
+    // Additive blend: new frame brightens; decay dims the history
+    gl_FragColor = clamp(current + previous, 0.0, 1.0);
+}
+
+
+Post-Processing Shader: Gaussian Blur
+
+
+A single-pass Gaussian blur samples the texture at multiple offsets and weights them by the
+Gaussian function. For quality, use a separable two-pass blur (horizontal then vertical):
+
+
+
+// shaders/blur.frag (horizontal pass; run twice - second pass rotates offset 90 degrees)
+#version 120
+
+uniform sampler2D uInput;
+uniform vec2      uRes;
+uniform int       uHorizontal;   // 1 = horizontal, 0 = vertical
+
+varying vec2 vTexCoord;
+
+void main() {
+    vec2 uv     = vTexCoord / uRes;
+    vec2 offset = uHorizontal == 1
+                  ? vec2(1.0 / uRes.x, 0.0)
+                  : vec2(0.0, 1.0 / uRes.y);
+
+    // 9-tap Gaussian weights
+    float weights[5];
+    weights[0] = 0.2270270270;
+    weights[1] = 0.1945945946;
+    weights[2] = 0.1216216216;
+    weights[3] = 0.0540540541;
+    weights[4] = 0.0162162162;
+
+    vec4 result = texture2D(uInput, uv) * weights[0];
+    for (int i = 1; i < 5; i++) {
+        result += texture2D(uInput, uv + offset * float(i)) * weights[i];
+        result += texture2D(uInput, uv - offset * float(i)) * weights[i];
+    }
+    gl_FragColor = result;
+}
+
+
+Ping-Pong Pattern for Iterative Effects
+
+
+Any effect where each frame depends on the previous one requires at least two FBOs. Reading
+from and writing to the same FBO simultaneously is undefined behaviour in OpenGL. The
+ping-pong pattern solves this:
+
+
+
+  Keep two FBOs: A and B.
+  Every frame: read from A, write into B.
+  After writing, swap the names (A becomes B, B becomes A).
+  Next frame, read from A (which was last frame's B) and write into B (which was last frame's A).
+
+
+
+The std::swap(pingA, pingB) call swaps the oF objects cheaply (they swap
+internal handles, not pixel data).
+
+
+Performance Considerations
+
+
+Attachment formats: GL_RGBA8 (4 × 8-bit integer) is fine for most
+effects. Use GL_RGBA16F or GL_RGBA32F when you need floating-point
+accumulation (HDR rendering, reaction-diffusion) - but they are 2× or 4× larger in memory.
+
+
+
+Tile-based GPUs (mobile, Apple Silicon): Tile-based GPUs store the framebuffer in fast
+on-chip memory and only flush to main memory when the frame is complete. Switching between
+FBOs mid-frame forces a tile flush, which is expensive. Batch all passes into as few FBO
+switches as possible, and always call glClear at the start of each FBO pass so
+the driver can discard the previous tile contents rather than loading them from main memory.
+
+
+
+Unnecessary FBO allocations: Allocating an FBO inside draw() causes a
+GPU allocation on every frame. Allocate FBOs in setup() and reuse them.
+
+
+Summary
+
+
+An FBO is an off-screen render target whose colour attachment is a texture you can pass to
+any subsequent shader. Raw OpenGL FBO setup gives full control over attachment formats;
+ofFbo wraps the standard case in a few lines. The ping-pong pattern - two FBOs
+where you alternate read and write - enables feedback loops, iterative simulations, and
+multi-pass effects. Always std::swap handles, not pixel data. Post-processing
+shaders (blur, colour grade, chromatic aberration) run as a full-screen quad in the final
+pass. On tile-based GPUs, minimise FBO switches and always clear at the start of each pass.
+Part 24 extends the GPU compute idea further with compute shaders: full general-purpose GPU
+programs that bypass the vertex/fragment pipeline entirely.
+
+
+Further Reading
+
+
+  Khronos: Framebuffer Objects
+  LearnOpenGL: Framebuffers
+  ofFbo API Reference
+  LearnOpenGL: Bloom (multi-pass example)
+  Apple: Tile-Based Rendering Best Practices
+
+
+See Also
+
+
+  Shaders & GLSL
+  OpenGL Core Profile: VAO/VBO
+  Compute Shaders
+  Putting It Together: Audio-Visual Sketch
+  Images & Textures
+

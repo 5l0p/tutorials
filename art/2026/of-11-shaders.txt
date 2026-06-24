@@ -1,0 +1,429 @@
+openFrameworks - Part 11: Shaders & GLSL
+2026-06-01
+
+
+Every ofDrawCircle and ofSetColor call you have written so far
+ultimately results in GPU instructions, but you have not controlled those instructions directly.
+Shaders change that. A shader is a small program that runs on the GPU - thousands of copies of
+it in parallel - and gives you per-pixel (and per-vertex) control that is simply not possible
+through the fixed ofDraw* API. Plasma effects, procedural textures, audio
+reactive visuals, chromatic aberration, bloom, fluid simulation - all of these live in shader
+code. This article builds the mental model for the vertex/fragment pipeline, then walks you
+through loading shaders in oF, passing data to the GPU with uniforms, and a complete working
+sketch that reacts to the mouse and to audio amplitude.
+
+
+What You Will Learn
+
+
+  The role of vertex shaders and fragment shaders in the OpenGL pipeline.
+  How to load and activate a shader with ofShader.
+  How to pass data to the GPU using uniforms (float, vec2, vec3, sampler2D).
+  UV (texture coordinate) space and how to use it in a fragment shader.
+  How to feed audio amplitude to the GPU each frame.
+  How to use ofFbo as a shader input texture.
+
+
+The Vertex/Fragment Pipeline
+
+
+OpenGL processes geometry in stages. The two stages you write code for are:
+
+
+
+  Vertex shader: runs once per vertex. Its mandatory output is
+  gl_Position, the clip-space position of that vertex. It also passes any
+  data you define (called varyings) down to the fragment stage.
+  Fragment shader: runs once per fragment (roughly: per pixel covered by the
+  triangle). Its output is a colour, written to out vec4 fragColor (or
+  the built-in gl_FragColor in older GLSL). It receives interpolated
+  varyings from the vertex stage.
+
+
+
+Between the two stages, the rasteriser subdivides triangles into fragments and linearly
+interpolates vertex attributes. This interpolation is why a colour at one vertex fades
+smoothly into a colour at another - you set two values and the GPU computes everything between
+for free.
+
+
+
+openFrameworks uses GLSL 1.20 by default (compatible with OpenGL 2.1) unless you request a
+core profile. The examples in this article target GLSL 1.20 so they work on any oF-supported
+platform without extra setup. If you are using a core profile (see Part 22), replace
+gl_FragColor with a declared out vec4.
+
+
+Shader Files and Project Layout
+
+
+oF loads shader source from text files in bin/data/. The conventional location is
+bin/data/shaders/. You need two files per shader: a .vert file for the
+vertex stage and a .frag file for the fragment stage. oF's
+ofShader::load() accepts the base path without extension and appends both
+suffixes automatically.
+
+
+
+bin/
+  data/
+    shaders/
+      plasma.vert
+      plasma.frag
+
+
+A Minimal Pass-Through Vertex Shader
+
+
+Most creative-coding fragment shaders need almost nothing from the vertex stage. The standard
+pass-through vertex shader forwards the texture coordinate as a varying, which the fragment
+shader uses to determine where in UV space each pixel sits.
+
+
+
+// shaders/plasma.vert
+#version 120
+
+varying vec2 vTexCoord;
+
+void main() {
+    vTexCoord  = gl_MultiTexCoord0.xy;
+    gl_Position = ftransform();   // equivalent to gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex
+}
+
+
+
+ftransform() is a GLSL 1.20 built-in that applies the standard
+model-view-projection transform. In a core-profile shader you would compute this yourself using
+matrices passed as uniforms.
+
+
+UV Space
+
+
+The texture coordinate vTexCoord is in pixel space by default in oF
+(because oF disables normalised texture coordinates). That means for a 1280×720 window, the
+value ranges from (0,0) at the top-left to (1280,720) at the
+bottom-right. To get normalised UV coordinates in [0,1] - which are usually more convenient for
+procedural effects - divide by the resolution, which you pass as a uniform.
+
+
+A Complete Fragment Shader: Mouse-Reactive Plasma
+
+
+// shaders/plasma.frag
+#version 120
+
+uniform float     uTime;        // seconds since startup
+uniform vec2      uResolution;  // window size in pixels
+uniform vec2      uMouse;       // mouse position, normalised 0-1
+uniform float     uAmplitude;   // audio amplitude 0-1
+
+varying vec2 vTexCoord;
+
+void main() {
+    // Normalise to [0,1]
+    vec2 uv = vTexCoord / uResolution;
+
+    // Shift UV so mouse is the centre of the pattern
+    vec2 p  = uv - uMouse;
+
+    float d = length(p);
+
+    // Classic plasma: sum of sine waves at different frequencies
+    float v  = sin(d * 20.0 - uTime * 3.0);
+    v       += sin(uv.x * 10.0 + uTime * 1.5);
+    v       += sin((uv.x + uv.y) * 8.0 - uTime * 2.0);
+    v       += sin(length(uv - vec2(0.5)) * 15.0 + uTime);
+
+    v = v * 0.25 + 0.5;  // remap from [-1,1] to [0,1]
+
+    // Modulate intensity by audio amplitude
+    v *= (0.5 + uAmplitude * 1.5);
+    v  = clamp(v, 0.0, 1.0);
+
+    vec3 col = vec3(
+        sin(v * 3.14159 * 2.0),
+        sin(v * 3.14159 * 2.0 + 2.094),   // +120 degrees
+        sin(v * 3.14159 * 2.0 + 4.189)    // +240 degrees
+    );
+    col = col * 0.5 + 0.5;
+
+    gl_FragColor = vec4(col, 1.0);
+}
+
+
+Loading and Using ofShader
+
+
+// ofApp.h
+#pragma once
+#include <ofMain.h>
+#include <ofSoundStream.h>
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void update();
+    void draw();
+    void audioIn(ofSoundBuffer &buffer);
+
+private:
+    ofShader    shader;
+    float       amplitude = 0.0f;
+
+    ofSoundStream  soundStream;
+    std::mutex     audioMutex;
+};
+
+
+
+// ofApp.cpp
+#include "ofApp.h"
+
+void ofApp::setup() {
+    ofSetFrameRate(60);
+    ofBackground(0);
+
+    shader.load("shaders/plasma");   // loads plasma.vert and plasma.frag
+
+    // Open the default input device at 44100 Hz, 1 channel, 512-sample buffer
+    ofSoundStreamSettings ss;
+    ss.setInListener(this);
+    ss.sampleRate   = 44100;
+    ss.numInputChannels  = 1;
+    ss.numOutputChannels = 0;
+    ss.bufferSize   = 512;
+    soundStream.setup(ss);
+}
+
+void ofApp::audioIn(ofSoundBuffer &buffer) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < buffer.getNumFrames(); ++i) {
+        float s = buffer.getSample(i, 0);
+        sum += s * s;
+    }
+    float rms = std::sqrt(sum / buffer.getNumFrames());
+
+    std::lock_guard<std::mutex> lock(audioMutex);
+    amplitude = ofClamp(rms * 6.0f, 0.0f, 1.0f);  // scale up; RMS is usually small
+}
+
+void ofApp::update() {
+    // nothing needed - uniforms are set each draw()
+}
+
+void ofApp::draw() {
+    float amp;
+    {
+        std::lock_guard<std::mutex> lock(audioMutex);
+        amp = amplitude;
+    }
+
+    float mx = (float)ofGetMouseX() / ofGetWidth();
+    float my = (float)ofGetMouseY() / ofGetHeight();
+
+    shader.begin();
+        shader.setUniform1f("uTime",       (float)ofGetElapsedTimef());
+        shader.setUniform2f("uResolution", ofGetWidth(), ofGetHeight());
+        shader.setUniform2f("uMouse",      mx, my);
+        shader.setUniform1f("uAmplitude",  amp);
+
+        // Draw a full-screen rectangle - the fragment shader colours every pixel
+        ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
+    shader.end();
+}
+
+
+
+The pattern is always the same: call shader.begin(), set uniforms, draw geometry,
+call shader.end(). The shader affects every draw call inside that block.
+
+
+Uniform Types and Setter Methods
+
+
+GLSL has a rich set of numeric types. The corresponding oF setters are:
+
+
+
+shader.setUniform1f("name", floatValue);
+shader.setUniform1i("name", intValue);
+shader.setUniform2f("name", x, y);                   // vec2
+shader.setUniform3f("name", x, y, z);                // vec3
+shader.setUniform4f("name", x, y, z, w);             // vec4
+shader.setUniformMatrix4f("name", matrix4x4);        // mat4
+shader.setUniformTexture("name", texOrFbo, unit);    // sampler2D, unit = 0,1,2,...
+
+
+
+The texture unit number must be unique per shader. If you bind two textures, use units 0 and 1.
+The fragment shader declares them as uniform sampler2D tex0; and reads them with
+texture2D(tex0, uv).
+
+
+Passing a Texture to the Shader
+
+
+A common pattern: render something to an ofFbo, then pass that FBO as a texture
+uniform to a post-processing shader.
+
+
+
+// ofApp.h (additions)
+    ofFbo   scene;
+    ofShader post;
+
+
+
+// setup()
+    scene.allocate(ofGetWidth(), ofGetHeight(), GL_RGBA);
+    post.load("shaders/post");
+
+
+
+// draw()
+    // --- Pass 1: render scene into FBO ---
+    scene.begin();
+        ofClear(0, 0, 0, 255);
+        ofSetColor(255, 150, 50);
+        ofDrawCircle(ofGetWidth() / 2, ofGetHeight() / 2, 120 + amp * 80);
+    scene.end();
+
+    // --- Pass 2: post-process FBO, draw to screen ---
+    post.begin();
+        post.setUniformTexture("tScene", scene.getTexture(), 0);
+        post.setUniform1f("uTime",  (float)ofGetElapsedTimef());
+        post.setUniform2f("uRes",   ofGetWidth(), ofGetHeight());
+        ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
+    post.end();
+
+
+
+// shaders/post.frag - simple chromatic aberration
+#version 120
+
+uniform sampler2D tScene;
+uniform float     uTime;
+uniform vec2      uRes;
+
+varying vec2 vTexCoord;
+
+void main() {
+    vec2 uv   = vTexCoord / uRes;
+    float off = 0.004 * sin(uTime);
+
+    float r = texture2D(tScene, uv + vec2( off, 0.0)).r;
+    float g = texture2D(tScene, uv              ).g;
+    float b = texture2D(tScene, uv + vec2(-off, 0.0)).b;
+    float a = texture2D(tScene, uv              ).a;
+
+    gl_FragColor = vec4(r, g, b, a);
+}
+
+
+Passing Audio Amplitude as a 1D Texture
+
+
+Sending a full FFT spectrum (e.g. 512 bins) to the GPU every frame via a single float uniform
+is impractical. Instead, upload the array as a 1D texture (a 512×1 texture in OpenGL terms)
+and sample it in the fragment shader.
+
+
+
+// ofApp.h additions
+    ofTexture       fftTex;
+    std::vector<float> fftBins;
+
+
+
+// setup()
+    fftBins.assign(512, 0.0f);
+    fftTex.allocate(512, 1, GL_R32F);
+    fftTex.setRGToRGBASwizzles(false);
+
+
+
+// update() - after computing FFT into fftBins
+    fftTex.loadData(fftBins.data(), 512, 1, GL_RED);
+
+
+
+// draw()
+    shader.begin();
+        shader.setUniformTexture("uFFT", fftTex, 1);
+        // ... other uniforms ...
+        ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
+    shader.end();
+
+
+
+// In the fragment shader:
+uniform sampler2D uFFT;
+// ...
+float bin  = vTexCoord.x / uResolution.x;   // 0-1 position across spectrum
+float mag  = texture2D(uFFT, vec2(bin, 0.5)).r;
+
+
+Common Mistakes and Gotchas
+
+
+Shader fails to compile silently. oF logs GLSL errors to the console but does not abort.
+If the screen goes black and you see GLSL error messages in the terminal, check for typos in
+uniform names, missing semicolons, or type mismatches (e.g. assigning a float
+to a vec2).
+
+
+
+Wrong texture coordinate scale. oF disables normalised texture coordinates by default.
+Your fragment shader receives pixel-space coordinates, not [0,1]. Always divide by
+uResolution to get normalised UVs, or call
+ofEnableNormalizedTexCoords() before drawing (then coordinates are 0–1 but
+texture samplers behave differently).
+
+
+
+Uniform names must match exactly. If the C++ code calls
+shader.setUniform1f("utime", ...) but the shader declares
+uniform float uTime;, the uniform is silently ignored. GLSL names are
+case-sensitive.
+
+
+
+Thread safety for audio data. audioIn() runs on a separate thread. Always
+protect shared state with a mutex before reading it in draw().
+
+
+Summary
+
+
+Shaders unlock per-pixel control that is impossible with the ofDraw* API. The
+workflow is: write .vert and .frag files in GLSL, load them with
+ofShader::load(), set uniforms each frame with the typed setter methods, and draw
+geometry inside a shader.begin() / shader.end() block. UV space
+gives each fragment a coordinate you can use for procedural patterns. Audio amplitude flows
+from the audio thread to the GPU via a mutex-protected float or via an uploaded texture for
+FFT data. The FBO / shader two-pass pattern enables post-processing and feedback effects.
+Part 12 builds on this with 3D geometry; Part 23 goes deeper into framebuffer ping-pong and
+iterative effects.
+
+
+Further Reading
+
+
+  ofShader API Reference
+  The Book of Shaders - Patricio Gonzalez Vivo
+  Khronos GLSL Reference
+  Shadertoy - community GLSL examples
+  oF Book: Shaders chapter
+
+
+See Also
+
+
+  Images & Textures
+  Audio I/O with ofSoundStream
+  OpenGL Core Profile
+  Framebuffers & Post-Processing
+  Putting It Together: Audio-Visual Sketch
+

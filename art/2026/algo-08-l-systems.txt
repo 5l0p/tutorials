@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 8: L-Systems
-2026-01-18
+2026-06-01
 
 
 The algorithms in Parts 3 and 4 work step-by-step: each note depends only on the

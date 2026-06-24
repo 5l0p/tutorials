@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 2: Pitch as Numbers
-2026-01-12
+2026-06-01
 
 
 Every algorithmic composition technique in this series outputs pitches as numbers. Before

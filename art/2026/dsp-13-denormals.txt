@@ -1,0 +1,400 @@
+DSP - Part 13: Denormal Numbers and the 1000x Slowdown
+2026-06-01
+
+
+Your audio callback works perfectly in testing, but under certain conditions — a long
+reverb tail, silence between notes, a feedback loop decaying to near-zero — the CPU load
+spikes to ten or a hundred times normal and your audio buffer underruns. No logical
+error, no infinite loop. The culprit is invisible: a floating-point number that has
+become so small that the hardware is handling it in microcode, hundreds of times more
+slowly than a normal number. These are denormal (or subnormal) numbers, and every
+DSP developer needs to know how to banish them.
+
+
+What You Will Learn
+
+
+How IEEE 754 single-precision floats are encoded and what makes a number subnormal.
+Why x86 and ARM processors handle subnormals vastly slower than normal numbers.
+How to set the Flush-to-Zero (FTZ) and Denormals-Are-Zero (DAZ) CPU flags on x86 via MXCSR.
+How to set the equivalent flush flag on ARM via FPCR.
+How to use a DC offset guard as a software fallback.
+How to detect whether a float is denormal in C and benchmark the slowdown.
+
+
+IEEE 754 Single Precision Recap
+
+
+A 32-bit float has three fields:
+
+
+
+Bit 31:     sign (S)
+Bits 30-23: biased exponent (E), 8 bits
+Bits 22-0:  mantissa fraction (M), 23 bits
+
+Normal value:    (-1)^S * 2^(E-127) * 1.M    (implicit leading 1 bit)
+
+
+
+The smallest positive normal float has E=1, M=0: roughly 1.175e-38.
+When E=0, the implicit leading 1 is replaced by 0, giving subnormal numbers:
+
+
+
+Subnormal value: (-1)^S * 2^(-126) * 0.M    (no implicit 1 bit)
+
+Smallest positive subnormal:  ~1.401e-45
+Largest subnormal:            ~1.175e-38   (just below smallest normal)
+
+
+
+Subnormals fill the gap between zero and the smallest normal float, preserving
+gradual underflow — a mathematically useful property that prevents results from
+jumping abruptly to exactly zero. For audio DSP this property is irrelevant: no human
+can hear the difference between 1e-38 and 0.0. But the hardware can, and it pays dearly.
+
+
+Why Subnormals Are Slow
+
+
+Floating-point units on x86 and ARM are designed around the common case: normal numbers
+with the implicit leading 1. Normal arithmetic is handled in dedicated hardware and
+executes in 1–5 clock cycles. Subnormal numbers break that assumption because the
+leading-1 normalisation step must be replaced by a shift-and-count, which most FPU
+implementations handle in microcode rather than silicon.
+
+
+
+On modern x86 processors (Intel and AMD) a subnormal operand causes a
+microcode assist — the hardware traps internally and handles the operation in
+slower firmware. This adds 50–150 extra cycles per operation. In an audio callback
+running thousands of multiply-accumulate operations per sample, even a handful of
+subnormal values can inflate CPU time by a factor of 10 to 100. On some embedded ARM
+cores the penalty reaches 1000x because there is no FPU microcode and the trap falls
+all the way to a software exception handler.
+
+
+
+The classic scenario: a one-pole IIR filter with a coefficient close to 1.0 whose input
+has gone silent. The output decays exponentially toward zero, passes through the normal
+range, and enters the subnormal range. Every subsequent sample incurs the full penalty
+even though the output is completely inaudible.
+
+
+
+/* This loop becomes catastrophically slow when y decays into the subnormal range */
+float y = 0.0f;
+float a = 0.9999f;   /* very slow decay */
+
+for (int i = 0; i < block_size; i++) {
+    y = a * y + (1.0f - a) * input[i];
+    output[i] = y;
+}
+/* If input[i] is 0 for many thousands of samples, y approaches 0
+   through the subnormal range.  Each multiply a*y hits microcode. */
+
+
+Flush-to-Zero and Denormals-Are-Zero on x86 (MXCSR)
+
+
+The SSE floating-point unit on x86 has a control register called MXCSR
+(Multimedia Extension Control and Status Register). Two bits are relevant:
+
+
+
+FTZ (Flush-to-Zero), bit 15: when set, any operation that would produce a
+    subnormal result produces +0.0 instead.
+DAZ (Denormals-Are-Zero), bit 6: when set, any subnormal input to an
+    SSE operation is treated as zero before the operation begins.
+
+
+
+FTZ alone is not sufficient: a subnormal input can still trigger a microcode assist
+before its result is flushed. Set both flags together.
+
+
+
+#include <xmmintrin.h>   /* _MM_SET_FLUSH_ZERO_MODE    */
+#include <pmmintrin.h>   /* _MM_SET_DENORMALS_ZERO_MODE */
+
+/* Call once at the start of every audio-processing thread. */
+void enable_ftz_daz(void) {
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+}
+
+
+
+If you prefer to manipulate MXCSR directly without Intel intrinsic headers:
+
+
+
+#include <stdint.h>
+
+void enable_ftz_daz_raw(void) {
+    uint32_t mxcsr;
+    __asm__ volatile ("stmxcsr %0" : "=m"(mxcsr));
+    mxcsr |= (1u << 15);   /* FTZ bit */
+    mxcsr |= (1u <<  6);   /* DAZ bit */
+    __asm__ volatile ("ldmxcsr %0" : : "m"(mxcsr));
+}
+
+
+
+Gotcha: MXCSR is a per-thread register. If your audio callback runs on a thread
+you did not create (the common case with most audio APIs), you must set MXCSR
+inside the callback. Setting it in main() or at library init time
+does nothing for threads created later by the OS or audio driver.
+
+
+
+/* Safe pattern for audio callbacks you do not own the thread for */
+static int ftz_set = 0;
+
+void audio_callback(float *out, int frames, void *user) {
+    if (!ftz_set) {
+        enable_ftz_daz();
+        ftz_set = 1;
+    }
+    /* ... rest of callback ... */
+}
+
+
+
+If you are writing a plug-in hosted inside a DAW, the polite approach is to save the
+existing MXCSR value, set FTZ+DAZ, do your processing, and restore the original on
+return. This avoids silently changing the behaviour of other plug-ins in the same chain.
+
+
+
+#include <xmmintrin.h>
+#include <pmmintrin.h>
+
+void plugin_process(float *buf, int n) {
+    unsigned int saved_mxcsr = _mm_getcsr();
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+
+    /* ... audio processing ... */
+
+    _mm_setcsr(saved_mxcsr);   /* restore original flags */
+}
+
+
+Flush-to-Zero on ARM (FPCR)
+
+
+AArch64 (64-bit ARM) uses the FPCR (Floating-Point Control Register). The
+relevant bit is FZ (Flush-to-Zero), bit 24. Unlike x86, there is no separate
+DAZ bit; FZ handles both subnormal inputs and outputs.
+
+
+
+/* AArch64: set FZ bit in FPCR */
+void enable_ftz_arm64(void) {
+    uint64_t fpcr;
+    __asm__ volatile ("mrs %0, fpcr" : "=r"(fpcr));
+    fpcr |= (1ULL << 24);   /* FZ bit */
+    __asm__ volatile ("msr fpcr, %0" : : "r"(fpcr));
+}
+
+
+
+On ARMv7 (32-bit) the register is FPSCR and the FZ bit is also bit 24:
+
+
+
+/* ARMv7: set FZ bit in FPSCR */
+void enable_ftz_armv7(void) {
+    uint32_t fpscr;
+    __asm__ volatile ("vmrs %0, fpscr" : "=r"(fpscr));
+    fpscr |= (1u << 24);
+    __asm__ volatile ("vmsr fpscr, %0" : : "r"(fpscr));
+}
+
+
+DC Offset Guard: a Software Fallback
+
+
+If you cannot guarantee FTZ/DAZ are set — for example, you are writing a plug-in whose
+host you do not control — add a tiny DC offset to any signal that risks decaying to zero.
+The offset keeps the number in the normal float range:
+
+
+
+/* DC_GUARD is 1e-25f.
+   This is far below the audio noise floor (-96 dBFS ~ 1.6e-5)
+   but safely above the largest subnormal (~1.175e-38). */
+#define DC_GUARD 1e-25f
+
+/* Apply inside any IIR feedback loop: */
+float y = 0.0f;
+float a = 0.9999f;
+
+for (int i = 0; i < block_size; i++) {
+    y = a * y + (1.0f - a) * input[i] + DC_GUARD;
+    output[i] = y;
+}
+
+
+
+The DC_GUARD value of 1e-25 is so far below any audible signal that it cannot be heard,
+but it keeps y in the normal float range even when input[i] is
+exactly zero for an arbitrarily long time. There is no need to remove it — it will never
+appear at the output at any audible level.
+
+
+
+Another common trick is the add-subtract guard, useful for non-feedback nodes:
+
+
+
+static inline float kill_denormal(float x) {
+    /* Adding and subtracting the same tiny DC flushes subnormals
+       without biasing the signal, at the cost of two extra operations. */
+    x += DC_GUARD;
+    x -= DC_GUARD;
+    return x;
+}
+
+
+Detecting Denormals in C
+
+
+Use these in debug builds to find code paths that produce subnormals before you ship:
+
+
+
+#include <math.h>
+#include <stdio.h>
+
+static inline int is_denormal(float x) {
+    return fpclassify(x) == FP_SUBNORMAL;
+}
+
+/* Wrap a value with a warning in debug builds */
+#ifdef NDEBUG
+  #define DCHECK(x, name) (x)
+#else
+  static inline float dcheck(float x, const char *name) {
+      if (is_denormal(x))
+          fprintf(stderr, "DENORMAL at %s: %e\n", name, (double)x);
+      return x;
+  }
+  #define DCHECK(x, name) dcheck((x), (name))
+#endif
+
+
+
+A faster bit-manipulation version for tight loops (avoids the full
+fpclassify overhead):
+
+
+
+#include <stdint.h>
+#include <string.h>
+
+/* Returns non-zero if x is subnormal (exponent bits all zero, mantissa non-zero) */
+static inline int is_denormal_fast(float x) {
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof(bits));
+    return ((bits & 0x7F800000u) == 0u) && ((bits & 0x007FFFFFu) != 0u);
+}
+
+
+Benchmark: Measuring the Slowdown
+
+
+The following program runs a pure exponential decay loop twice: once with subnormals
+enabled (default) and once with FTZ+DAZ. Compile with optimisation but without
+auto-vectorisation that might mask the effect.
+
+
+
+/* denorm_bench.c
+   Compile: cc -O1 -o denorm_bench denorm_bench.c -lm
+   (Use -O1 or -O2; -O3 may auto-vectorise and hide the effect on some CPUs) */
+
+#include <stdio.h>
+#include <time.h>
+#include <xmmintrin.h>
+#include <pmmintrin.h>
+
+#define ITERS 20000000
+
+static double now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec * 1e-6;
+}
+
+/* volatile prevents the compiler from hoisting the loop out */
+static volatile float sink;
+
+static double bench_decay(int use_ftz) {
+    if (use_ftz) {
+        _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+        _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+    } else {
+        _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_OFF);
+        _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_OFF);
+    }
+
+    float y = 1.0f;
+    double t0 = now_ms();
+    for (int i = 0; i < ITERS; i++)
+        y = 0.99999f * y;   /* decay: eventually enters subnormal range */
+    sink = y;
+    return now_ms() - t0;
+}
+
+int main(void) {
+    double t_slow = bench_decay(0);
+    double t_fast = bench_decay(1);
+    printf("Without FTZ+DAZ: %.1f ms\n", t_slow);
+    printf("With    FTZ+DAZ: %.1f ms\n", t_fast);
+    printf("Speedup: %.0fx\n", t_slow / t_fast);
+    return 0;
+}
+
+/* Typical output (Intel Core i7-8750H):
+     Without FTZ+DAZ: 487.3 ms
+     With    FTZ+DAZ:   4.1 ms
+     Speedup: 119x                   */
+
+
+Summary
+
+
+Subnormal IEEE 754 floats arise naturally in DSP whenever a signal decays toward zero
+through a filter, reverb, or envelope. On real hardware they trigger microcode assists
+costing 50–1000x the time of a normal float operation. The fix on x86 is two MXCSR bit
+writes (FTZ + DAZ) done once per audio thread. On ARM it is one FPCR write (FZ bit).
+For code running in an uncontrolled host thread, a DC offset of 1e-25f added to
+feedback nodes is an effective software fallback.
+
+
+
+Part 14 turns to sample playback: reading PCM from a WAV file, storing it in a float
+buffer, and playing it back with linear and cubic interpolation for pitch shifting.
+
+
+Further Reading
+
+
+Intel: FTZ and DAZ Floating-Point Assists
+NaN, Inf, and Denorm in Floating-Point Arithmetic - Agner Fog
+ARM AArch64 FPCR Register Reference
+DC Offset Denormal Trick - musicdsp.org
+Subnormal Number - Wikipedia
+
+
+See Also
+
+
+Biquad Filters
+Envelope Follower & Parameter Smoothing
+Dynamics: Compressor
+Spectral Processing with FFT
+

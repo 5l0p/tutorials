@@ -1,0 +1,381 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>openFrameworks - Part 6: Typography</title>
+    <meta name="description" content="Rendering text in openFrameworks using ofTrueTypeFont - loading fonts, drawing strings, measuring text bounds, supporting UTF-8, and using ofDrawBitmapString for quick debug output.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="cpp, openframeworks, graphics">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="of-06-typography.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../cpp.htm">cpp</a>, <a href="../../openframeworks.htm">openframeworks</a>, <a href="../../graphics.htm">graphics</a></i>
+        <h2>openFrameworks - Part 6: Typography</h2>
+        <p>
+Text is indispensable in creative coding: labels, data readouts, live scores, generative
+poetry, UI overlays. openFrameworks provides two mechanisms for rendering text.
+<code>ofDrawBitmapString</code> is a zero-setup debug tool. <code>ofTrueTypeFont</code> is the
+production path: it loads a TrueType or OpenType font, rasterises glyphs at a fixed size using
+FreeType2, packs them into a GPU texture atlas, and gives you per-character metrics for layout.
+This article covers both, with attention to UTF-8 support and precise bounding-box measurement.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>When to use ofDrawBitmapString (debugging) vs ofTrueTypeFont (production)</li>
+<li>Loading a font with ofTrueTypeFont::load() and the size and antialias parameters</li>
+<li>Drawing strings and measuring text bounds with getStringBoundingBox()</li>
+<li>UTF-8 support: loading fonts with extended character sets for non-ASCII text</li>
+<li>Using per-character glyph metrics for custom text layout and animation</li>
+</ul>
+
+
+<h3>ofDrawBitmapString: Quick Debug Output</h3>
+
+<p>
+<code>ofDrawBitmapString</code> draws text using an OpenGL bitmap font (Courier-style, fixed
+pixel size). It requires no setup, respects the current colour, and always renders at a
+readable size regardless of transforms. It is perfect for live diagnostics:
+</p>
+
+<pre>
+void ofApp::draw() {
+    ofSetColor(255, 255, 0);
+    ofDrawBitmapString("FPS: " + ofToString(ofGetFrameRate(), 1), 10, 20);
+    ofDrawBitmapString("Mouse: " + ofToString(ofGetMouseX()) + ", " +
+                       ofToString(ofGetMouseY()), 10, 36);
+    ofDrawBitmapString("Frame: " + ofToString(ofGetFrameNum()), 10, 52);
+}
+</pre>
+
+<p>
+The coordinate <code>(x, y)</code> is the baseline of the first line of text. Because the font
+is a fixed bitmap it ignores the current matrix transform - if you need transformed debug
+text, use <code>ofTrueTypeFont</code> instead.
+</p>
+
+<h3>Loading a TrueType Font</h3>
+
+<p>
+Place your font files in <code>bin/data/fonts/</code>. Load them in <code>setup()</code>:
+</p>
+
+<pre>
+// ofApp.h
+#include &lt;ofMain.h&gt;
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void draw();
+private:
+    ofTrueTypeFont heading;
+    ofTrueTypeFont body;
+    ofTrueTypeFont mono;
+};
+</pre>
+
+<pre>
+void ofApp::setup() {
+    // load(path, size, antiAlias, fullCharset, contours, simplifyAmt, dpi)
+    heading.load("fonts/IBMPlexSans-Bold.ttf", 48);
+    body.load("fonts/IBMPlexSans-Regular.ttf", 18);
+    mono.load("fonts/IBMPlexMono-Regular.ttf", 14);
+}
+</pre>
+
+<p>
+The size is in pixels at screen resolution. If you need resolution-independent sizing,
+pass the target DPI as the last argument:
+</p>
+
+<pre>
+heading.load("fonts/IBMPlexSans-Bold.ttf", 36, true, true, false, 0.3f, 96);
+</pre>
+
+<p>
+Fonts are free to use under their respective licences. IBM Plex is a good choice for creative
+coding because it is open-source (SIL OFL 1.1), has Latin, Cyrillic, and Greek coverage, and
+includes matching serif, sans-serif, and mono variants.
+</p>
+
+<h3>Drawing Strings</h3>
+
+<pre>
+void ofApp::draw() {
+    ofBackground(10, 10, 20);
+
+    ofSetColor(255);
+    heading.drawString("openFrameworks", 50, 100);
+
+    ofSetColor(200, 200, 200);
+    body.drawString("Creative coding in C++", 50, 160);
+
+    ofSetColor(100, 220, 120);
+    mono.drawString("frame: " + ofToString(ofGetFrameNum()), 50, 200);
+}
+</pre>
+
+<p>
+The <code>(x, y)</code> coordinate is the <b>baseline</b> of the text, not the top-left corner
+of the bounding box. The ascender (the part of capitals and tall lowercase letters above the
+baseline) rises above <code>y</code>, so the visual top of your text is at approximately
+<code>y - font.getAscenderHeight()</code>.
+</p>
+
+<h3>Measuring Text: getStringBoundingBox</h3>
+
+<p>
+To position text precisely or draw a background box behind it, measure it first:
+</p>
+
+<pre>
+std::string label = "Score: 42";
+ofRectangle bbox = heading.getStringBoundingBox(label, 0, 0);
+
+// bbox.x, bbox.y, bbox.width, bbox.height
+
+// Centre the string horizontally
+float x = (ofGetWidth() - bbox.width) / 2.0f;
+float y = ofGetHeight() / 2.0f + bbox.height / 2.0f;   // baseline adjusted
+
+// Draw background pill
+float pad = 8;
+ofSetColor(0, 0, 0, 160);
+ofDrawRoundedRectangle(x + bbox.x - pad, y + bbox.y - pad,
+                       bbox.width + pad * 2, bbox.height + pad * 2, 6);
+
+// Draw text
+ofSetColor(255);
+heading.drawString(label, x, y);
+</pre>
+
+<p>
+Note that <code>getStringBoundingBox</code> takes a position argument (<code>0, 0</code> here)
+but returns a rectangle relative to that position. The <code>bbox.x</code> and
+<code>bbox.y</code> can be negative because glyphs may have bearings that extend left or above
+the baseline origin.
+</p>
+
+<h3>Per-Character Metrics</h3>
+
+<p>
+For layouts where you need to know the advance width of each character - for example, an
+animated typewriter effect or a code editor:
+</p>
+
+<pre>
+std::string text = "Hello";
+float x = 100;
+float y = 300;
+
+for (char ch : text) {
+    ofSetColor(ofRandom(150, 255), ofRandom(50, 200), 100);
+    mono.drawString(std::string(1, ch), x, y);
+    x += mono.getLetterSpacing() * mono.getCharWidth('A');   // advance
+}
+</pre>
+
+<p>
+For precise per-glyph advance, use <code>getCharacterAsPoints(ch)</code>, which returns
+an <code>ofPath</code> containing the glyph outline. You can scale, distort, and animate
+glyph outlines as geometry:
+</p>
+
+<pre>
+float t = ofGetElapsedTimef();
+float x = 100;
+for (char ch : std::string("WAVE")) {
+    ofPath glyph = heading.getCharacterAsPoints(ch, true, false);
+    ofPushMatrix();
+        ofTranslate(x, 200 + sin(t * 3 + x * 0.05f) * 20);
+        ofSetColor(80, 180, 255);
+        glyph.draw();
+    ofPopMatrix();
+    x += heading.getStringBoundingBox(std::string(1, ch), 0, 0).width + 4;
+}
+</pre>
+
+<h3>UTF-8 and Unicode</h3>
+
+<p>
+<code>ofTrueTypeFont::load()</code> takes a fifth boolean parameter: whether to rasterise the
+full Unicode character set rather than just the ASCII range. For anything beyond ASCII, pass
+<code>true</code>:
+</p>
+
+<pre>
+body.load("fonts/NotoSans-Regular.ttf", 18, true, true);
+</pre>
+
+<p>
+Then you can pass UTF-8 encoded strings directly to <code>drawString()</code>:
+</p>
+
+<pre>
+body.drawString("日本語テキスト", 50, 200);
+body.drawString("Ελληνικά", 50, 230);
+body.drawString("Привет мир", 50, 260);
+body.drawString("مرحبا بالعالم", 50, 290);
+</pre>
+
+<p>
+Note that enabling the full character set significantly increases loading time and GPU memory
+usage, because all glyphs are rasterised into the atlas at once. For large character sets
+(Chinese, Japanese, Korean) load time can be several seconds at large font sizes. Load fonts
+in <code>setup()</code> so the delay happens before the first frame.
+</p>
+
+<h3>Font Atlases and GPU Memory</h3>
+
+<p>
+Internally, <code>ofTrueTypeFont</code> packs all rasterised glyph bitmaps into a single GPU
+texture atlas. You can inspect the atlas:
+</p>
+
+<pre>
+ofTexture &amp;atlas = mono.getFontTexture();
+ofSetColor(255);
+atlas.draw(0, 0);    // display the atlas for debugging
+</pre>
+
+<p>
+Each unique combination of (font file, size, antiAlias, fullCharset) produces its own atlas.
+If you load the same font at ten different sizes you get ten atlases. For memory-constrained
+environments (Android, embedded GL), be conservative with the number of distinct fonts you
+load.
+</p>
+
+<h3>Multi-Line Text</h3>
+
+<p>
+<code>drawString</code> respects embedded newline characters:
+</p>
+
+<pre>
+std::string poem = "In the beginning\nwas the vertex\nand the vertex was light.";
+body.drawString(poem, 50, 200);
+</pre>
+
+<p>
+For word-wrapped text you need to implement the wrapping yourself. A simple approach: split the
+string into words, accumulate words until the line width exceeds the target, then insert a
+newline. Use <code>getStringBoundingBox</code> to measure each word.
+</p>
+
+<h3>Combining Font and 2D Drawing</h3>
+
+<pre>
+void ofApp::draw() {
+    float t = ofGetElapsedTimef();
+    ofBackground(10, 10, 20);
+
+    int numWords = 20;
+    for (int i = 0; i &lt; numWords; i++) {
+        float x = ofNoise(i * 10.0f, t * 0.2f) * ofGetWidth();
+        float y = ofNoise(i * 10.0f + 100, t * 0.2f) * ofGetHeight();
+        float brightness = ofNoise(i * 10.0f + 200, t * 0.4f);
+        ofSetColor(ofColor::fromHsb(i * 13, 200, (int)(brightness * 255)));
+        body.drawString(ofToString(i), x, y);
+    }
+}
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+Use <code>ofDrawBitmapString(msg, x, y)</code> for quick debug overlays — it requires no
+setup but the font is fixed-size and aliased. For production, load a TrueType font with
+<code>font.load("Roboto-Regular.ttf", size, true, true)</code> in <code>setup()</code>,
+then call <code>font.drawString(str, x, y)</code> in <code>draw()</code>. Measure layout
+with <code>font.getStringBoundingBox(str, 0, 0)</code>. For UTF-8 support, load the font
+with <code>loadFromMemory</code> or ensure the font file contains the required Unicode ranges.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+  <li><a href="https://openframeworks.cc/documentation/graphics/ofTrueTypeFont/">ofTrueTypeFont API Reference</a></li>
+  <li><a href="https://fonts.google.com/noto">Google Noto Fonts (broad Unicode coverage)</a></li>
+  <li><a href="https://fonts.google.com/specimen/IBM+Plex+Mono">IBM Plex Mono on Google Fonts</a></li>
+  <li><a href="https://freetype.org/freetype2/docs/documentation.html">FreeType2 Documentation</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+  <li><a href="of-04-2d-drawing.htm">2D Drawing Primitives</a></li>
+  <li><a href="of-07-input.htm">Mouse, Keyboard &amp; Touch Input</a></li>
+  <li><a href="of-08-ofxgui.htm">ofxGui: Built-in UI Controls</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

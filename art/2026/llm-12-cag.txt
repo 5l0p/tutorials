@@ -1,5 +1,5 @@
 LLM - Part 12: CAG: Cache-Augmented Generation
-2026-06-21
+2026-06-01
 
 
 Cache-Augmented Generation (CAG) is a complementary strategy to RAG. Where RAG retrieves

@@ -1,0 +1,369 @@
+openFrameworks - Part 4: 2D Drawing Primitives
+2026-06-01
+
+
+openFrameworks wraps OpenGL's immediate-mode drawing into a set of simple C++ functions.
+You do not need to understand vertex buffers or shader programs to draw a circle, a line, or
+a polygon. This article covers the full 2D drawing API - colour, geometry, fills, strokes, and
+custom shapes - and builds up to a small generative sketch that uses all of them together.
+
+
+What You Will Learn
+
+
+The coordinate system: origin top-left, y increases downwards
+Setting colours with ofSetColor() and the ofColor type
+Drawing filled and stroked rectangles, circles, ellipses, lines, and triangles
+Custom shapes with ofBeginShape(), ofVertex(), ofCurveVertex(), and ofEndShape()
+Push/pop transforms: ofPushMatrix(), ofTranslate(), ofRotateDeg(), ofScale()
+Using ofNoise() for smooth generative motion in a sketch
+
+
+The Coordinate System
+
+
+oF's 2D coordinate system has its origin at the top-left corner of the window. The
+x-axis increases to the right. The y-axis increases downward. This matches most UI
+toolkits but is the opposite of standard mathematical convention and the bottom-left origin
+used by raw OpenGL.
+
+
+
+(0,0)---------- x increases -->
+  |
+  | y increases
+  |
+  v
+
+
+
+ofGetWidth() and ofGetHeight() return the current window size in
+pixels. Use them in all position calculations so your sketch is resolution-independent.
+
+
+ofBackground
+
+
+ofBackground(r, g, b) sets the clear colour and immediately clears the back
+buffer. Calling it at the start of draw() gives you a clean slate every frame.
+Calling it only in setup() - and not in draw() - lets drawing
+accumulate, which is useful for long-exposure or trail effects.
+
+
+
+void ofApp::draw() {
+    ofBackground(10, 10, 20);        // dark navy every frame - no trails
+    // ... draw calls follow
+}
+
+
+
+void ofApp::setup() {
+    ofBackground(0, 0, 0);           // clear once to black
+}
+void ofApp::draw() {
+    // no ofBackground call here - drawing accumulates
+    ofSetColor(255, 30, 30, 5);      // very transparent red trails
+    ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight()); // dim previous frame
+}
+
+
+ofSetColor
+
+
+ofSetColor(r, g, b) sets the current drawing colour. All subsequent draw calls
+use this colour until you call ofSetColor again. Channel values are 0–255.
+
+
+
+ofSetColor(255, 255, 255);           // white
+ofSetColor(255, 100, 0);             // orange
+ofSetColor(0, 200, 100);             // teal
+ofSetColor(128);                     // grey shorthand: ofSetColor(128, 128, 128)
+
+
+
+The four-argument form includes an alpha (opacity) channel:
+
+
+
+ofSetColor(255, 80, 0, 180);         // semi-transparent orange
+ofSetColor(255, 255, 255, 50);       // very transparent white
+
+
+
+Enable alpha blending in setup() if you use transparency:
+
+
+
+void ofApp::setup() {
+    ofEnableAlphaBlending();
+    ofEnableSmoothing();             // anti-aliased lines and circles
+}
+
+
+Rectangles and Ellipses
+
+
+// ofDrawRectangle(x, y, width, height)
+ofDrawRectangle(50, 50, 200, 100);
+
+// ofDrawRoundedRectangle(x, y, width, height, radius)
+ofDrawRoundedRectangle(50, 200, 200, 100, 12);
+
+// ofDrawEllipse(x, y, width, height) - centre-anchored
+ofDrawEllipse(400, 300, 150, 80);
+
+// ofDrawCircle(x, y, radius) - centre-anchored
+ofDrawCircle(400, 300, 60);
+
+
+
+By default, rectangles are drawn from the top-left corner. Change this with
+ofSetRectMode:
+
+
+
+ofSetRectMode(OF_RECTMODE_CENTER);   // x,y is the centre
+ofDrawRectangle(400, 300, 200, 100); // centred at (400, 300)
+
+ofSetRectMode(OF_RECTMODE_CORNER);   // back to default: x,y is top-left
+
+
+Lines and Triangles
+
+
+// ofDrawLine(x1, y1, x2, y2)
+ofDrawLine(0, 0, ofGetWidth(), ofGetHeight());
+
+// ofSetLineWidth(pixels)
+ofSetLineWidth(3.0f);
+ofDrawLine(100, 100, 500, 100);
+
+// ofDrawTriangle(x1,y1, x2,y2, x3,y3)
+ofDrawTriangle(200, 400, 300, 200, 400, 400);
+
+
+Fill and Stroke Modes
+
+
+By default all shapes are filled. Switch to stroke-only with ofNoFill() and
+back with ofFill():
+
+
+
+// Filled circle
+ofFill();
+ofSetColor(200, 50, 50);
+ofDrawCircle(200, 300, 80);
+
+// Stroked circle (outline only)
+ofNoFill();
+ofSetColor(255, 255, 255);
+ofDrawCircle(200, 300, 90);   // slightly larger outline ring
+ofFill();                     // always restore to fill when done
+
+
+Custom Polygons with ofBeginShape
+
+
+For arbitrary polygons, use the shape-builder API:
+
+
+
+ofBeginShape();
+    ofVertex(100, 100);
+    ofVertex(300, 50);
+    ofVertex(350, 200);
+    ofVertex(200, 250);
+    ofVertex(80,  200);
+ofEndShape(true);    // true = close the path (connect last vertex to first)
+
+
+
+Curved shapes use ofCurveVertex (Catmull-Rom spline) or
+ofBezierVertex:
+
+
+
+// Catmull-Rom spline through a list of points
+ofBeginShape();
+for (int i = 0; i < (int)pts.size(); i++) {
+    ofCurveVertex(pts[i].x, pts[i].y);
+}
+ofEndShape(false);   // open path
+
+
+
+// Cubic Bezier vertex: two control points + anchor
+ofBeginShape();
+ofVertex(100, 300);
+ofBezierVertex(150, 100,  350, 100,  400, 300);
+ofEndShape(false);
+
+
+ofPath: Reusable Geometry
+
+
+ofBeginShape/ofEndShape draws immediately and discards the geometry.
+ofPath lets you build a shape once and draw it many times:
+
+
+
+ofPath star;
+star.setFilled(true);
+star.setFillColor(ofColor(255, 200, 0));
+star.setStrokeColor(ofColor(255, 255, 255));
+star.setStrokeWidth(2);
+
+// Build a 5-pointed star...
+star.moveTo(200, 100);
+// ... (vertex calls)
+star.close();
+
+// In draw():
+star.draw();
+// Translate and draw again:
+ofPushMatrix();
+    ofTranslate(300, 0);
+    star.draw();
+ofPopMatrix();
+
+
+Transforms: ofPushMatrix / ofPopMatrix
+
+
+oF's transform stack mirrors OpenGL's matrix stack. Push the current transform, modify it,
+draw, then pop to restore the original:
+
+
+
+void ofApp::draw() {
+    float t = ofGetElapsedTimef();
+
+    for (int i = 0; i < 12; i++) {
+        float angle = i * 30.0f + t * 20.0f;
+        float radius = 150.0f;
+
+        ofPushMatrix();
+            ofTranslate(ofGetWidth() / 2, ofGetHeight() / 2);
+            ofRotateDeg(angle);
+            ofTranslate(radius, 0);
+            ofSetColor(200, 100, ofMap(i, 0, 12, 0, 255));
+            ofDrawRectangle(-15, -15, 30, 30);
+        ofPopMatrix();
+    }
+}
+
+
+
+ofTranslate(x, y), ofRotateDeg(degrees), and
+ofScale(sx, sy) all modify the current matrix. They compose: translating then
+rotating is different from rotating then translating.
+
+
+Useful Utility Functions
+
+
+// Map a value from one range to another
+float y = ofMap(mouseX, 0, ofGetWidth(), 0, ofGetHeight());
+
+// Clamp
+float v = ofClamp(rawValue, 0.0f, 1.0f);
+
+// Linear interpolation
+float x = ofLerp(startX, endX, 0.3f);
+
+// Random numbers
+float r = ofRandom(10, 50);          // uniform float in [10, 50)
+int   n = (int)ofRandom(5);          // 0, 1, 2, 3, or 4
+
+// Noise (Perlin)
+float n = ofNoise(x * 0.01f, t * 0.5f);  // [0, 1]
+
+
+A Generative Sketch Example
+
+
+Putting it all together - a sketch that draws flowing organic lines using Perlin noise:
+
+
+
+// ofApp.h
+#pragma once
+#include <ofMain.h>
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void draw();
+};
+
+
+
+// ofApp.cpp
+#include "ofApp.h"
+
+void ofApp::setup() {
+    ofSetFrameRate(60);
+    ofBackground(5, 5, 15);
+    ofEnableAlphaBlending();
+    ofEnableSmoothing();
+}
+
+void ofApp::draw() {
+    float t = ofGetElapsedTimef() * 0.3f;
+
+    // Dim the previous frame slightly for motion blur effect
+    ofSetColor(5, 5, 15, 20);
+    ofFill();
+    ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
+
+    ofNoFill();
+    ofSetLineWidth(1.5f);
+
+    int numLines = 80;
+    for (int i = 0; i < numLines; i++) {
+        float yBase = ofMap(i, 0, numLines, 0, ofGetHeight());
+        float hue   = ofMap(i, 0, numLines, 160, 280);
+
+        ofSetColor(ofColor::fromHsb(hue, 200, 220, 180));
+
+        ofBeginShape();
+        for (int x = 0; x <= ofGetWidth(); x += 8) {
+            float noise = ofNoise(x * 0.003f, yBase * 0.005f, t);
+            float y = yBase + ofMap(noise, 0, 1, -40, 40);
+            ofCurveVertex(x, y);
+        }
+        ofEndShape(false);
+    }
+}
+
+
+Summary
+
+
+Set colour with ofSetColor(r, g, b) or an ofColor value before each
+draw call. Use ofFill()/ofNoFill() and
+ofSetLineWidth() to control style. Primitives — rect, circle, ellipse, line,
+triangle — each have their own function. Build custom polygons inside
+ofBeginShape() / ofEndShape() with ofVertex for sharp
+corners and ofCurveVertex for Catmull-Rom curves. Wrap transforms in
+ofPushMatrix() / ofPopMatrix() to avoid accumulating state.
+
+
+Further Reading
+
+
+  ofGraphics API Reference
+  ofPath Documentation
+  ofMath Utilities (ofMap, ofLerp, ofNoise)
+
+
+See Also
+
+
+  The ofApp Lifecycle
+  Images & Textures
+  Shaders & GLSL
+

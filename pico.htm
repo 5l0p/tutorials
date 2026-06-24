@@ -72,12 +72,42 @@
 <h1>~5l0p/tut</h1>
 <!-- header end -->
         <a href="https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
-        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="pico.htm">pico</a></i>
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="c.htm">c</a>, <a href="cmake.htm">cmake</a>, <a href="embedded.htm">embedded</a>, <a href="pico.htm">pico</a>, <a href="rp2040.htm">rp2040</a>, <a href="testing.htm">testing</a></i>
 <h2>Tutorials</h2>
 <h2>pico-</h2>
-<p><b><a href="art/2026/pico-01-rp2040-sdk.htm">RPIPicoDSP - Part 1: The RP2040 & Pico SDK</a></b> - 2026-06-09<br>
+<p><b><a href="art/2026/pico-03-audio-input.htm">RPIPicoDSP - Part 3: Audio Input on the Pico</a></b> - 2026-06-01<br>
+ADC DMA capture, I2S microphone input via PIO with the INMP441 and SPH0645, PDM microphones, and a complete example that reads a mic, computes peak level, and blinks an LED.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-01-rp2040-sdk.htm">RPIPicoDSP - Part 1: The RP2040 & Pico SDK</a></b> - 2026-06-01<br>
 A tour of the RP2040 chip, the Raspberry Pi Pico board, and the C SDK - from toolchain setup through CMakeLists.txt to a working LED-blink and USB serial hello-world.<br>
 <i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-08-usb-midi.htm">Pico — Part 8: USB MIDI with TinyUSB</a></b> - 2026-06-01<br>
+Presenting the Pico as a USB MIDI class device using TinyUSB — tusb_config.h, reading MIDI packets, sending note events to the host, and the 4-byte USB MIDI packet format.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-04-render-loop.htm">RPIPicoDSP - Part 4: The Audio Render Loop on Bare Metal</a></b> - 2026-06-01<br>
+DMA interrupt-driven audio, dedicating core 1 to the real-time audio path, avoiding malloc in the ISR, and a complete dual-core setup with USB serial on core 0 and DMA audio on core 1.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-02-audio-output.htm">RPIPicoDSP - Part 2: Audio Output on the Pico</a></b> - 2026-06-01<br>
+Three audio output paths - PWM, I2S via PIO, and the I2S interleaved frame format - with a complete DMA-double-buffered I2S example that outputs a 440 Hz sine wave.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-07-midi-uart.htm">Pico — Part 7: UART MIDI Input</a></b> - 2026-06-01<br>
+UART MIDI at 31250 baud on the RP2040 — IRQ handler, MIDI byte-stream state machine with running status, and a lock-free ring buffer to the audio core.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-09-multicore.htm">Pico — Part 9: Multicore Communication</a></b> - 2026-06-01<br>
+RP2040 SIO FIFO, hardware spinlocks, and the double-buffer swap pattern for passing parameter updates from core 0 to the audio engine on core 1 without glitches.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-06-fm-synth.htm">Pico — Part 6: 4-Operator FM Synthesis</a></b> - 2026-06-01<br>
+A 4-operator FM engine in C at 44.1 kHz on the RP2040 — operator structs, ADSR envelopes in fixed-point, the algorithm graph, and a measured CPU budget.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-05-porting-dsp.htm">Pico — Part 5: Porting DSP Code from the Desktop</a></b> - 2026-06-01<br>
+What changes when you move a biquad filter and sine oscillator from a desktop float to the RP2040's soft-float Cortex-M0+, and how to measure exactly what you spent.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-10-synth-voice.htm">Pico — Part 10: Complete Synthesiser Voice</a></b> - 2026-06-01<br>
+Series capstone — a complete monophonic synthesiser on the RP2040 with wavetable oscillator, resonant lowpass filter, dual ADSR envelopes, USB MIDI input, and I2S audio output.<br>
+<i><a href="c.htm">c</a>, <a href="embedded.htm">embedded</a>, <a href="audio.htm">audio</a>, <a href="pico.htm">pico</a></i></p>
+<p><b><a href="art/2026/pico-11-host-testing.htm">RPIPicoDSP - Part 11: Testing Pico Code on the Host</a></b> - 2026-06-01<br>
+Compiling RP2040 C code for x86 with a stub pico/stdlib.h and hardware register shims, running DSP unit tests (biquad, oscillator, ADSR) on the host without a board, a CMake PLATFORM=host target that switches between Pico SDK and stub headers, and integration with Unity for embedded test output over serial.<br>
+<i><a href="c.htm">c</a>, <a href="rp2040.htm">rp2040</a>, <a href="pico.htm">pico</a>, <a href="testing.htm">testing</a>, <a href="embedded.htm">embedded</a>, <a href="cmake.htm">cmake</a></i></p>
 
 <!-- footer begin -->
 </body>

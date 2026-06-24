@@ -1,0 +1,433 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>openFrameworks - Part 20: Writing Portable oF Code</title>
+    <meta name="description" content="Practical patterns for writing openFrameworks code that builds cleanly on Linux, macOS, Windows, and Android - preprocessor guards, interface abstraction, ofToDataPath(), endianness, and a portability audit checklist.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="cpp, openframeworks, graphics">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="of-20-portable-code.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../cpp.htm">cpp</a>, <a href="../../openframeworks.htm">openframeworks</a>, <a href="../../graphics.htm">graphics</a></i>
+        <h2>openFrameworks - Part 20: Writing Portable oF Code</h2>
+        <p>
+The four previous articles covered each platform individually. This one distills what you
+learned into a toolkit of practical patterns: the right <code>#ifdef</code> idioms, how to
+hide platform differences behind an interface, when endianness matters for binary I/O, and a
+one-page checklist you can run against any codebase before you claim it is cross-platform.
+The goal is not zero platform-specific code - every non-trivial project has some - but
+platform-specific code that is contained, labelled, and does not leak into the rest of the
+application.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+  <li>The full set of oF <code>TARGET_*</code> preprocessor flags and how to nest them correctly.</li>
+  <li>How to abstract platform differences behind a C++ interface so the rest of your app stays clean.</li>
+  <li>The role of <code>ofToDataPath()</code> across all four platforms and the one edge case where it behaves differently.</li>
+  <li>Endianness for binary file I/O and a portable byte-swap pattern.</li>
+  <li>A portability audit checklist.</li>
+</ul>
+
+<h3>The TARGET_* Preprocessor Flags</h3>
+
+<p>
+oF defines a set of macros in <code>libs/openFrameworks/utils/ofConstants.h</code> that
+identify the compilation target. These are available in any file that includes
+<code>ofMain.h</code>:
+</p>
+
+<pre>
+TARGET_LINUX          // Linux desktop (x86 or ARM)
+TARGET_LINUX_ARM      // ARM Linux specifically (Raspberry Pi etc.)
+TARGET_OSX            // macOS (any architecture)
+TARGET_WIN32          // Windows (32-bit or 64-bit; historical name)
+TARGET_ANDROID        // Android via NDK
+TARGET_IOS            // iOS (oF experimental support)
+TARGET_EMSCRIPTEN     // Emscripten / WebAssembly
+</pre>
+
+<p>
+Use them with standard C preprocessor conditionals:
+</p>
+
+<pre>
+#include "ofMain.h"
+
+void openSerialPort(const std::string &amp;portName) {
+#ifdef TARGET_WIN32
+    // Windows COM port: "COM3", "COM10", etc.
+    HANDLE h = CreateFileA(portName.c_str(), GENERIC_READ | GENERIC_WRITE,
+                           0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        ofLogError("serial") &lt;&lt; "Cannot open " &lt;&lt; portName;
+    }
+#else
+    // POSIX: "/dev/ttyUSB0", "/dev/cu.usbserial-0001", etc.
+    int fd = open(portName.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+    if (fd &lt; 0) {
+        ofLogError("serial") &lt;&lt; "Cannot open " &lt;&lt; portName &lt;&lt; ": "
+                             &lt;&lt; strerror(errno);
+    }
+#endif
+}
+</pre>
+
+<p>
+<b>Nesting platform blocks:</b> Prefer a ladder of <code>#elif</code> over deep nesting.
+</p>
+
+<pre>
+#if defined(TARGET_WIN32)
+    const char *sep = "\\";
+#elif defined(TARGET_OSX)
+    const char *sep = "/";
+#elif defined(TARGET_LINUX)
+    const char *sep = "/";
+#else
+    #error "Unsupported platform"
+#endif
+</pre>
+
+<p>
+<b>Avoid duplicating code across branches.</b> If the only difference is a constant or a
+function name, abstract that and share the rest:
+</p>
+
+<pre>
+// Bad: duplicated logic
+#ifdef TARGET_WIN32
+    doThing(windowsValue, sharedArg1, sharedArg2);
+#else
+    doThing(posixValue, sharedArg1, sharedArg2);
+#endif
+
+// Good: isolate the difference
+#ifdef TARGET_WIN32
+    const int value = windowsValue;
+#else
+    const int value = posixValue;
+#endif
+doThing(value, sharedArg1, sharedArg2);
+</pre>
+
+<h3>Abstracting Differences Behind an Interface</h3>
+
+<p>
+When a platform difference is substantial - a different API, a different threading model, a
+different audio backend - isolate it completely behind a pure virtual interface. The rest of
+the application talks only to the interface and never sees the platform.
+</p>
+
+<pre>
+// IPlatform.h - the interface (no platform-specific headers)
+#pragma once
+#include &lt;string&gt;
+#include &lt;functional&gt;
+
+class IPlatform {
+public:
+    virtual ~IPlatform() = default;
+
+    // Returns the path to a directory safe for writing user data.
+    virtual std::string userDataDir() const = 0;
+
+    // Shows a native OS file picker; calls callback with chosen path (empty = cancelled).
+    virtual void openFilePicker(std::function&lt;void(std::string)&gt; callback) = 0;
+};
+</pre>
+
+<pre>
+// PlatformLinux.h
+#pragma once
+#include "IPlatform.h"
+
+class PlatformLinux : public IPlatform {
+public:
+    std::string userDataDir() const override;
+    void openFilePicker(std::function&lt;void(std::string)&gt; callback) override;
+};
+</pre>
+
+<pre>
+// PlatformLinux.cpp
+#include "PlatformLinux.h"
+#include "ofMain.h"
+#include &lt;cstdlib&gt;
+
+std::string PlatformLinux::userDataDir() const {
+    const char *xdg = std::getenv("XDG_DATA_HOME");
+    if (xdg) return std::string(xdg) + "/mysketch";
+    const char *home = std::getenv("HOME");
+    return std::string(home ? home : "/tmp") + "/.local/share/mysketch";
+}
+
+void PlatformLinux::openFilePicker(std::function&lt;void(std::string)&gt; callback) {
+    // Use zenity on Linux; real implementation uses popen + zenity --file-selection
+    callback("");  // stub
+}
+</pre>
+
+<pre>
+// main.cpp or ofApp.cpp - factory function
+#include "IPlatform.h"
+
+std::unique_ptr&lt;IPlatform&gt; makePlatform() {
+#ifdef TARGET_WIN32
+    return std::make_unique&lt;PlatformWindows&gt;();
+#elif defined(TARGET_OSX)
+    return std::make_unique&lt;PlatformMac&gt;();
+#elif defined(TARGET_ANDROID)
+    return std::make_unique&lt;PlatformAndroid&gt;();
+#else
+    return std::make_unique&lt;PlatformLinux&gt;();
+#endif
+}
+</pre>
+
+<p>
+The rest of <code>ofApp</code> calls <code>platform->userDataDir()</code> and never sees a
+<code>#ifdef</code>. This pattern is sometimes called a <b>platform abstraction layer</b> (PAL).
+</p>
+
+<h3>ofToDataPath() Across All Platforms</h3>
+
+<p>
+<code>ofToDataPath(relative)</code> resolves to:
+</p>
+
+<ul>
+  <li><b>Linux/Windows:</b> <code>&lt;executable_dir&gt;/data/relative</code> (or the explicit
+  data path set with <code>ofSetDataPathRoot()</code>).</li>
+  <li><b>macOS bundle:</b> <code>&lt;bundle&gt;/Contents/Resources/data/relative</code>.</li>
+  <li><b>Android:</b> A cache directory where the APK's <code>assets/</code> folder has been
+  extracted. On first run, oF copies all assets from the APK to the device filesystem.</li>
+</ul>
+
+<p>
+One gotcha: on Android the extraction happens asynchronously on first launch. If you call
+<code>ofToDataPath()</code> before the extraction is complete (e.g., from a thread started
+before <code>setup()</code> is called), the path may not yet exist. Always access assets
+from <code>setup()</code> or later.
+</p>
+
+<p>
+<b>Writing files:</b> <code>ofToDataPath()</code> returns a path you can also <i>write</i>
+to, but on Android the extracted assets directory may be read-only depending on the device.
+For files your app generates (recordings, presets), write to the app's external storage
+directory instead:
+</p>
+
+<pre>
+#ifdef TARGET_ANDROID
+    #include "ofxAndroidUtils.h"
+    std::string writePath = ofxAndroidGetExternalStorageDir() + "/mysketch/";
+#else
+    std::string writePath = ofToDataPath("output/");
+#endif
+</pre>
+
+<h3>Endianness for Binary File I/O</h3>
+
+<p>
+All mainstream desktop and mobile platforms supported by oF are little-endian (x86, ARM).
+In practice you are unlikely to encounter a big-endian oF target today. However, if you
+write binary files (sample data, custom preset formats) and want them to be portable across
+architectures or to external hardware that might be big-endian:
+</p>
+
+<pre>
+#include &lt;cstdint&gt;
+#include &lt;cstring&gt;
+
+// Portable little-endian write (works on any endianness)
+void writeLE32(std::ostream &amp;f, uint32_t v) {
+    uint8_t b[4] = {
+        (uint8_t)(v &amp; 0xFF),
+        (uint8_t)((v &gt;&gt; 8) &amp; 0xFF),
+        (uint8_t)((v &gt;&gt; 16) &amp; 0xFF),
+        (uint8_t)((v &gt;&gt; 24) &amp; 0xFF)
+    };
+    f.write(reinterpret_cast&lt;const char*&gt;(b), 4);
+}
+
+// Portable little-endian read
+uint32_t readLE32(std::istream &amp;f) {
+    uint8_t b[4];
+    f.read(reinterpret_cast&lt;char*&gt;(b), 4);
+    return (uint32_t)b[0]
+         | ((uint32_t)b[1] &lt;&lt; 8)
+         | ((uint32_t)b[2] &lt;&lt; 16)
+         | ((uint32_t)b[3] &lt;&lt; 24);
+}
+</pre>
+
+<p>
+For floating-point binary I/O, write as IEEE 754 little-endian using the same pattern via
+<code>memcpy</code> from the float to a <code>uint32_t</code>:
+</p>
+
+<pre>
+void writeFloat(std::ostream &amp;f, float v) {
+    uint32_t bits;
+    std::memcpy(&amp;bits, &amp;v, 4);
+    writeLE32(f, bits);
+}
+</pre>
+
+<h3>Other Common Portability Pitfalls</h3>
+
+<p>
+<b>Long vs int for 32-bit values.</b> On Linux x86_64, <code>long</code> is 64 bits. On
+Windows x64, <code>long</code> is 32 bits. Use <code>int32_t</code> / <code>uint32_t</code>
+from <code>&lt;cstdint&gt;</code> for any value that must be exactly 32 bits.
+</p>
+
+<p>
+<b>POSIX-only headers.</b> <code>&lt;unistd.h&gt;</code>, <code>&lt;dirent.h&gt;</code>,
+<code>&lt;sys/socket.h&gt;</code> do not exist on Windows. Guard them or use
+<code>std::filesystem</code> (C++17) instead of POSIX file APIs.
+</p>
+
+<p>
+<b>__attribute__ vs __declspec.</b> GCC/Clang use <code>__attribute__((...))</code>; MSVC
+uses <code>__declspec(...)</code>. Abstract them:
+</p>
+
+<pre>
+#ifdef TARGET_WIN32
+    #define OF_EXPORT __declspec(dllexport)
+#else
+    #define OF_EXPORT __attribute__((visibility("default")))
+#endif
+</pre>
+
+<p>
+<b>Filesystem case sensitivity.</b> Linux filesystems are case-sensitive; macOS (HFS+/APFS)
+and Windows (NTFS) are case-insensitive by default. A file named <code>Shaders/Plasma.frag</code>
+and referenced as <code>shaders/plasma.frag</code> will load on macOS and Windows but fail on
+Linux. Standardise on lowercase filenames and match exactly.
+</p>
+
+<h3>Portability Audit Checklist</h3>
+
+<ul>
+  <li>All asset paths go through <code>ofToDataPath()</code>. No bare string literals that look like paths.</li>
+  <li>All path separators in string literals are forward slashes.</li>
+  <li>File and directory names are lowercase (avoids Linux case-sensitivity failures).</li>
+  <li>No hardcoded absolute paths anywhere in source code.</li>
+  <li>Platform-specific headers are inside <code>#ifdef TARGET_*</code> guards.</li>
+  <li>No use of <code>&lt;unistd.h&gt;</code>, <code>&lt;dirent.h&gt;</code>, or other POSIX-only headers outside a Linux/macOS guard.</li>
+  <li>No use of <code>long</code> for values that must be exactly 32 bits; use <code>int32_t</code>.</li>
+  <li>File and directory names have no spaces (avoids Makefile quoting issues).</li>
+  <li>Shader GLSL version is explicitly declared and available on all target platforms.</li>
+  <li>Font files are in <code>bin/data/</code>, not assumed at a system path.</li>
+  <li>On Android: <code>reloadTextures()</code> is implemented and recreates all GPU resources.</li>
+  <li>On macOS: <code>NSMicrophoneUsageDescription</code> is present in <code>Info.plist</code> if audio input is used.</li>
+  <li>Binary I/O uses explicit endian-safe read/write functions, not raw <code>fread</code> of multi-byte types.</li>
+</ul>
+
+<h3>Summary</h3>
+
+<p>
+Portable oF code has three ingredients: use <code>TARGET_*</code> macros to isolate
+platform differences, hide those differences behind a clean interface so the rest of the
+application is platform-agnostic, and use <code>ofToDataPath()</code> everywhere for asset
+resolution. Endianness is not a day-to-day concern on current oF targets, but explicit
+endian-safe I/O costs nothing and future-proofs binary formats. The checklist above takes ten
+minutes to run and catches the issues that cause "works on my machine" bugs. Part 21 introduces
+SDL2 as a lighter alternative to the full oF stack for projects that only need a window, an
+event loop, and a rendering surface.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+  <li><a href="https://github.com/openframeworks/openFrameworks/blob/master/libs/openFrameworks/utils/ofConstants.h">ofConstants.h on GitHub</a></li>
+  <li><a href="https://en.cppreference.com/w/cpp/header/cstdint">cppreference: &lt;cstdint&gt;</a></li>
+  <li><a href="https://en.cppreference.com/w/cpp/filesystem">cppreference: std::filesystem</a></li>
+  <li><a href="https://isocpp.org/wiki/faq/mixing-c-and-cpp">ISO C++ FAQ: Mixing C and C++</a></li>
+  <li><a href="https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html">XDG Base Directory Specification</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+  <li><a href="of-15-cross-platform.htm">Cross-Platform Overview</a></li>
+  <li><a href="of-16-linux-builds.htm">Linux Builds</a></li>
+  <li><a href="of-17-windows-builds.htm">Windows Builds</a></li>
+  <li><a href="of-18-macos-builds.htm">macOS Builds</a></li>
+  <li><a href="of-19-android.htm">Android</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

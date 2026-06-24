@@ -1,5 +1,5 @@
 LLM - Part 10: Adding Memory to Agents
-2026-06-19
+2026-06-01
 
 
 The agent loop from article 04 is stateless between runs - restart the binary and the

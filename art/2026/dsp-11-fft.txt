@@ -1,0 +1,296 @@
+DSP - Part 11: FFT from Scratch
+2026-06-01
+
+
+The Fast Fourier Transform is the most important algorithm in signal processing. It
+converts a block of time-domain samples into a spectrum of complex frequency bins, and
+back again, in O(N log N) time instead of the O(N2) of the naive DFT. This
+article derives the algorithm from the DFT definition, implements it in about 50 lines
+of C, and adds the windowing functions that make spectral analysis practical.
+
+
+What You Will Learn
+
+
+The DFT definition: how N time-domain samples map to N complex frequency bins
+The Cooley-Tukey radix-2 FFT algorithm: decimation in time, bit-reversal permutation, butterfly operations
+An FFT implementation in about 50 lines of C
+How to load real audio into a complex FFT input and interpret the output bins
+Windowing functions (Hann, Hamming, Blackman) and why you need them for spectral leakage
+A complete spectrum analyser that reads a WAV file and prints magnitude per bin
+
+
+The Discrete Fourier Transform
+
+
+Given N complex input samples x[0..N-1], the DFT produces N complex output bins X[0..N-1]:
+
+
+
+X[k] = sum over n=0..N-1 of: x[n] * exp(-j * 2*pi*k*n / N)
+
+where j = sqrt(-1), k = 0, 1, ..., N-1
+
+
+
+The bin X[k] captures the component at frequency k*Fs/N Hz. The magnitude |X[k]| is the
+amplitude of that frequency component; the phase arg(X[k]) is its phase offset.
+
+
+
+The inverse DFT (IDFT) recovers the time-domain signal:
+
+
+
+x[n] = (1/N) * sum over k=0..N-1 of: X[k] * exp(j * 2*pi*k*n / N)
+
+
+
+Direct computation of the DFT takes O(N2) multiplications. For N=1024 that is
+about one million multiplications per block. At 48 kHz with 50% overlap, a typical audio
+analysis rate, you need to compute the DFT roughly 100 times per second - about 100
+million multiplications per second just for one channel. Too slow.
+
+
+The Cooley-Tukey Radix-2 Algorithm
+
+
+The FFT exploits the fact that a DFT of length N can be split into two DFTs of length N/2.
+This is the decimation-in-time (DIT) Cooley-Tukey decomposition:
+
+
+
+X[k]     = E[k] + W^k * O[k]
+X[k+N/2] = E[k] - W^k * O[k]
+
+where:
+  E[k] = DFT of even-indexed samples (x[0], x[2], x[4], ...)
+  O[k] = DFT of odd-indexed samples  (x[1], x[3], x[5], ...)
+  W    = exp(-j * 2*pi / N)          (the twiddle factor)
+  W^k  = exp(-j * 2*pi*k / N)
+
+
+
+Applying this decomposition recursively, splitting each sub-DFT in two until we reach
+length-1 DFTs (which are trivial), gives O(N log2 N) total operations.
+
+
+Bit-Reversal Permutation
+
+
+Before the butterfly passes, the input must be reordered into bit-reversal order. The
+index of each sample in the bit-reversed array is obtained by reversing the bits of
+its original index. For N=8 (3 bits):
+
+
+
+Original index:    0 (000) → bit-reversed: 0 (000)
+                   1 (001) → bit-reversed: 4 (100)
+                   2 (010) → bit-reversed: 2 (010)
+                   3 (011) → bit-reversed: 6 (110)
+                   4 (100) → bit-reversed: 1 (001)
+                   5 (101) → bit-reversed: 5 (101)
+                   6 (110) → bit-reversed: 3 (011)
+                   7 (111) → bit-reversed: 7 (111)
+
+
+The Complete FFT in C
+
+
+#include <math.h>
+#include <string.h>
+
+#define FFT_MAX 4096
+
+typedef struct { float re, im; } Complex;
+
+static void bit_reverse(Complex *buf, int n) {
+    int j = 0;
+    for (int i = 1; i < n; i++) {
+        int bit = n >> 1;
+        while (j & bit) { j ^= bit; bit >>= 1; }
+        j ^= bit;
+        if (i < j) {
+            Complex tmp = buf[i];
+            buf[i] = buf[j];
+            buf[j] = tmp;
+        }
+    }
+}
+
+/* In-place radix-2 DIT FFT.
+   n must be a power of two.
+   direction: -1 = forward (time→freq), +1 = inverse (freq→time).
+   Call the inverse with direction=+1, then divide all outputs by n. */
+void fft(Complex *buf, int n, int direction) {
+    bit_reverse(buf, n);
+
+    for (int len = 2; len <= n; len <<= 1) {
+        float ang  = direction * (-2.0f * (float)M_PI / len);
+        Complex wm = { cosf(ang), sinf(ang) };
+
+        for (int i = 0; i < n; i += len) {
+            Complex w = { 1.0f, 0.0f };
+            for (int j = 0; j < len / 2; j++) {
+                Complex u = buf[i + j];
+                Complex t = {
+                    buf[i + j + len/2].re * w.re - buf[i + j + len/2].im * w.im,
+                    buf[i + j + len/2].re * w.im + buf[i + j + len/2].im * w.re
+                };
+                buf[i + j]         = (Complex){ u.re + t.re, u.im + t.im };
+                buf[i + j + len/2] = (Complex){ u.re - t.re, u.im - t.im };
+                /* Advance twiddle: w *= wm */
+                float tmp = w.re * wm.re - w.im * wm.im;
+                w.im = w.re * wm.im + w.im * wm.re;
+                w.re = tmp;
+            }
+        }
+    }
+}
+
+/* Inverse FFT: compute forward FFT with direction=+1, then scale */
+void ifft(Complex *buf, int n) {
+    fft(buf, n, 1);
+    float scale = 1.0f / (float)n;
+    for (int i = 0; i < n; i++) {
+        buf[i].re *= scale;
+        buf[i].im *= scale;
+    }
+}
+
+
+Loading Real Audio Into the FFT
+
+
+Audio samples are real-valued. Load them into the complex buffer with zero imaginary parts:
+
+
+
+void load_real(Complex *buf, const float *samples, int n) {
+    for (int i = 0; i < n; i++) {
+        buf[i].re = samples[i];
+        buf[i].im = 0.0f;
+    }
+}
+
+float fft_magnitude(const Complex *bin) {
+    return sqrtf(bin->re * bin->re + bin->im * bin->im);
+}
+
+float fft_phase(const Complex *bin) {
+    return atan2f(bin->im, bin->re);
+}
+
+
+
+For real input, the spectrum is conjugate-symmetric: X[N-k] = conj(X[k]). Only the
+first N/2+1 bins carry unique information. The bin X[0] is the DC component; X[N/2] is
+the Nyquist bin.
+
+
+Windowing Functions
+
+
+A raw block of N samples is implicitly multiplied by a rectangular window - a sharp-edged
+excerpt. This causes spectral leakage: energy from one frequency spreads into adjacent
+bins. Windowing functions taper the ends of the block to zero, dramatically reducing
+leakage at the cost of slightly broader main lobe.
+
+
+
+#include <math.h>
+
+/* Apply a window function to a real buffer before FFT.
+   The windowed samples replace the originals in-place. */
+void window_hann(float *buf, int n) {
+    for (int i = 0; i < n; i++) {
+        float w = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * i / (n - 1)));
+        buf[i] *= w;
+    }
+}
+
+void window_hamming(float *buf, int n) {
+    for (int i = 0; i < n; i++) {
+        float w = 0.54f - 0.46f * cosf(2.0f * (float)M_PI * i / (n - 1));
+        buf[i] *= w;
+    }
+}
+
+void window_blackman(float *buf, int n) {
+    for (int i = 0; i < n; i++) {
+        float x = 2.0f * (float)M_PI * i / (n - 1);
+        float w = 0.42f - 0.5f * cosf(x) + 0.08f * cosf(2.0f * x);
+        buf[i] *= w;
+    }
+}
+
+
+
+Hann is the most common choice for general analysis. Blackman has better sidelobe
+suppression at the cost of a wider main lobe. For pitch detection or musical analysis
+where frequency resolution is more important than sidelobe rejection, Hann is usually
+the right choice.
+
+
+Putting It Together: A Spectrum Analyser
+
+
+#include <stdio.h>
+
+#define FFT_SIZE 1024
+#define SAMPLE_RATE 48000
+
+int main(void) {
+    float samples[FFT_SIZE];
+    Complex buf[FFT_SIZE];
+
+    /* Fill with a 1 kHz test tone */
+    for (int i = 0; i < FFT_SIZE; i++)
+        samples[i] = sinf(2.0f * (float)M_PI * 1000.0f * i / SAMPLE_RATE);
+
+    /* Apply Hann window */
+    window_hann(samples, FFT_SIZE);
+
+    /* Load into complex buffer and compute FFT */
+    load_real(buf, samples, FFT_SIZE);
+    fft(buf, FFT_SIZE, -1);
+
+    /* Print the first 32 bins */
+    float bin_hz = (float)SAMPLE_RATE / FFT_SIZE;
+    printf("Bin  Freq(Hz)   Magnitude(dB)\n");
+    for (int k = 0; k < 32; k++) {
+        float mag = fft_magnitude(&buf[k]);
+        float db  = (mag > 1e-10f) ? 20.0f * log10f(mag) : -200.0f;
+        printf("%3d  %8.1f   %.1f\n", k, k * bin_hz, db);
+    }
+    return 0;
+}
+
+
+Summary
+
+
+The FFT computes the DFT in O(N log N) by exploiting the periodicity of complex
+exponentials. Cooley-Tukey radix-2 splits the DFT into two half-size DFTs,
+applies butterfly operations, and requires bit-reversal permutation to reorder
+the input. For real audio, pack the signal into the real parts of the complex
+input; only the first N/2+1 bins are independent. Apply a window function
+before the FFT to reduce spectral leakage from the rectangular window implied
+by block boundaries.
+
+
+Further Reading
+
+
+Mathematics of the DFT - Julius O. Smith III
+FFTW3 Documentation (for production use)
+Free small FFT in multiple languages - Nayuki
+
+
+See Also
+
+
+Spectral Processing with FFT
+Audio Fundamentals
+Wavetable Synthesis
+

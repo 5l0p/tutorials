@@ -1,0 +1,453 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>openFrameworks - Part 14: YAML in C++ with yaml-cpp</title>
+    <meta name="description" content="Adding yaml-cpp to an openFrameworks project, parsing and writing YAML config files, using YAML as a preset format for ofParameter groups, and knowing when to prefer it over JSON.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="cpp, openframeworks, graphics">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="of-14-yaml.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../cpp.htm">cpp</a>, <a href="../../openframeworks.htm">openframeworks</a>, <a href="../../graphics.htm">graphics</a></i>
+        <h2>openFrameworks - Part 14: YAML in C++ with yaml-cpp</h2>
+        <p>
+Configuration files for creative tools need to be edited by humans - often by non-programmers
+tweaking synth presets or lighting rigs. JSON works, but its mandatory double-quotes and lack
+of comments make it hostile to hand-editing. INI files are too flat. XML is too verbose.
+YAML hits a practical sweet spot: indentation-based nesting, unquoted strings, inline lists,
+and comment support. <code>yaml-cpp</code> is the standard C++ YAML parser - header-friendly,
+no Boost dependency, MIT licensed - and integrating it into an oF project takes about ten
+minutes. This article shows how to do it and how to build a preset system for
+<code>ofParameter</code> groups on top of it.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+  <li>Why YAML is well-suited to hand-authored config files in creative projects.</li>
+  <li>Adding yaml-cpp to an oF project without the project generator.</li>
+  <li>Parsing scalars, sequences, and maps with <code>YAML::LoadFile</code>.</li>
+  <li>Writing YAML back to disk from C++ data structures.</li>
+  <li>Using YAML as a preset format for <code>ofParameterGroup</code>.</li>
+  <li>Robust error handling for missing or malformed keys.</li>
+</ul>
+
+<h3>Why YAML?</h3>
+
+<p>
+Compare the same configuration in three formats:
+</p>
+
+<pre>
+# YAML (yaml-cpp)
+oscillator:
+  waveform: sawtooth
+  frequency: 220.0
+  harmonics: [1, 0.5, 0.25, 0.125]
+  envelope:
+    attack:  10
+    decay:   200
+    sustain: 0.7
+    release: 400
+</pre>
+
+<pre>
+// JSON (nlohmann/json or similar)
+{
+  "oscillator": {
+    "waveform": "sawtooth",
+    "frequency": 220.0,
+    "harmonics": [1, 0.5, 0.25, 0.125],
+    "envelope": { "attack": 10, "decay": 200, "sustain": 0.7, "release": 400 }
+  }
+}
+</pre>
+
+<p>
+The YAML version is shorter, supports comments, and does not require quoting keys or string
+values. For config files edited by sound designers rather than programmers, that matters.
+JSON is a better choice when the data is machine-generated (API responses, save files that
+never need hand-editing) because its strictness avoids ambiguity.
+</p>
+
+<h3>Adding yaml-cpp to Your oF Project</h3>
+
+<p>
+yaml-cpp can be integrated as source files dropped directly into your project - no separate
+build step or system package required. This is the approach that works on all platforms
+without fighting the OS package manager.
+</p>
+
+<p>
+<b>Step 1:</b> Clone or download yaml-cpp from
+<code>https://github.com/jbeder/yaml-cpp</code>. You need the <code>include/</code>
+directory and the <code>src/</code> directory.
+</p>
+
+<p>
+<b>Step 2:</b> Place them in your project under <code>src/yaml-cpp/</code>:
+</p>
+
+<pre>
+myProject/
+  src/
+    ofApp.h
+    ofApp.cpp
+    main.cpp
+    yaml-cpp/
+      include/
+        yaml-cpp/
+          yaml.h
+          node.h
+          ...
+      src/
+        parse.cpp
+        scanner.cpp
+        ...
+</pre>
+
+<p>
+<b>Step 3 (Linux Makefile):</b> Add to your project's <code>config.make</code>:
+</p>
+
+<pre>
+PROJECT_CFLAGS  = -Isrc/yaml-cpp/include
+PROJECT_SOURCES = $(wildcard src/yaml-cpp/src/*.cpp)
+</pre>
+
+<p>
+<b>Step 3 (Xcode):</b> Drag the <code>yaml-cpp/src/</code> folder into the Xcode project,
+add <code>src/yaml-cpp/include</code> to Header Search Paths in Build Settings.
+</p>
+
+<p>
+<b>Step 3 (Visual Studio):</b> Add <code>src/yaml-cpp/src/*.cpp</code> to the project,
+add <code>src\yaml-cpp\include</code> to Additional Include Directories.
+</p>
+
+<p>
+Then in any file that needs YAML:
+</p>
+
+<pre>
+#include "yaml-cpp/yaml.h"
+</pre>
+
+<h3>Parsing a YAML File</h3>
+
+<pre>
+// bin/data/config.yaml
+---
+window:
+  width:  1280
+  height: 720
+  title:  "Plasma Sketch"
+
+audio:
+  sampleRate: 44100
+  bufferSize: 512
+  inputDevice: default
+
+oscillator:
+  frequency: 110.0
+  harmonics: [1.0, 0.5, 0.25, 0.0]
+</pre>
+
+<pre>
+#include "yaml-cpp/yaml.h"
+#include &lt;ofMain.h&gt;
+#include &lt;string&gt;
+#include &lt;vector&gt;
+
+void ofApp::setup() {
+    YAML::Node config = YAML::LoadFile(ofToDataPath("config.yaml"));
+
+    // Scalar access
+    int   w     = config["window"]["width"].as&lt;int&gt;();
+    int   h     = config["window"]["height"].as&lt;int&gt;();
+    std::string title = config["window"]["title"].as&lt;std::string&gt;();
+
+    ofSetWindowTitle(title);
+    ofSetWindowShape(w, h);
+
+    int   sr   = config["audio"]["sampleRate"].as&lt;int&gt;();
+    int   buf  = config["audio"]["bufferSize"].as&lt;int&gt;();
+
+    float freq = config["oscillator"]["frequency"].as&lt;float&gt;();
+
+    // Sequence access
+    std::vector&lt;float&gt; harmonics;
+    for (const auto &amp;node : config["oscillator"]["harmonics"]) {
+        harmonics.push_back(node.as&lt;float&gt;());
+    }
+}
+</pre>
+
+<h3>Safe Key Access with IsDefined Checks</h3>
+
+<p>
+If you call <code>.as&lt;T&gt;()</code> on a key that does not exist in the YAML file,
+yaml-cpp throws <code>YAML::BadConversion</code> or <code>YAML::TypedBadConversion</code>.
+Always guard optional keys:
+</p>
+
+<pre>
+// Pattern 1: check IsDefined before access
+float gain = 1.0f;
+if (config["audio"]["gain"].IsDefined()) {
+    gain = config["audio"]["gain"].as&lt;float&gt;();
+}
+
+// Pattern 2: as&lt;T&gt; with a default (yaml-cpp 0.6+)
+float gain2 = config["audio"]["gain"].as&lt;float&gt;(1.0f);
+
+// Pattern 3: try/catch for top-level load errors
+try {
+    YAML::Node cfg = YAML::LoadFile(ofToDataPath("config.yaml"));
+    // parse ...
+} catch (const YAML::Exception &amp;e) {
+    ofLogError("Config") &lt;&lt; "YAML error: " &lt;&lt; e.what();
+    // continue with defaults
+}
+</pre>
+
+<h3>Writing YAML from C++</h3>
+
+<pre>
+#include "yaml-cpp/yaml.h"
+#include &lt;fstream&gt;
+#include &lt;ofMain.h&gt;
+
+void savePreset(const std::string &amp;path, float freq, float amp,
+                const std::vector&lt;float&gt; &amp;harmonics) {
+    YAML::Emitter out;
+    out &lt;&lt; YAML::BeginMap;
+      out &lt;&lt; YAML::Key &lt;&lt; "frequency" &lt;&lt; YAML::Value &lt;&lt; freq;
+      out &lt;&lt; YAML::Key &lt;&lt; "amplitude" &lt;&lt; YAML::Value &lt;&lt; amp;
+      out &lt;&lt; YAML::Key &lt;&lt; "harmonics" &lt;&lt; YAML::Value;
+      out &lt;&lt; YAML::Flow &lt;&lt; YAML::BeginSeq;
+      for (float h : harmonics) out &lt;&lt; h;
+      out &lt;&lt; YAML::EndSeq;
+    out &lt;&lt; YAML::EndMap;
+
+    std::ofstream fout(ofToDataPath(path));
+    fout &lt;&lt; out.c_str();
+}
+</pre>
+
+<p>
+<code>YAML::Flow</code> tells the emitter to write the sequence on one line (e.g.
+<code>[1.0, 0.5, 0.25]</code>) rather than as block-style vertical list items.
+</p>
+
+<h3>Using YAML as a Preset Format for ofParameterGroup</h3>
+
+<p>
+<code>ofParameterGroup</code> (used with <code>ofxGui</code>) stores typed parameters with
+names. We can mirror that structure in YAML for human-editable presets.
+</p>
+
+<pre>
+// ofApp.h
+#include &lt;ofMain.h&gt;
+#include &lt;ofxGui.h&gt;
+#include "yaml-cpp/yaml.h"
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void keyPressed(int key);
+
+    void savePreset(const std::string &amp;filename);
+    void loadPreset(const std::string &amp;filename);
+
+private:
+    ofParameterGroup params;
+    ofParameter&lt;float&gt; freq   {"frequency", 220.0f, 20.0f, 2000.0f};
+    ofParameter&lt;float&gt; amp    {"amplitude", 0.5f,   0.0f,  1.0f};
+    ofParameter&lt;float&gt; attack {"attack_ms", 10.0f,  0.0f,  2000.0f};
+    ofParameter&lt;float&gt; decay  {"decay_ms",  200.0f, 0.0f,  4000.0f};
+
+    ofxPanel gui;
+};
+</pre>
+
+<pre>
+void ofApp::setup() {
+    params.setName("synth");
+    params.add(freq, amp, attack, decay);
+    gui.setup(params);
+    loadPreset("preset_default.yaml");
+}
+
+void ofApp::savePreset(const std::string &amp;filename) {
+    YAML::Emitter out;
+    out &lt;&lt; YAML::BeginMap;
+    for (size_t i = 0; i &lt; params.size(); ++i) {
+        auto &amp;p = params.get(i);
+        out &lt;&lt; YAML::Key &lt;&lt; p.getName() &lt;&lt; YAML::Value;
+        // ofAbstractParameter does not expose a typed value directly;
+        // cast to known types:
+        if (auto *pf = dynamic_cast&lt;ofParameter&lt;float&gt;*&gt;(&amp;p)) {
+            out &lt;&lt; pf-&gt;get();
+        }
+    }
+    out &lt;&lt; YAML::EndMap;
+    std::ofstream f(ofToDataPath(filename));
+    f &lt;&lt; out.c_str();
+    ofLogNotice("Preset") &lt;&lt; "Saved " &lt;&lt; filename;
+}
+
+void ofApp::loadPreset(const std::string &amp;filename) {
+    try {
+        YAML::Node node = YAML::LoadFile(ofToDataPath(filename));
+        for (size_t i = 0; i &lt; params.size(); ++i) {
+            auto &amp;p = params.get(i);
+            if (!node[p.getName()].IsDefined()) continue;
+            if (auto *pf = dynamic_cast&lt;ofParameter&lt;float&gt;*&gt;(&amp;p)) {
+                pf-&gt;set(node[p.getName()].as&lt;float&gt;());
+            }
+        }
+    } catch (const YAML::Exception &amp;e) {
+        ofLogWarning("Preset") &lt;&lt; "Could not load " &lt;&lt; filename &lt;&lt; ": " &lt;&lt; e.what();
+    }
+}
+
+void ofApp::keyPressed(int key) {
+    if (key == 's') savePreset("preset_user.yaml");
+    if (key == 'l') loadPreset("preset_user.yaml");
+}
+</pre>
+
+<p>
+The resulting preset file is human-readable and directly editable in a text editor:
+</p>
+
+<pre>
+frequency: 330
+amplitude: 0.75
+attack_ms: 5
+decay_ms: 180
+</pre>
+
+<h3>When to Prefer YAML over Alternatives</h3>
+
+<p>
+<b>Use YAML when:</b> the file will be hand-edited; the data is nested; you want comment
+support; the audience includes non-programmers.
+</p>
+
+<p>
+<b>Use JSON when:</b> the file is machine-generated or consumed by a web API; you need strict
+typing guarantees; you already have a good JSON library in the project.
+</p>
+
+<p>
+<b>Use Lua tables when:</b> you need the config to be scriptable (Lua lets users write
+conditional logic in the config file itself); many game engines use this approach.
+</p>
+
+<p>
+<b>Use ofXml / ofxXmlSettings when:</b> you need to stay within the oF ecosystem with no
+extra dependency; the data structure is simple.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+yaml-cpp integrates into an oF project by adding its source files to your build - no system
+package or Boost dependency needed. <code>YAML::LoadFile</code> gives you a node tree you
+traverse with map-key and sequence-iteration syntax; <code>YAML::Emitter</code> writes YAML
+back to a stream. Wrapping <code>ofParameterGroup</code> with YAML load/save takes under
+fifty lines and gives you human-editable, comment-able preset files. Part 15 steps back from
+library specifics to look at the cross-platform picture: how oF abstracts the platform layer
+and what you need to know to write code that builds cleanly on Linux, macOS, and Windows.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+  <li><a href="https://github.com/jbeder/yaml-cpp">yaml-cpp on GitHub</a></li>
+  <li><a href="https://yaml.org/spec/1.2.2/">YAML 1.2 Specification</a></li>
+  <li><a href="https://yaml.org/start.html">YAML Getting Started</a></li>
+  <li><a href="https://openframeworks.cc/documentation/types/ofParameter/">ofParameter API Reference</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+  <li><a href="of-08-ofxgui.htm">ofxGui: Built-in UI Controls</a></li>
+  <li><a href="of-13-addons.htm">Addons: Structure &amp; Best Practices</a></li>
+  <li><a href="of-15-cross-platform.htm">Cross-Platform Overview</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

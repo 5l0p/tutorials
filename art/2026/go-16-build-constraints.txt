@@ -1,0 +1,325 @@
+Go - Part 16: Platform-Specific Code & Build Constraints
+2026-06-01
+
+
+Production software rarely runs on exactly one platform. You might ship a Linux binary to
+production, a macOS binary to developers, and a Windows binary for the occasional desktop
+user. Some of that code is portable. Some - system calls, file paths, signal handling -
+is not. Go gives you two orthogonal mechanisms for including or excluding files from a
+build: file-name suffixes and build constraint comments. Together they let you present a
+clean, platform-independent interface to the rest of your program while hiding the
+OS-specific details inside. If you have done this in C with #ifdef blocks and
+in C# with conditional compilation symbols, you will appreciate how much more structured
+Go's approach is.
+
+
+What You Will Learn
+
+
+How //go:build tag expressions select files at build time.
+How file-name suffixes (_linux.go, _windows_amd64.go) work as an alternative to explicit tags.
+How to hide platform differences behind a common Go interface.
+How syscall and golang.org/x/sys differ across platforms.
+How to test platform-specific code without the real OS.
+Common mistakes: forgetting a platform, build tag syntax errors, and the old // +build format.
+
+
+Build Tags: //go:build
+
+
+A build constraint is a comment of the form //go:build EXPR placed before the
+package clause, separated from it by a blank line. If the expression evaluates
+to false for the current build, the entire file is excluded - as if it did not exist.
+
+
+
+//go:build linux
+
+package platform
+
+
+
+The expression language supports boolean operators:
+
+
+
+//go:build linux || darwin          // Linux or macOS
+//go:build linux && amd64           // Linux on x86-64 only
+//go:build !windows                 // anything except Windows
+//go:build (linux || darwin) && cgo // Unix with CGo enabled
+
+
+
+The available tag names include all GOOS values (linux,
+windows, darwin, freebsd, …), all GOARCH
+values (amd64, arm64, 386, …), the Go version
+(go1.21 - true if the toolchain is at least that version), and custom tags
+you define with go build -tags mytag. You can also use ignore to
+unconditionally exclude a file from builds.
+
+
+
+The old syntax. Before Go 1.17, the constraint was written as a magic comment
+// +build linux with a different, less readable syntax (space-separated AND,
+comma-separated OR). You will see this in older code. Since Go 1.17 the new
+//go:build syntax is preferred; gofmt automatically adds the new
+form if only the old one is present.
+
+
+
+In C this is #ifdef __linux__ scattered throughout a file. In C# it is
+#if LINUX with symbols defined in the project file. Go's approach keeps each
+platform's code in its own file, which is far easier to read and review.
+
+
+File-Name Suffixes
+
+
+If a file's name (before the .go extension) ends with _GOOS,
+_GOARCH, or _GOOS_GOARCH, the Go toolchain applies the
+corresponding constraint automatically - no //go:build comment needed:
+
+
+
+platform_linux.go           // included only on Linux
+platform_windows.go         // included only on Windows
+platform_darwin_arm64.go    // included only on macOS/Apple Silicon
+signal_unix.go              // no special suffix - always included
+
+
+
+The suffix matching is exact and case-sensitive. The suffix must be the last component
+before .go. A file named my_linux_helper.go is NOT treated as
+Linux-only - the suffix must be the final part after the last underscore before
+.go: my_helper_linux.go would be.
+
+
+
+The suffix convention is ideal for files that are entirely platform-specific. Use
+//go:build tags when you need a more complex expression or when the filename
+would become unwieldy.
+
+
+A Worked Example: Getting the Process's CPU Time
+
+
+Consider a function that returns the CPU time consumed by the current process - a plausible
+monitoring metric. The call is getrusage(RUSAGE_SELF, ...) on Unix and
+GetProcessTimes on Windows. Here is how to structure this properly.
+
+
+
+Start by defining a common interface in a file with no build constraint:
+
+
+
+// cpu.go - included on all platforms
+package platform
+
+import "time"
+
+// CPUTime returns the user+system CPU time used by this process so far.
+// The implementation varies by OS.
+func CPUTime() time.Duration {
+    return cpuTime() // calls the platform-specific function
+}
+
+
+
+Then provide implementations in suffix-named files:
+
+
+
+// cpu_linux.go (also covers other Unix-likes via a build tag variant)
+//go:build linux || darwin || freebsd
+
+package platform
+
+import (
+    "syscall"
+    "time"
+)
+
+func cpuTime() time.Duration {
+    var ru syscall.Rusage
+    if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+        return 0
+    }
+    // ru.Utime and ru.Stime are Timeval structs
+    user := time.Duration(ru.Utime.Sec)*time.Second +
+        time.Duration(ru.Utime.Usec)*time.Microsecond
+    sys := time.Duration(ru.Stime.Sec)*time.Second +
+        time.Duration(ru.Stime.Usec)*time.Microsecond
+    return user + sys
+}
+
+
+
+// cpu_windows.go
+package platform
+
+import (
+    "syscall"
+    "time"
+    "unsafe"
+)
+
+func cpuTime() time.Duration {
+    handle, _ := syscall.GetCurrentProcess()
+    var creation, exit, kernel, user syscall.Filetime
+    _ = syscall.GetProcessTimes(handle, &creation, &exit, &kernel, &user)
+    toNs := func(ft syscall.Filetime) time.Duration {
+        // Filetime is in 100-nanosecond intervals
+        n := int64(ft.HighDateTime)<<32 | int64(ft.LowDateTime)
+        return time.Duration(n) * 100
+    }
+    _ = unsafe.Sizeof(creation) // satisfy import
+    return toNs(kernel) + toNs(user)
+}
+
+
+
+// cpu_stub.go - fallback for platforms we haven't implemented
+//go:build !linux && !darwin && !freebsd && !windows
+
+package platform
+
+import "time"
+
+func cpuTime() time.Duration { return 0 }
+
+
+
+The stub file is important. Without it, a build for an unsupported platform (say,
+plan9) will fail with "undefined: cpuTime". The stub gives you a zero-cost
+fallback that compiles everywhere. In C# this is the #else branch; in C it is
+the #else at the end of an #ifdef chain. Go forces you to make
+it a separate file, which keeps each case isolated.
+
+
+The syscall Package and golang.org/x/sys
+
+
+The syscall package in the standard library wraps OS system calls. Its API is
+platform-dependent - syscall.Getrusage exists on Unix, not on Windows. The
+package was frozen after Go 1.4 to avoid breaking changes.
+
+
+
+For new code, prefer golang.org/x/sys, which is the actively maintained
+extension. It covers more system calls, handles newer kernel features, and has a cleaner
+API. Install it like any other module:
+
+
+
+go get golang.org/x/sys
+
+
+
+golang.org/x/sys/unix covers Linux, macOS, FreeBSD, and other Unix-like
+systems. golang.org/x/sys/windows covers the Windows API. Both have
+platform-specific build constraints baked in, so importing the wrong subpackage on the
+wrong OS is a compile error - a useful guardrail.
+
+
+
+In C, you call system calls directly via libc wrappers (getrusage(2),
+ioctl(2)), and it is your responsibility to conditionally compile the right
+calls. In C# the P/Invoke layer lets you call native functions on any platform but provides
+no type safety across platforms. Go's separate packages-per-OS model is more structured
+than either.
+
+
+Custom Build Tags
+
+
+Beyond OS and architecture, you can define your own tags:
+
+
+
+//go:build integration
+
+package mypackage
+
+
+
+Then include it selectively:
+
+
+
+go test -tags integration ./...
+
+
+
+This is the standard way to exclude slow integration tests from the regular test run and
+include them only in CI. You may also use tags to include debug tracing, experimental
+features, or enterprise-only code paths.
+
+
+Testing Platform-Specific Code
+
+
+Platform-specific code is hardest to test because you may not have all OSes available in
+your CI. Two strategies:
+
+
+
+Interface inversion. Define the platform behaviour behind an interface. In tests,
+inject a fake implementation. This is the same pattern as injecting a mock database - it
+tests the logic without needing the real OS primitive.
+
+
+
+Cross-compilation checks. Even without running the code, you can verify that it
+compiles for all target platforms:
+
+
+
+GOOS=windows GOARCH=amd64 go build ./...
+GOOS=darwin  GOARCH=arm64 go build ./...
+GOOS=linux   GOARCH=amd64 go build ./...
+
+
+
+Add these to CI. A compile failure on Windows caught early saves a last-minute scramble
+before a release. Cross-compilation in Go is fast and requires no cross-toolchain because
+Go is self-contained - this is one of Go's genuine advantages over C, where you need a
+full cross-compilation toolchain for each target.
+
+
+Summary
+
+
+Go offers two mechanisms for platform-specific code: file-name suffixes (clean and
+implicit) and //go:build constraint expressions (explicit and powerful). Use
+suffixes for simple OS or architecture splits; use tags when the logic is more complex.
+Always provide stub files for platforms you have not implemented to avoid compilation
+failures on unsupported systems.
+
+
+
+The syscall package is frozen; use golang.org/x/sys for new
+system-call-level code. Verify that your code compiles across all target platforms in CI
+even if you cannot run it there. The overall pattern - hide platform specifics behind a
+common interface, test the interface - is exactly the same discipline applied throughout
+the series: define the contract, implement it, test it in isolation.
+
+
+Further Reading
+
+
+Build constraints - cmd/go documentation
+Build constraints - Go specification
+golang.org/x/sys - pkg.go.dev
+syscall - pkg.go.dev
+Go, the language of systems programming
+
+
+See Also
+
+
+Building & Cross-Compilation
+Modules & Dependencies
+Code Generation with go generate
+Testing in Go
+

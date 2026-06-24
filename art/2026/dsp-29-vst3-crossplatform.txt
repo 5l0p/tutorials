@@ -1,0 +1,360 @@
+DSP - Part 29: Cross-Platform VST3 Builds
+2026-06-01
+
+
+The VST3 plugin from Part 22 works on one machine. This article makes it build
+and install correctly on Linux, macOS, and Windows from a single CMakeLists.txt,
+with a CI matrix that verifies all three platforms on every push.
+
+
+What You Will Learn
+
+
+A CMakeLists.txt structure for multi-platform VST3 builds
+Building a macOS universal binary (x86_64 + arm64)
+macOS ad-hoc code signing for local development
+A GitHub Actions CI matrix for Linux, macOS, and Windows
+Packaging: .deb on Linux, .pkg on macOS, NSIS installer on Windows
+The VST3 installation paths on each platform
+
+
+VST3 Installation Paths
+
+
+VST3 hosts scan specific directories. Know these before packaging:
+
+
+
+Linux: ~/.vst3/ (user) or /usr/lib/vst3/ (system)
+macOS: ~/Library/Audio/Plug-Ins/VST3/ (user) or /Library/Audio/Plug-Ins/VST3/ (system)
+Windows: %LOCALAPPDATA%\Programs\Common\VST3\ (user) or C:\Program Files\Common Files\VST3\ (system)
+
+
+
+A VST3 plugin is a bundle: a directory named MyPlugin.vst3 with a
+specific internal layout. On macOS it looks like a .app bundle; on Linux
+and Windows it is a directory with a Contents/ subdirectory.
+
+
+CMakeLists.txt Structure
+
+
+Start from the VST3 SDK's CMake helper, which creates the bundle structure automatically:
+
+
+
+cmake_minimum_required(VERSION 3.22)
+project(MyDSPPlugin VERSION 1.0.0)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Add the VST3 SDK (as a submodule in third_party/vst3sdk)
+set(vst3sdk_SOURCE_DIR ${CMAKE_SOURCE_DIR}/third_party/vst3sdk)
+add_subdirectory(${vst3sdk_SOURCE_DIR} ${PROJECT_BINARY_DIR}/vst3sdk)
+
+# Our plugin target
+smtg_enable_vst3_sdk()
+
+smtg_add_vst3plugin(MyDSPPlugin
+    SOURCES_LIST
+        src/plugprocessor.cpp
+        src/plugcontroller.cpp
+        src/plugfactory.cpp
+        src/version.h
+)
+
+target_include_directories(MyDSPPlugin PRIVATE src)
+target_link_libraries(MyDSPPlugin
+    PRIVATE
+        sdk
+        base
+)
+
+
+
+smtg_add_vst3plugin is a macro from the VST3 SDK that creates the plugin
+target and sets up the bundle directory structure on all three platforms.
+
+
+Platform-Specific Compiler Flags
+
+
+Add platform-specific flags with if(CMAKE_SYSTEM_NAME ...):
+
+
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_options(MyDSPPlugin PRIVATE
+        -Wall -Wextra -fvisibility=hidden -fPIC)
+    target_link_options(MyDSPPlugin PRIVATE
+        -Wl,--no-undefined)
+
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_compile_options(MyDSPPlugin PRIVATE
+        -Wall -Wextra -fvisibility=hidden)
+    # Enable universal binary (x86_64 + Apple Silicon)
+    set_target_properties(MyDSPPlugin PROPERTIES
+        OSX_ARCHITECTURES "x86_64;arm64")
+
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_compile_definitions(MyDSPPlugin PRIVATE
+        _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+    target_compile_options(MyDSPPlugin PRIVATE /W4)
+    # Static runtime to avoid MSVC DLL dependency
+    set_property(TARGET MyDSPPlugin PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+
+
+The macOS OSX_ARCHITECTURES property triggers fat binary compilation —
+the compiler is called twice and the outputs are combined with lipo.
+
+
+macOS Code Signing
+
+
+macOS Gatekeeper requires plugins to be signed. For local development and CI, an
+ad-hoc signature (no Apple Developer account required) is sufficient:
+
+
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    # Ad-hoc sign — sufficient for local dev and testing.
+    # Replace "-" with your Developer ID for distribution.
+    add_custom_command(TARGET MyDSPPlugin POST_BUILD
+        COMMAND codesign --force --sign "-"
+            "$<TARGET_BUNDLE_DIR:MyDSPPlugin>"
+        COMMENT "Ad-hoc signing plugin bundle"
+    )
+endif()
+
+
+
+For App Store or notarized distribution, replace "-" with your Developer
+ID Application certificate name:
+
+
+
+codesign --force --sign "Developer ID Application: Your Name (TEAM_ID)" \
+         --options runtime \
+         --entitlements entitlements.plist \
+         MyDSPPlugin.vst3
+
+
+
+Notarization requires uploading the signed plugin to Apple's servers with
+xcrun notarytool and then stapling the ticket.
+
+
+GitHub Actions CI Matrix
+
+
+# .github/workflows/build.yml
+name: VST3 Plugin CI
+on: [push, pull_request]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            preset: linux-release
+          - os: macos-14
+            preset: macos-release
+          - os: windows-latest
+            preset: windows-release
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: 
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF
+          -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-${{ matrix.os }}
+          path: |
+            build/**/*.vst3
+            build/**/*.vst3/**
+
+
+
+fail-fast: false ensures all three platform builds run even if one fails,
+which is important when a bug is platform-specific.
+submodules: recursive checks out the VST3 SDK submodule.
+
+
+Linux: .deb Package
+
+
+Use CPack's DEB generator to create an installable .deb:
+
+
+
+# In CMakeLists.txt, after the plugin target:
+include(GNUInstallDirs)
+
+install(DIRECTORY "$<TARGET_BUNDLE_DIR:MyDSPPlugin>"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/vst3"
+        USE_SOURCE_PERMISSIONS)
+
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_NAME "mydsp-plugin")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Your Name <you@example.com>")
+set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
+set(CPACK_DEBIAN_PACKAGE_DESCRIPTION "MyDSP - a VST3 synthesiser plugin")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.17)")
+include(CPack)
+
+
+
+Build and package:
+
+
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+cd build && cpack -G DEB
+# Produces: mydsp-plugin-1.0.0-Linux.deb
+
+
+
+Install with sudo dpkg -i mydsp-plugin-1.0.0-Linux.deb. The plugin lands
+in /usr/lib/vst3/.
+
+
+macOS: .pkg Installer
+
+
+set(CPACK_GENERATOR "productbuild")
+set(CPACK_PACKAGE_NAME "MyDSPPlugin")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGING_INSTALL_PREFIX "/Library/Audio/Plug-Ins/VST3")
+set(CPACK_PRODUCTBUILD_IDENTIFIER "com.yourcompany.mydsp")
+
+
+
+The productbuild generator calls Apple's productbuild tool.
+For a signed installer:
+
+
+
+productbuild \
+    --sign "Developer ID Installer: Your Name (TEAM_ID)" \
+    --component MyDSPPlugin.vst3 /Library/Audio/Plug-Ins/VST3 \
+    MyDSPPlugin-1.0.0.pkg
+
+
+Windows: NSIS Installer
+
+
+NSIS (Nullsoft Scriptable Install System) is a free installer tool. Install it and
+add it to PATH on the CI runner:
+
+
+
+set(CPACK_GENERATOR "NSIS")
+set(CPACK_PACKAGE_NAME "MyDSP Plugin")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_NSIS_DISPLAY_NAME "MyDSP Plugin")
+set(CPACK_NSIS_INSTALL_ROOT "$PROGRAMFILES64\\Common Files\\VST3")
+set(CPACK_NSIS_MUI_ICON "${CMAKE_SOURCE_DIR}/assets/plugin.ico")
+set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+
+
+
+In the CI workflow, install NSIS before calling CPack:
+
+
+
+      - name: Install NSIS (Windows)
+        if: runner.os == 'Windows'
+        run: choco install nsis -y
+
+      - name: Package
+        run: cd build && cpack -G NSIS
+
+
+Testing the Plugin Loads
+
+
+Validate that the plugin passes VST3 validation before packaging. The VST3 SDK ships
+a validator tool:
+
+
+
+      - name: Validate plugin (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          VALIDATOR=$(find build -name "validator" -type f | head -1)
+          PLUGIN=$(find build -name "*.vst3" -type d | head -1)
+          "$VALIDATOR" "$PLUGIN"
+
+
+
+The validator checks that the plugin's factory, processor, and controller are
+correctly implemented and that it handles parameter changes without crashing. A plugin
+that fails validation will not load in most VST3 hosts.
+
+
+A Complete Build Invocation
+
+
+# Linux release build and .deb package:
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF
+cmake --build build --config Release --parallel $(nproc)
+cd build && cpack -G DEB
+
+# macOS universal binary:
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+cmake --build build --config Release
+cd build && cpack -G productbuild
+
+# Windows (from Developer Command Prompt):
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+cd build && cpack -G NSIS
+
+
+Summary
+
+
+Use smtg_add_vst3plugin from the VST3 SDK's CMake infrastructure to
+handle the bundle structure on all three platforms. Add platform-specific compile flags
+with if(CMAKE_SYSTEM_NAME ...). Build a macOS universal binary by setting
+OSX_ARCHITECTURES "x86_64;arm64". Ad-hoc sign the macOS bundle with
+codesign --sign "-" for local development. Use a GitHub Actions matrix
+job to build on ubuntu-22.04, macos-14, and
+windows-latest. Package with CPack: DEB on Linux, productbuild on macOS,
+NSIS on Windows. Run the VST3 SDK validator in CI to catch plugin API violations before
+distribution.
+
+
+See Also
+
+
+Writing a VST3 Plugin - the plugin code this Makefile wraps
+Static Linking and Distribution - techniques for making the plugin self-contained
+Vendoring C and C++ Dependencies - managing the VST3 SDK as a submodule
+

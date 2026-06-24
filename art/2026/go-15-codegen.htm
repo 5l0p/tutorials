@@ -1,0 +1,512 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Go - Part 15: Code Generation with go generate</title>
+    <meta name="description" content="How to use //go:generate to automate repetitive code, from stringer to writing your own text/template generator and inspecting code with go/ast.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="go-15-codegen.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../go.htm">go</a></i>
+        <h2>Go - Part 15: Code Generation with go generate</h2>
+        <p>
+Every large codebase contains repetitive code that cannot reasonably be abstracted away:
+string representations for enumerations, marshalling glue, mock implementations, lookup
+tables. In C, the traditional answer is macros - powerful but unreadable, undebuggable,
+and invisible to the type system. In C# the modern answer is source generators, which are
+Roslyn-based plug-ins that run during compilation. Go's answer is different from both:
+<code>go generate</code> runs external programs as ordinary build steps, and the generated
+code is checked in alongside hand-written code. The approach is less magic but more
+transparent - you can read, debug, and diff the generated output just like any other Go file.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How the <code>//go:generate</code> directive works and when to use it.</li>
+<li>Using <code>stringer</code> to generate <code>String()</code> methods for enum-like types.</li>
+<li>Writing a code generator with <code>text/template</code>.</li>
+<li>Inspecting Go source code with <code>go/ast</code> and <code>go/parser</code>.</li>
+<li>How Go code generation compares to C macros and C# source generators.</li>
+<li>Best practices: where to put generated files, how to mark them, and when to regenerate.</li>
+</ul>
+
+<h3>The //go:generate Directive</h3>
+
+<p>
+A <code>//go:generate</code> comment placed anywhere in a Go source file records a command
+to run when <code>go generate</code> is invoked for that package. The comment must start
+at column zero with no space between <code>//</code> and <code>go:generate</code>:
+</p>
+
+<pre>
+//go:generate stringer -type=Direction
+</pre>
+
+<p>
+Running <code>go generate ./...</code> finds every such comment in the package tree and
+executes the recorded command with the shell. The working directory is set to the directory
+containing the source file. The command receives the following environment variables:
+</p>
+
+<pre>
+$GOFILE   - the source file containing the directive
+$GOPACKAGE - the package name
+$GOARCH   - target architecture
+$GOOS     - target OS
+$GOROOT   - Go root directory
+$GOPATH   - GOPATH
+</pre>
+
+<p>
+This is the complete mechanism. There is no phase integration with the compiler, no plugin
+API - just "run this command". The simplicity is intentional. Compare this with C macros,
+which are expanded by the preprocessor during compilation, invisible to debuggers and most
+tooling. Compare with C# source generators, which are Roslyn extensions that run inside the
+compiler pipeline and can only emit, not replace, source. Go generators can do anything an
+external program can do.
+</p>
+
+<p>
+The trade-off: unlike C# source generators, Go generators must be re-run manually (or in
+your Makefile/CI pipeline). The output is checked in. This means a stale generated file
+will compile but may be wrong. The convention is to add a CI check:
+</p>
+
+<pre>
+go generate ./...
+git diff --exit-code   # fail if generate changed anything
+</pre>
+
+<h3>stringer: String Methods for Enumerations</h3>
+
+<p>
+Go has no built-in <code>enum</code> keyword. The idiomatic substitute is a named integer
+type and a block of <code>const</code> values using <code>iota</code>. The weakness is that
+printing one of these constants shows the underlying integer, not a name. The
+<code>stringer</code> tool generates a <code>String() string</code> method to fix that.
+</p>
+
+<pre>
+// direction.go
+package main
+
+//go:generate stringer -type=Direction
+
+type Direction int
+
+const (
+    North Direction = iota
+    South
+    East
+    West
+)
+</pre>
+
+<p>
+Install and run:
+</p>
+
+<pre>
+go install golang.org/x/tools/cmd/stringer@latest
+go generate .
+</pre>
+
+<p>
+This produces <code>direction_string.go</code> (the name follows the <code>-type</code>
+argument). Open it and you will find a generated <code>String()</code> method that uses a
+baked-in string containing all names concatenated and an index array - an efficient
+O(1) lookup with no heap allocation:
+</p>
+
+<pre>
+// Code generated by "stringer -type=Direction"; DO NOT EDIT.
+
+package main
+
+import "strconv"
+
+func _() {
+    // Compile-time guard: fails if the value of North changes
+    var x [1]struct{}
+    _ = x[North-0]
+    _ = x[South-1]
+    _ = x[East-2]
+    _ = x[West-3]
+}
+
+const _Direction_name = "NorthSouthEastWest"
+
+var _Direction_index = [...]uint8{0, 5, 10, 14, 18}
+
+func (i Direction) String() string {
+    if i &lt; 0 || i &gt;= Direction(len(_Direction_index)-1) {
+        return "Direction(" + strconv.FormatInt(int64(i), 10) + ")"
+    }
+    return _Direction_name[_Direction_index[i]:_Direction_index[i+1]]
+}
+</pre>
+
+<p>
+The compile-time guard at the top is a key technique: if you add a new constant and forget
+to regenerate, the blank identifier assignment will fail to compile because the constant
+value will not match the expected index. This is how Go generators remain safe without
+deep compiler integration.
+</p>
+
+<p>
+In C# you would implement this with a <code>switch</code> expression or let the debugger
+show the enum name. Go's approach makes the printed value match the source name in all
+contexts - log files, JSON output, error messages - without runtime reflection.
+</p>
+
+<h3>Writing a Generator with text/template</h3>
+
+<p>
+<code>stringer</code> covers one specific problem. For custom generation, you write a Go
+program. The standard approach is to use <code>text/template</code> to turn a data
+description into Go source code.
+</p>
+
+<p>
+Suppose you have a configuration struct that grows over time and you want to generate a
+<code>Merge(other Config) Config</code> method that copies only the non-zero fields. Writing
+this by hand is tedious and error-prone. A generator makes it trivial to keep up with
+struct changes.
+</p>
+
+<p>
+First, define the generator as a standalone program, conventionally in a
+<code>cmd/gen-merge/</code> directory:
+</p>
+
+<pre>
+// cmd/gen-merge/main.go
+package main
+
+import (
+    "os"
+    "text/template"
+)
+
+// Field describes one field to merge.
+type Field struct {
+    Name string
+    Type string
+}
+
+var fields = []Field{
+    {"Host", "string"},
+    {"Port", "int"},
+    {"Timeout", "time.Duration"},
+    {"Debug", "bool"},
+}
+
+var tmpl = template.Must(template.New("merge").Parse(`// Code generated by gen-merge; DO NOT EDIT.
+
+package config
+
+import "time"
+
+// Merge returns a new Config with non-zero fields from other overriding c.
+func (c Config) Merge(other Config) Config {
+    out := c
+{{- range .}}
+    if other.{{.Name}} != {{zeroOf .Type}} {
+        out.{{.Name}} = other.{{.Name}}
+    }
+{{- end}}
+    return out
+}
+`))
+
+func main() {
+    // In a real generator you would parse flags for the output file path.
+    if err := tmpl.Execute(os.Stdout, fields); err != nil {
+        panic(err)
+    }
+}
+</pre>
+
+<p>
+The <code>{{- range .}}</code> iterates over the slice; <code>{{.Name}}</code> inserts the
+field name. Template actions (the <code>{{...}}</code> parts) are evaluated; everything
+else is copied verbatim into the output. After piping the output through
+<code>gofmt</code>, you have clean, formatted Go code.
+</p>
+
+<p>
+In practice, add a helper function map to the template for things like <code>zeroOf</code>:
+</p>
+
+<pre>
+var tmpl = template.Must(template.New("merge").Funcs(template.FuncMap{
+    "zeroOf": func(t string) string {
+        switch t {
+        case "string":
+            return `""`
+        case "bool":
+            return "false"
+        case "time.Duration", "int", "int64":
+            return "0"
+        default:
+            return "nil"
+        }
+    },
+}).Parse(rawTemplate))
+</pre>
+
+<p>
+Wire this into the package that consumes it:
+</p>
+
+<pre>
+// config/config.go
+package config
+
+import "time"
+
+//go:generate go run ../cmd/gen-merge/main.go | gofmt &gt; merge_gen.go
+
+type Config struct {
+    Host    string
+    Port    int
+    Timeout time.Duration
+    Debug   bool
+}
+</pre>
+
+<p>
+The convention for generated file names is to end with <code>_gen.go</code> or
+<code>_string.go</code>. Always include the <code>// Code generated ... DO NOT EDIT.</code>
+header - <code>gofmt</code>, <code>go vet</code>, and many editors recognise this and
+suppress lint warnings on the file.
+</p>
+
+<h3>Inspecting Code with go/ast</h3>
+
+<p>
+Hardcoding the field list in the generator defeats the purpose - you still need to update
+two files. The proper approach is to parse the Go source and extract the information
+automatically using <code>go/ast</code> and <code>go/parser</code>.
+</p>
+
+<p>
+<code>go/ast</code> gives you the Abstract Syntax Tree of a Go file as a data structure you
+can walk. This is what tools like <code>stringer</code>, <code>mockgen</code>, and
+<code>protoc-gen-go</code> do internally.
+</p>
+
+<pre>
+package main
+
+import (
+    "fmt"
+    "go/ast"
+    "go/parser"
+    "go/token"
+)
+
+func main() {
+    fset := token.NewFileSet()
+    // Parse the source file
+    f, err := parser.ParseFile(fset, "config/config.go", nil, 0)
+    if err != nil {
+        panic(err)
+    }
+
+    // Walk declarations looking for the Config struct
+    for _, decl := range f.Decls {
+        genDecl, ok := decl.(*ast.GenDecl)
+        if !ok {
+            continue
+        }
+        for _, spec := range genDecl.Specs {
+            typeSpec, ok := spec.(*ast.TypeSpec)
+            if !ok || typeSpec.Name.Name != "Config" {
+                continue
+            }
+            structType, ok := typeSpec.Type.(*ast.StructType)
+            if !ok {
+                continue
+            }
+            // Print each field name and type
+            for _, field := range structType.Fields.List {
+                for _, name := range field.Names {
+                    fmt.Printf("Field: %s\n", name.Name)
+                }
+            }
+        }
+    }
+}
+</pre>
+
+<p>
+The AST types mirror the language syntax exactly: <code>*ast.GenDecl</code> is a
+<code>type</code>, <code>const</code>, <code>var</code>, or <code>import</code> block;
+<code>*ast.TypeSpec</code> is a single type declaration; <code>*ast.StructType</code> is
+a struct literal. Once you have the <code>StructType</code>, you can extract field names,
+types, and struct tags.
+</p>
+
+<p>
+For larger generators that need full type information - resolving imported types, checking
+interface satisfaction - use <code>go/types</code> and <code>golang.org/x/tools/go/packages</code>
+instead of the raw parser. These packages load a full package graph, not just a single file.
+</p>
+
+<p>
+In C, there is no equivalent - the preprocessor sees tokens, not a typed AST, so genuine
+code inspection requires external tools like libclang. In C#, source generators have access
+to the full Roslyn semantic model, which is similar in power to <code>go/types</code> but
+runs inside the compiler rather than as an external program.
+</p>
+
+<h3>Practical Patterns</h3>
+
+<p>
+A few conventions the Go community has settled on:
+</p>
+
+<ul>
+<li><b>Name generated files</b> with a <code>_gen.go</code> suffix or a tool-specific suffix like <code>_string.go</code>. Do not use generic names like <code>generated.go</code> - when you have multiple generators they will collide.</li>
+<li><b>Always include the header</b> <code>// Code generated by TOOL; DO NOT EDIT.</code> on the first line. The exact wording matters - the Go toolchain and many editors check for this string.</li>
+<li><b>Check generated files into version control.</b> This means diffs show both the input change and the generated output change together, making code review coherent.</li>
+<li><b>Run generators in CI</b> with a subsequent <code>git diff --exit-code</code> to detect stale generated files.</li>
+<li><b>Keep generators in <code>cmd/</code></b> or as separate modules if they are only needed for development, not at runtime.</li>
+</ul>
+
+<h3>Comparison: C Macros, C# Source Generators, Go Generate</h3>
+
+<p>
+C macros operate at the token level before parsing. They are Turing-complete but produce
+code invisible to debuggers and type checkers. X-macros - a C pattern where a macro is
+defined and undefined repeatedly to generate parallel code - can generate enum values,
+string tables, and switch cases from a single list. It works, but the output is unreadable.
+</p>
+
+<p>
+C# source generators (Roslyn, C# 9+) run inside the compiler. They receive the compilation
+as input and can add files to it but cannot modify existing files. The advantage is
+tight IDE integration - generated code is immediately available to IntelliSense. The
+disadvantage is complexity: writing a source generator requires knowing the Roslyn API,
+and debugging one is painful.
+</p>
+
+<p>
+Go <code>go generate</code> runs external programs. The output is ordinary Go source. It is
+the most transparent approach: you can <code>cat</code> the generated file, step through it
+in a debugger, and diff it in code review. The trade-off is that you must run the generator
+explicitly and check the output in. For most teams this is a small cost for a large gain in
+clarity.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+<code>go generate</code> is a lightweight wrapper around external commands - its power comes
+from the tools you invoke, not from any magic in the directive itself. For enum string
+methods, <code>stringer</code> is the standard tool. For custom generation, combine
+<code>text/template</code> (to emit code) with <code>go/ast</code> (to read existing code)
+and write a small standalone Go program. Generated files should always carry the
+<code>// Code generated</code> header, be checked into version control, and be validated in CI.
+</p>
+
+<p>
+The approach contrasts with C macros (invisible to tooling) and C# source generators
+(deep compiler integration) in favour of transparency: the generated code is just code.
+Coming from the tooling article (Part 14), you can see how <code>go generate</code> fits
+into the broader Go automation philosophy - automate the boring parts, but keep the result
+readable.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://go.dev/blog/generate">Generating code - The Go Blog</a></li>
+<li><a href="https://pkg.go.dev/golang.org/x/tools/cmd/stringer">stringer - pkg.go.dev</a></li>
+<li><a href="https://pkg.go.dev/go/ast">go/ast - pkg.go.dev</a></li>
+<li><a href="https://pkg.go.dev/text/template">text/template - pkg.go.dev</a></li>
+<li><a href="https://pkg.go.dev/golang.org/x/tools/go/packages">golang.org/x/tools/go/packages - pkg.go.dev</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="go-14-tooling.htm">Formatting, Linting &amp; Tooling</a></li>
+<li><a href="go-10-generics.htm">Generics</a></li>
+<li><a href="go-16-build-constraints.htm">Platform-Specific Code &amp; Build Constraints</a></li>
+<li><a href="go-17-testing.htm">Testing in Go</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

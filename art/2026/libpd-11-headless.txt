@@ -1,0 +1,915 @@
+libpd - Part 11: Headless libpd
+2026-06-01
+
+Every article in this series so far has assumed an audio device somewhere in the stack - PortAudio, ALSA, SDL2, a VST3 host, an openFrameworks sound stream. But libpd does not actually need one. The engine is just a function that fills a buffer. Nothing in libpd_process_float talks to a driver, opens a device node, or spawns a thread. You call it in a loop, it fills an array of floats, and you do whatever you like with those floats: write them to a file, pipe them over a socket, assert their values in a unit test, or discard them entirely. This is headless libpd, and it opens up a set of use cases - batch rendering, server-side audio generation, CI testing of Pd patches - that are impossible when your DSP engine is tied to a live audio device.
+
+What You Will Learn
+
+
+How to run the libpd DSP engine in a tight loop with no audio device at all.
+How to write rendered audio to a WAV file from C, including the correct WAV header layout.
+How to build a server-side renderer that accepts a patch name and duration, and returns WAV bytes.
+How to write automated tests that load a Pd patch and assert output sample values from C.
+How to run multiple t_pdinstance renderers in parallel threads safely.
+How to shut down cleanly and avoid the memory leaks that plague long-running headless processes.
+
+
+What "Headless" Means
+
+In this context, headless means two things at once: no graphical interface (which libpd never had anyway), and no real-time audio device. You are not constrained by a hardware clock, a driver callback rate, or a buffer-underrun budget. You render as fast as the CPU allows, which is typically 50–200× faster than real time for a simple patch on modern hardware.
+
+The core insight is that libpd_process_float is synchronous and stateless with respect to time. It does not know or care whether 11.6 ms has elapsed since the last call. You can call it a million times in a tight loop and Pd's internal time counter advances accordingly - [timer], [metro], and [delay] all fire at the correct sample offsets.
+
+What you lose in headless mode: real-time user interaction and live audio monitoring. What you gain: determinism, speed, portability, and the ability to run in environments where there is no audio subsystem at all (CI runners, container sandboxes, serverless functions).
+
+The Minimal Render Loop
+
+Here is the complete skeleton. There is no PortAudio, no SDL, no ALSA. Just a loop:
+
+
+#include <z_libpd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+#define SAMPLE_RATE  44100
+#define OUT_CHANNELS 2
+#define TICK_SIZE    64                        /* always 64 in libpd */
+#define BLOCK_TICKS  8                         /* 8 * 64 = 512 samples/call */
+#define BLOCK_SIZE   (BLOCK_TICKS * TICK_SIZE) /* 512 */
+
+int main(void) {
+    /* 1. Initialise */
+    libpd_init();
+    libpd_init_audio(0, OUT_CHANNELS, SAMPLE_RATE);
+
+    /* 2. Enable DSP */
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    /* 3. Load patch */
+    void *patch = libpd_openfile("sine440.pd", "patches");
+    if (!patch) {
+        fprintf(stderr, "Could not open patch\n");
+        return 1;
+    }
+
+    /* 4. Allocate output buffer (interleaved stereo) */
+    float *out = malloc(BLOCK_SIZE * OUT_CHANNELS * sizeof(float));
+
+    /* 5. Render 5 seconds */
+    int total_blocks = (SAMPLE_RATE * 5) / BLOCK_SIZE;
+    for (int b = 0; b < total_blocks; b++) {
+        memset(out, 0, BLOCK_SIZE * OUT_CHANNELS * sizeof(float));
+        libpd_process_float(BLOCK_TICKS, NULL, out);
+        /* out[] now contains BLOCK_SIZE stereo frames - do something with them */
+    }
+
+    /* 6. Clean up */
+    libpd_closefile(patch);
+    free(out);
+    return 0;
+}
+
+
+A few things to note. First, libpd_init_audio sets zero input channels because we have no microphone or live signal to feed in. Second, the DSP enable message must be sent before any audio is rendered - libpd starts with DSP off. Third, BLOCK_TICKS controls how many 64-sample ticks you compute per call to libpd_process_float. Larger values amortise the function-call overhead; 8 (512 samples) is a reasonable default for offline work. Fourth, NULL is a valid input buffer when you have no input channels.
+
+The loop above renders 5 seconds of audio and throws it away. The next section turns it into something useful.
+
+Writing a WAV File from C
+
+WAV is the simplest lossless audio container. Its header is a fixed-size binary structure that you can write with plain C. Here is the layout for a PCM stereo file:
+
+
+/*
+ * WAV header layout (44 bytes, little-endian):
+ *
+ * Offset  Size  Field
+ * 0       4     "RIFF"
+ * 4       4     fileSize - 8  (filled in after render)
+ * 8       4     "WAVE"
+ * 12      4     "fmt "
+ * 16      4     16            (fmt chunk size for PCM)
+ * 20      2     1             (PCM audio format)
+ * 22      2     numChannels
+ * 24      4     sampleRate
+ * 28      4     byteRate = sampleRate * numChannels * bitsPerSample/8
+ * 32      2     blockAlign = numChannels * bitsPerSample/8
+ * 34      2     bitsPerSample
+ * 36      4     "data"
+ * 40      4     dataSize = numSamples * numChannels * bitsPerSample/8
+ */
+
+
+A complete function that writes a 16-bit PCM WAV file from an array of interleaved floats:
+
+
+#include <stdint.h>
+#include <stdio.h>
+
+/* Write a 16-bit little-endian integer */
+static void write_le16(FILE *f, uint16_t v) {
+    uint8_t b[2] = { v & 0xFF, (v >> 8) & 0xFF };
+    fwrite(b, 1, 2, f);
+}
+
+/* Write a 32-bit little-endian integer */
+static void write_le32(FILE *f, uint32_t v) {
+    uint8_t b[4] = {
+        v & 0xFF, (v >> 8) & 0xFF,
+        (v >> 16) & 0xFF, (v >> 24) & 0xFF
+    };
+    fwrite(b, 1, 4, f);
+}
+
+/* Clamp float to [-1, 1] and convert to int16 */
+static int16_t float_to_s16(float f) {
+    if (f >  1.0f) f =  1.0f;
+    if (f < -1.0f) f = -1.0f;
+    return (int16_t)(f * 32767.0f);
+}
+
+/*
+ * write_wav() - write interleaved float PCM to a WAV file.
+ *
+ * samples     : interleaved buffer, length = num_frames * channels
+ * num_frames  : total sample frames (not total samples)
+ * channels    : number of channels (e.g. 2 for stereo)
+ * sample_rate : e.g. 44100
+ * path        : output file path
+ *
+ * Returns 0 on success, -1 on error.
+ */
+int write_wav(const float *samples,
+              int num_frames,
+              int channels,
+              int sample_rate,
+              const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+
+    int    bits_per_sample = 16;
+    int    byte_rate       = sample_rate * channels * bits_per_sample / 8;
+    int    block_align     = channels * bits_per_sample / 8;
+    uint32_t data_size     = (uint32_t)(num_frames * channels * 2);
+    uint32_t file_size     = 36 + data_size;
+
+    /* RIFF header */
+    fwrite("RIFF", 1, 4, f);
+    write_le32(f, file_size);
+    fwrite("WAVE", 1, 4, f);
+
+    /* fmt chunk */
+    fwrite("fmt ", 1, 4, f);
+    write_le32(f, 16);                        /* chunk size */
+    write_le16(f, 1);                         /* PCM */
+    write_le16(f, (uint16_t)channels);
+    write_le32(f, (uint32_t)sample_rate);
+    write_le32(f, (uint32_t)byte_rate);
+    write_le16(f, (uint16_t)block_align);
+    write_le16(f, (uint16_t)bits_per_sample);
+
+    /* data chunk */
+    fwrite("data", 1, 4, f);
+    write_le32(f, data_size);
+
+    /* Convert and write samples */
+    for (int i = 0; i < num_frames * channels; i++) {
+        int16_t s = float_to_s16(samples[i]);
+        uint8_t b[2] = { s & 0xFF, (s >> 8) & 0xFF };
+        fwrite(b, 1, 2, f);
+    }
+
+    fclose(f);
+    return 0;
+}
+
+
+A common mistake here is computing data_size from the number of total samples rather than frames multiplied by channels. They are the same number, but keeping the distinction explicit avoids bugs when you change the channel count. Another gotcha: the file_size field in the RIFF header is total_bytes - 8, not the total file size. The "RIFF" and the four-byte size field itself are excluded.
+
+To wire this into the render loop, accumulate all rendered frames in a dynamically grown buffer, then call write_wav once at the end:
+
+
+#include <z_libpd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdint.h>
+
+#define SAMPLE_RATE  44100
+#define CHANNELS     2
+#define BLOCK_TICKS  8
+#define BLOCK_SIZE   (BLOCK_TICKS * 64)
+
+int render_to_wav(const char *patch_name,
+                  const char *patch_dir,
+                  float       duration_sec,
+                  const char *out_path)
+{
+    libpd_init();
+    libpd_init_audio(0, CHANNELS, SAMPLE_RATE);
+
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    void *patch = libpd_openfile(patch_name, patch_dir);
+    if (!patch) {
+        fprintf(stderr, "render_to_wav: cannot open %s/%s\n",
+                patch_dir, patch_name);
+        return -1;
+    }
+
+    int total_frames  = (int)(SAMPLE_RATE * duration_sec);
+    int total_samples = total_frames * CHANNELS;
+    float *pcm = malloc(total_samples * sizeof(float));
+    if (!pcm) { libpd_closefile(patch); return -1; }
+
+    float block[BLOCK_SIZE * CHANNELS];
+    int written = 0;
+
+    while (written < total_frames) {
+        int frames_this_block = BLOCK_SIZE;
+        if (written + frames_this_block > total_frames)
+            frames_this_block = total_frames - written;
+
+        /* Always process a full block - clip on copy */
+        memset(block, 0, sizeof(block));
+        libpd_process_float(BLOCK_TICKS, NULL, block);
+
+        int samples_this_block = frames_this_block * CHANNELS;
+        memcpy(pcm + written * CHANNELS, block,
+               samples_this_block * sizeof(float));
+        written += frames_this_block;
+    }
+
+    int rc = write_wav(pcm, total_frames, CHANNELS, SAMPLE_RATE, out_path);
+
+    free(pcm);
+    libpd_closefile(patch);
+    return rc;
+}
+
+int main(void) {
+    return render_to_wav("reverb_test.pd", "patches", 3.0f, "out.wav");
+}
+
+
+The partial-block handling at the end of the duration is important. libpd_process_float always processes exactly BLOCK_TICKS * 64 frames. If the desired duration is not a multiple of the block size, you compute a full block but only copy the portion you need into the accumulation buffer. Never truncate the call to libpd_process_float itself - it must always receive the full tick count it expects.
+
+Server-Side Audio Generation
+
+With headless rendering working, the jump to a server endpoint is straightforward. The pattern: receive an HTTP request, read patch parameters from query string or JSON body, call the render function, stream the WAV bytes back as the response body with Content-Type: audio/wav.
+
+Here is a self-contained example using POSIX sockets - no external HTTP library. It listens on port 8080, handles one request at a time, and returns a rendered WAV:
+
+
+/*
+ * pd_server.c - minimal HTTP audio renderer
+ *
+ * GET /render?patch=sine440.pd&duration=2.5
+ * Response: audio/wav
+ *
+ * Compile:
+ *   cc -o pd_server pd_server.c write_wav.c \
+ *      -Ideps/libpd/libpd_wrapper deps/libpd/build/libs/libpd.a -lm -lpthread
+ */
+
+#include <z_libpd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define PORT        8080
+#define SAMPLE_RATE 44100
+#define CHANNELS    2
+#define BLOCK_TICKS 8
+#define BLOCK_SIZE  (BLOCK_TICKS * 64)
+#define PATCH_DIR   "patches"
+#define MAX_SECONDS 30.0f
+
+/* --- simple query string parser --- */
+static int parse_query(const char *request,
+                       char *patch_out,  size_t patch_len,
+                       float *dur_out)
+{
+    *patch_out = '\0';
+    *dur_out   = 1.0f;
+
+    const char *q = strstr(request, "patch=");
+    if (q) {
+        q += 6;
+        const char *end = strpbrk(q, "& \r\n");
+        size_t n = end ? (size_t)(end - q) : strlen(q);
+        if (n >= patch_len) n = patch_len - 1;
+        strncpy(patch_out, q, n);
+        patch_out[n] = '\0';
+    }
+
+    const char *d = strstr(request, "duration=");
+    if (d) *dur_out = (float)atof(d + 9);
+    if (*dur_out <= 0.0f || *dur_out > MAX_SECONDS)
+        *dur_out = 1.0f;
+
+    return (*patch_out != '\0') ? 0 : -1;
+}
+
+/* --- render a patch to a malloc'd buffer, return byte count --- */
+static float *render(const char *patch_name,
+                     float duration,
+                     int *out_frames)
+{
+    /* Each request re-uses the global libpd instance.
+     * For concurrent requests you need multiple t_pdinstance - see below. */
+    libpd_start_message(1);
+    libpd_add_float(0.0f);
+    libpd_finish_message("pd", "dsp");      /* DSP off while loading */
+
+    void *patch = libpd_openfile(patch_name, PATCH_DIR);
+    if (!patch) return NULL;
+
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");      /* DSP on */
+
+    int total_frames  = (int)(SAMPLE_RATE * duration);
+    float *pcm = malloc(total_frames * CHANNELS * sizeof(float));
+    if (!pcm) { libpd_closefile(patch); return NULL; }
+
+    float block[BLOCK_SIZE * CHANNELS];
+    int written = 0;
+    while (written < total_frames) {
+        int n = total_frames - written;
+        if (n > BLOCK_SIZE) n = BLOCK_SIZE;
+        memset(block, 0, sizeof(block));
+        libpd_process_float(BLOCK_TICKS, NULL, block);
+        memcpy(pcm + written * CHANNELS, block,
+               n * CHANNELS * sizeof(float));
+        written += n;
+    }
+
+    libpd_closefile(patch);
+    *out_frames = total_frames;
+    return pcm;
+}
+
+/* --- write_wav_to_buf: same as write_wav but into a malloc'd buffer --- */
+/* (implementation omitted for brevity - see write_wav() above,
+    adapted to use fmemopen or a manual byte array)  */
+extern int wav_to_buffer(const float *pcm, int frames, int ch,
+                         int sr, uint8_t **buf_out, size_t *size_out);
+
+int main(void) {
+    libpd_init();
+    libpd_init_audio(0, CHANNELS, SAMPLE_RATE);
+
+    int server = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr = {
+        .sin_family      = AF_INET,
+        .sin_port        = htons(PORT),
+        .sin_addr.s_addr = INADDR_ANY
+    };
+    bind(server, (struct sockaddr *)&addr, sizeof(addr));
+    listen(server, 8);
+    fprintf(stderr, "pd_server listening on :%d\n", PORT);
+
+    for (;;) {
+        int client = accept(server, NULL, NULL);
+        if (client < 0) continue;
+
+        char req[2048] = {0};
+        read(client, req, sizeof(req) - 1);
+
+        char  patch_name[256];
+        float duration;
+        if (parse_query(req, patch_name, sizeof(patch_name), &duration) != 0) {
+            const char *bad = "HTTP/1.0 400 Bad Request\r\n\r\nMissing patch=\n";
+            write(client, bad, strlen(bad));
+            close(client);
+            continue;
+        }
+
+        int    frames = 0;
+        float *pcm   = render(patch_name, duration, &frames);
+        if (!pcm) {
+            const char *err = "HTTP/1.0 404 Not Found\r\n\r\nPatch not found\n";
+            write(client, err, strlen(err));
+            close(client);
+            continue;
+        }
+
+        uint8_t *wav_buf  = NULL;
+        size_t   wav_size = 0;
+        wav_to_buffer(pcm, frames, CHANNELS, SAMPLE_RATE,
+                      &wav_buf, &wav_size);
+        free(pcm);
+
+        char header[256];
+        int hlen = snprintf(header, sizeof(header),
+            "HTTP/1.0 200 OK\r\n"
+            "Content-Type: audio/wav\r\n"
+            "Content-Length: %zu\r\n"
+            "\r\n", wav_size);
+        write(client, header, hlen);
+        write(client, wav_buf, wav_size);
+        free(wav_buf);
+        close(client);
+    }
+}
+
+
+This single-threaded server serialises all render requests. That is safe because libpd's global instance is not re-entrant. For concurrent requests you need one t_pdinstance per thread - the next section covers that.
+
+One security note: never pass patch_name directly from the query string to libpd_openfile without sanitising it. A request with patch=../../../../etc/passwd will fail to load (it is not a valid Pd patch) but path traversal is still bad practice. Validate that the name contains no slashes or dots at the start before passing it on.
+
+Automated Testing of Pd Patches
+
+One of the most valuable uses of headless libpd is CI testing. You want to assert that a patch produces the expected output - that your sine oscillator at 440 Hz produces a signal with the right frequency, or that your compressor brings a 0 dBFS burst down to the expected ceiling. You can do all of this from C without a human ever pressing play.
+
+The testing pattern has three parts: send a stimulus (a message or a signal), run a defined number of blocks, measure the output.
+
+
+/*
+ * test_sine440.c - assert that sine440.pd produces a 440 Hz sine.
+ *
+ * Strategy: render 1 second, count zero-crossings.
+ * A 440 Hz sine crosses zero ~880 times per second (2 per cycle).
+ */
+
+#include <z_libpd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+
+#define SAMPLE_RATE 44100
+#define CHANNELS    1          /* mono for simpler testing */
+#define BLOCK_TICKS 8
+#define BLOCK_SIZE  (BLOCK_TICKS * 64)
+
+int main(void) {
+    libpd_init();
+    libpd_init_audio(0, CHANNELS, SAMPLE_RATE);
+
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    void *patch = libpd_openfile("sine440.pd", "patches");
+    if (!patch) { fprintf(stderr, "FAIL: patch not found\n"); return 1; }
+
+    /* Warm up: discard first 0.1 s to let transients settle */
+    float block[BLOCK_SIZE * CHANNELS];
+    int warmup_blocks = (int)(0.1f * SAMPLE_RATE / BLOCK_SIZE);
+    for (int b = 0; b < warmup_blocks; b++) {
+        memset(block, 0, sizeof(block));
+        libpd_process_float(BLOCK_TICKS, NULL, block);
+    }
+
+    /* Measure: count zero-crossings over 1 second */
+    int measure_blocks = SAMPLE_RATE / BLOCK_SIZE;
+    int crossings = 0;
+    float prev = 0.0f;
+    float peak  = 0.0f;
+
+    for (int b = 0; b < measure_blocks; b++) {
+        memset(block, 0, sizeof(block));
+        libpd_process_float(BLOCK_TICKS, NULL, block);
+
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            float s = block[i];
+            if (fabsf(s) > peak) peak = fabsf(s);
+            if ((prev < 0.0f && s >= 0.0f) ||
+                (prev >= 0.0f && s < 0.0f))
+                crossings++;
+            prev = s;
+        }
+    }
+
+    libpd_closefile(patch);
+
+    /* A 440 Hz sine should cross zero 2*440 = 880 times per second.
+     * Allow ±5% tolerance for block boundary effects. */
+    int expected   = 880;
+    int tolerance  = (int)(expected * 0.05f);
+    int pass_cross = abs(crossings - expected) <= tolerance;
+
+    /* Peak should be close to 1.0 for a full-scale sine */
+    int pass_peak  = (peak > 0.9f && peak <= 1.0f);
+
+    printf("zero-crossings: %d (expected %d ±%d) - %s\n",
+           crossings, expected, tolerance,
+           pass_cross ? "PASS" : "FAIL");
+    printf("peak amplitude: %.4f - %s\n",
+           peak, pass_peak ? "PASS" : "FAIL");
+
+    return (pass_cross && pass_peak) ? 0 : 1;
+}
+
+
+The warm-up step matters. Pd objects like [env~] and [line~] have internal state that takes a few blocks to settle. If you start measuring immediately, transient behaviour at patch-load time will skew your results. Discarding the first 100 ms is usually enough.
+
+For testing message-driven behaviour - "send this MIDI note, expect this envelope shape" - use the hook callbacks to capture what the patch sends back:
+
+
+static float g_received_value = -999.0f;
+
+static void float_hook(const char *recv, float val) {
+    if (strcmp(recv, "test_out") == 0)
+        g_received_value = val;
+}
+
+/* In main, before opening the patch: */
+libpd_set_floathook(float_hook);
+libpd_bind("test_out");
+
+/* Send stimulus */
+libpd_float("note_pitch", 60.0f);
+libpd_float("note_vel",  100.0f);
+
+/* Run 50 ms of audio to let the patch respond */
+for (int b = 0; b < 4; b++) {
+    memset(block, 0, sizeof(block));
+    libpd_process_float(BLOCK_TICKS, NULL, block);
+}
+
+if (g_received_value > 0.9f) {
+    printf("envelope triggered - PASS\n");
+} else {
+    printf("envelope not triggered (got %.3f) - FAIL\n",
+           g_received_value);
+}
+
+
+The hook fires synchronously inside libpd_process_float, so by the time the call returns, g_received_value has been set if the patch sent anything during those blocks.
+
+Multi-Instance Parallel Rendering
+
+If you need to render several patches concurrently - for example, a server handling multiple simultaneous requests - you need one t_pdinstance per thread. The global libpd state is not thread-safe; concurrent access corrupts the scheduler.
+
+The instance API is simple but has a critical rule: every libpd call must be preceded by libpd_set_instance on the calling thread. There is no automatic thread-local instance; the "current instance" is a global pointer, so threads will stomp on each other unless you serialise or set it every time.
+
+
+#include <z_libpd.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+#define SAMPLE_RATE 44100
+#define CHANNELS    2
+#define BLOCK_TICKS 8
+#define BLOCK_SIZE  (BLOCK_TICKS * 64)
+
+typedef struct {
+    const char *patch_name;
+    const char *patch_dir;
+    float       duration;
+    const char *out_path;
+} RenderJob;
+
+static void *render_thread(void *arg) {
+    RenderJob *job = (RenderJob *)arg;
+
+    /* Each thread creates and owns one instance */
+    t_pdinstance *inst = libpd_new_instance();
+    libpd_set_instance(inst);
+
+    libpd_init_audio(0, CHANNELS, SAMPLE_RATE);
+
+    libpd_set_instance(inst);
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    libpd_set_instance(inst);
+    void *patch = libpd_openfile(job->patch_name, job->patch_dir);
+    if (!patch) {
+        fprintf(stderr, "Thread: cannot open %s\n", job->patch_name);
+        libpd_free_instance(inst);
+        return NULL;
+    }
+
+    int total_frames = (int)(SAMPLE_RATE * job->duration);
+    float *pcm = malloc(total_frames * CHANNELS * sizeof(float));
+    float  block[BLOCK_SIZE * CHANNELS];
+    int written = 0;
+
+    while (written < total_frames) {
+        int n = total_frames - written;
+        if (n > BLOCK_SIZE) n = BLOCK_SIZE;
+        memset(block, 0, sizeof(block));
+
+        libpd_set_instance(inst);    /* required before every call */
+        libpd_process_float(BLOCK_TICKS, NULL, block);
+
+        memcpy(pcm + written * CHANNELS, block,
+               n * CHANNELS * sizeof(float));
+        written += n;
+    }
+
+    write_wav(pcm, total_frames, CHANNELS, SAMPLE_RATE, job->out_path);
+    free(pcm);
+
+    libpd_set_instance(inst);
+    libpd_closefile(patch);
+    libpd_free_instance(inst);
+    return NULL;
+}
+
+int main(void) {
+    /* libpd_init() must be called once, from the main thread,
+     * before any instances are created */
+    libpd_init();
+
+    RenderJob jobs[] = {
+        { "pad.pd",    "patches", 4.0f, "out_pad.wav"  },
+        { "drums.pd",  "patches", 4.0f, "out_drums.wav"},
+        { "bass.pd",   "patches", 4.0f, "out_bass.wav" },
+    };
+    int n = sizeof(jobs) / sizeof(jobs[0]);
+
+    pthread_t threads[3];
+    for (int i = 0; i < n; i++)
+        pthread_create(&threads[i], NULL, render_thread, &jobs[i]);
+    for (int i = 0; i < n; i++)
+        pthread_join(threads[i], NULL);
+
+    printf("All renders complete.\n");
+    return 0;
+}
+
+
+There are three rules for safe multi-instance use. First, call libpd_init() exactly once from the main thread before any instances are created. Second, call libpd_set_instance(inst) at the top of every libpd call site within the thread - not just once at thread start. Third, free instances with libpd_free_instance before the thread exits; leaked instances accumulate memory proportional to the loaded patches.
+
+A common gotcha: libpd_init_audio must be called per-instance, not just per-process. Each instance maintains its own internal audio graph and channel/rate configuration. If you forget to call it on a new instance, libpd_process_float will write silence.
+
+Clean Shutdown and Memory Management
+
+In a long-running server or a CI test suite that opens hundreds of patches in a loop, memory management matters. The three things you must do for every instance:
+
+
+/* 1. Close all patches opened on this instance */
+libpd_set_instance(inst);
+libpd_closefile(patch_a);
+libpd_closefile(patch_b);
+
+/* 2. Turn DSP off (optional but polite) */
+libpd_start_message(1);
+libpd_add_float(0.0f);
+libpd_finish_message("pd", "dsp");
+
+/* 3. Free the instance */
+libpd_free_instance(inst);
+
+
+libpd does not have a global teardown function (as of 0.13.x). The process exit will reclaim memory from the OS, but if you are running in a test harness that checks for leaks, you will see reports from objects that live inside libpd's global state. This is a known limitation of the library's design - the global state was never intended to be fully teardown-safe. For CI, running each test as a subprocess (or using valgrind's suppression files for libpd) is the pragmatic solution.
+
+For the output buffers you allocate yourself, the discipline is straightforward: every malloc inside the render path has a matching free, and every libpd_openfile has a matching libpd_closefile before the instance is freed.
+
+CMake Test Target for Patch Regression Testing
+
+
+The testing pattern above runs as a standalone binary. Wire it into CMake's CTest so
+that cmake --build build --target test (or ctest) drives all
+patch tests and fails the build if any patch regresses.
+
+
+
+Structure your test directory like this:
+
+
+
+patches/
+  sine440.pd        -- the patch under test
+  compressor.pd
+  reverb.pd
+test/
+  test_sine440.c    -- one test binary per patch
+  test_compressor.c
+
+
+
+In CMakeLists.txt, add a helper macro that creates one test executable per
+patch test and registers it with CTest:
+
+
+
+cmake_minimum_required(VERSION 3.21)
+project(pd_render C)
+
+set(LIBPD_EXTRA ON CACHE BOOL "" FORCE)
+set(LIBPD_SHARED OFF CACHE BOOL "" FORCE)
+add_subdirectory(deps/libpd)
+
+# Helper: create one test binary for a patch test
+macro(add_pd_test name source)
+    add_executable(${name} ${source})
+    target_link_libraries(${name} PRIVATE libpdstatic m pthread)
+    target_include_directories(${name} PRIVATE
+        deps/libpd/libpd_wrapper
+        deps/libpd/pure-data/src)
+    # Pass the patches directory so the test can find its .pd file
+    target_compile_definitions(${name} PRIVATE
+        PATCH_DIR="${CMAKE_SOURCE_DIR}/patches")
+    add_test(NAME ${name} COMMAND ${name})
+endmacro()
+
+add_pd_test(test_sine440    test/test_sine440.c)
+add_pd_test(test_compressor test/test_compressor.c)
+
+enable_testing()
+
+
+
+Each test binary uses the PATCH_DIR definition to locate the .pd
+file:
+
+
+
+/* test/test_sine440.c */
+#include <z_libpd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+
+#ifndef PATCH_DIR
+#define PATCH_DIR "patches"
+#endif
+
+#define SAMPLE_RATE 44100
+#define CHANNELS    1
+#define BLOCK_TICKS 8
+#define BLOCK_SIZE  (BLOCK_TICKS * 64)
+
+int main(void) {
+    libpd_init();
+    libpd_init_audio(0, CHANNELS, SAMPLE_RATE);
+
+    libpd_start_message(1);
+    libpd_add_float(1.0f);
+    libpd_finish_message("pd", "dsp");
+
+    void *patch = libpd_openfile("sine440.pd", PATCH_DIR);
+    if (!patch) {
+        fprintf(stderr, "FAIL: cannot open sine440.pd in %s\n", PATCH_DIR);
+        return 1;
+    }
+
+    /* Warm up */
+    float block[BLOCK_SIZE * CHANNELS];
+    int warmup = (int)(0.05f * SAMPLE_RATE / BLOCK_SIZE);
+    for (int b = 0; b < warmup; b++) {
+        memset(block, 0, sizeof(block));
+        libpd_process_float(BLOCK_TICKS, NULL, block);
+    }
+
+    /* Measure zero-crossings over 0.5 s */
+    int measure = (int)(0.5f * SAMPLE_RATE / BLOCK_SIZE);
+    int crossings = 0;
+    float prev = 0.0f, peak = 0.0f;
+
+    for (int b = 0; b < measure; b++) {
+        memset(block, 0, sizeof(block));
+        libpd_process_float(BLOCK_TICKS, NULL, block);
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            float s = block[i];
+            if (fabsf(s) > peak) peak = fabsf(s);
+            if ((prev < 0.0f && s >= 0.0f) || (prev >= 0.0f && s < 0.0f))
+                crossings++;
+            prev = s;
+        }
+    }
+
+    libpd_closefile(patch);
+
+    /* 440 Hz × 2 × 0.5 s = 440 expected crossings ±5% */
+    int expected   = 440;
+    int tolerance  = (int)(expected * 0.05f);
+    int pass_cross = abs(crossings - expected) <= tolerance;
+    int pass_peak  = (peak > 0.85f && peak <= 1.0f);
+
+    if (!pass_cross) {
+        fprintf(stderr, "FAIL: crossings %d, expected %d ±%d\n",
+                crossings, expected, tolerance);
+    }
+    if (!pass_peak) {
+        fprintf(stderr, "FAIL: peak %.4f, expected 0.85–1.0\n", peak);
+    }
+
+    if (pass_cross && pass_peak) {
+        printf("PASS: sine440 — crossings=%d peak=%.4f\n", crossings, peak);
+        return 0;
+    }
+    return 1;
+}
+
+
+
+Run all patch tests:
+
+
+
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+
+
+
+Add to CI:
+
+
+
+# .github/workflows/pd-tests.yml
+- name: Build and test patches
+  run: |
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+    cmake --build build
+    ctest --test-dir build --output-on-failure
+
+
+
+Any patch that no longer produces the expected frequency or amplitude range fails the
+CTest run with a non-zero exit code, which fails the CI step. The output includes
+the test name and the specific assertion that failed, making it straightforward to
+identify which patch regressed and what changed.
+
+
+Building the Headless Renderer
+
+A CMakeLists.txt for a headless render tool is simpler than the VST3 or PortAudio variants - no audio SDK dependency at all:
+
+
+cmake_minimum_required(VERSION 3.21)
+project(pd_render C)
+
+set(LIBPD_EXTRA ON CACHE BOOL "" FORCE)
+set(LIBPD_SHARED OFF CACHE BOOL "" FORCE)
+add_subdirectory(deps/libpd)
+
+add_executable(pd_render
+    src/main.c
+    src/write_wav.c
+)
+
+target_link_libraries(pd_render PRIVATE libpdstatic m pthread)
+
+target_include_directories(pd_render PRIVATE
+    deps/libpd/libpd_wrapper
+    deps/libpd/pure-data/src
+)
+
+
+On macOS, replace pthread with nothing - pthreads are in the default libc. On Linux you need -ldl as well if libpd uses dlopen for externals. On Windows, link against ws2_32 if you are also building the socket server.
+
+Summary
+
+Headless libpd removes the last external dependency - the audio device - and reveals what libpd has always been: a synchronous buffer-filling function. You call it, it computes audio, you decide what to do with the result. This simplicity is what makes the library so composable.
+
+This is the final article in the series. Here is what the eleven parts covered together:
+
+
+Part 1 introduced libpd's architecture and the C API surface: init, audio setup, patch loading, processing, and messaging.
+Part 2 walked through building libpd from source with CMake, the LIBPD_EXTRA flag, and static versus shared linking.
+Part 3 covered initialising the engine, loading patches, and the lifetime of a patch handle.
+Part 4 went deep on the audio render loop: the 64-sample block constraint, tick arithmetic, and buffer interleaving.
+Part 5 covered sending messages to a patch - bang, float, symbol, list, and typed messages.
+Part 6 covered receiving messages back from a patch - the hook API, binding receiver names, and thread safety of hooks.
+Part 7 covered arrays: reading and writing Pd arrays from C for sample data and parameter tables.
+Part 8 covered MIDI - sending and receiving note-on, control change, and pitchbend from C using the libpd MIDI API.
+Part 9 showed how ofxPd wraps libpd for openFrameworks projects, with thread-safe message marshalling and live patch reloading.
+Part 10 embedded libpd as the DSP engine of a VST3 plugin, mapping IAudioProcessor callbacks to libpd calls and handling multiple plugin instances with t_pdinstance.
+Part 11 (this article) showed headless operation: no GUI, no audio device, tight render loops, WAV output, server-side generation, automated testing, and parallel multi-instance rendering.
+
+
+You are now equipped to embed Pure Data in almost any C or C++ environment. The patches are data; the engine is a library; your application drives the clock. Wherever you can call a function and receive an array of floats, you can run a Pd patch.
+
+Further Reading
+
+
+libpd GitHub repository - source, examples, and issue tracker
+libpd.cc - official project page and API overview
+WAVE PCM soundfile format specification (McGill University)
+POSIX pthread_create man page
+Miller Puckette's Pure Data Manual
+libpd C samples directory on GitHub
+
+
+See Also
+
+
+What Is libpd?
+The Audio Render Loop
+Receiving Messages from Pd
+libpd in openFrameworks: ofxPd
+libpd Inside a VST3 Plugin
+

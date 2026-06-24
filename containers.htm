@@ -72,11 +72,77 @@
 <h1>~5l0p/tut</h1>
 <!-- header end -->
         <a href="https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
-        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="containers.htm">containers</a>, <a href="linux.htm">linux</a></i>
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="bsd.htm">bsd</a>, <a href="containers.htm">containers</a>, <a href="freebsd.htm">freebsd</a>, <a href="go.htm">go</a>, <a href="isolation.htm">isolation</a>, <a href="jails.htm">jails</a>, <a href="linux.htm">linux</a>, <a href="namespaces.htm">namespaces</a>, <a href="security.htm">security</a>, <a href="testing.htm">testing</a></i>
 <h2>Tutorials</h2>
 <h2>containers-</h2>
-<p><b><a href="art/2026/containers-01-what-is-a-container.htm">Containers - Part 1: What Is a Container?</a></b> - 2026-06-09<br>
+<p><b><a href="art/2026/containers-05-uts-ipc.htm">Containers - Part 5: UTS & IPC Namespaces</a></b> - 2026-06-01<br>
+How UTS namespaces isolate hostnames and how IPC namespaces separate System V shared memory, semaphores, and POSIX message queues.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-21-bsd-jails.htm">BSD Jails: Isolation Without Linux</a></b> - 2026-06-01<br>
+How FreeBSD jails work under the hood, how they compare to Linux namespaces and cgroups, and what container developers can learn from the BSD approach to OS-level isolation.<br>
+<i><a href="containers.htm">containers</a>, <a href="bsd.htm">bsd</a>, <a href="freebsd.htm">freebsd</a>, <a href="jails.htm">jails</a>, <a href="security.htm">security</a>, <a href="isolation.htm">isolation</a></i></p>
+<p><b><a href="art/2026/containers-18-seccomp.htm">Containers - Part 18: seccomp - Syscall Filtering</a></b> - 2026-06-01<br>
+seccomp BPF filters intercept syscalls before they reach the kernel - learn to write a whitelist policy in C with libseccomp, apply it with prctl, and replicate Docker's default filter in Go.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-20-oci-runc.htm">Containers - Part 20: The OCI Runtime Spec & runc</a></b> - 2026-06-01<br>
+The Open Container Initiative specifies exactly what a container runtime must do - understand config.json, the container lifecycle, how runc implements it, and where your mini-runtime fits in the OCI world.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-08-overlayfs.htm">Containers - Part 8: OverlayFS & Image Layers</a></b> - 2026-06-01<br>
+How OverlayFS stacks read-only lower layers with a writable upper layer, and how Docker's image layers map directly to this kernel filesystem.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-02-namespaces-overview.htm">Containers - Part 2: Linux Namespaces Overview</a></b> - 2026-06-01<br>
+The eight Linux namespace types, how the kernel represents them, and how to inspect them from the command line and from C.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-19b-mini-runtime-part2.htm">Containers - Part 19b: Mini Container Runtime in Go - Part 2</a></b> - 2026-06-01<br>
+Complete the mini container runtime with networking, cgroups v2, capability dropping, and a seccomp filter, then run a real process inside the finished container.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-10-fuse.htm">Containers - Part 10: FUSE: Writing a Userspace Filesystem</a></b> - 2026-06-01<br>
+How the FUSE kernel module works, implementing a passthrough filesystem with libfuse in C, and the same filesystem in Go using bazil.org/fuse.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-09-virtual-filesystems.htm">Containers - Part 9: Virtual Filesystems: proc, sysfs & devtmpfs</a></b> - 2026-06-01<br>
+What proc, sysfs, and devtmpfs are, why containers need their own mounts of them, and how to set them up correctly inside a new namespace.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-19-mini-runtime.htm">Containers - Part 19: Building a Mini Container Runtime in Go</a></b> - 2026-06-01<br>
+Assemble all the Linux primitives into a working Go container runtime - namespaces, pivot_root, UTS, and the main entry point that ties everything together.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-13-network-namespaces.htm">Containers - Part 13: Network Namespaces</a></b> - 2026-06-01<br>
+Network namespaces give each container a private network stack - learn to create veth pairs, bridge them to the host, and NAT outbound traffic with iptables, all from C and Go.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-14-user-namespaces.htm">Containers - Part 14: User Namespaces & Rootless Containers</a></b> - 2026-06-01<br>
+User namespaces map unprivileged UIDs to fake root inside a container - the kernel primitive that makes rootless containers possible without a setuid binary.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-04-pid-namespaces.htm">Containers - Part 4: PID Namespaces</a></b> - 2026-06-01<br>
+How PID namespaces give containers their own process numbering, why PID 1 matters, and how zombie reaping works inside a namespace.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-06-mount-chroot.htm">Containers - Part 6: Mount Namespaces & chroot</a></b> - 2026-06-01<br>
+How mount namespaces let containers have independent filesystem trees, how bind mounts work, and why chroot alone is not safe for container isolation.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-12-webdav.htm">Containers - Part 12: WebDAV: HTTP as a Filesystem</a></b> - 2026-06-01<br>
+WebDAV extends HTTP with filesystem operations - implement a server in Go with golang.org/x/net/webdav and mount it on Linux with davfs2 and on macOS via Finder.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-03-clone-unshare.htm">Containers - Part 3: The clone() and unshare() Syscalls</a></b> - 2026-06-01<br>
+How to create new namespaces with clone() in C and with SysProcAttr.Cloneflags in Go, plus how unshare() detaches from existing namespaces.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-16-cgroups-v2.htm">Containers - Part 16: cgroups v2 - The Unified Hierarchy</a></b> - 2026-06-01<br>
+cgroups v2 unifies all resource controllers under a single hierarchy with cleaner delegation, pressure files, and a simpler interface - understand the differences and migrate your v1 code.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-15-cgroups-v1.htm">Containers - Part 15: cgroups v1</a></b> - 2026-06-01<br>
+The cgroupfs API at /sys/fs/cgroup/ - resource controllers, writing limits, reading usage, attaching processes from C and Go, and watching a container get OOM-killed.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-17-capabilities.htm">Containers - Part 17: Linux Capabilities</a></b> - 2026-06-01<br>
+Linux capabilities divide root privilege into ~40 independent bits - learn the five capability sets, how containers drop them with prctl and capset, and what Docker removes by default.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-22-testing.htm">Containers - Part 22: Testing Container Code</a></b> - 2026-06-01<br>
+Integration test patterns for namespace and cgroup code: t.Cleanup teardown helpers, running subtests that require CAP_SYS_ADMIN with a t.Skip guard, golden-state assertions on /proc and /sys, and a reusable test harness for the mini runtime.<br>
+<i><a href="go.htm">go</a>, <a href="linux.htm">linux</a>, <a href="containers.htm">containers</a>, <a href="namespaces.htm">namespaces</a>, <a href="testing.htm">testing</a></i></p>
+<p><b><a href="art/2026/containers-07-pivot-root.htm">Containers - Part 7: pivot_root & the Container Rootfs</a></b> - 2026-06-01<br>
+How pivot_root() replaces the filesystem root inside a container, how to build a minimal rootfs with BusyBox, and a complete Go implementation.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-01-what-is-a-container.htm">Containers - Part 1: What Is a Container?</a></b> - 2026-06-01<br>
 Containers are ordinary Linux processes with restricted views of the system - built from six kernel primitives, not a single syscall.<br>
+<i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
+<p><b><a href="art/2026/containers-11-9p.htm">Containers - Part 11: 9P: The Plan 9 Network Filesystem Protocol</a></b> - 2026-06-01<br>
+The 9P wire protocol, its message types, implementing a minimal 9P file server in Go, and mounting it with the Linux kernel 9p driver.<br>
 <i><a href="linux.htm">linux</a>, <a href="containers.htm">containers</a></i></p>
 
 <!-- footer begin -->

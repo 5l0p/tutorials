@@ -1,0 +1,343 @@
+Containers - Part 5: UTS & IPC Namespaces
+2026-06-01
+
+
+UTS and IPC are among the simpler namespace types, but understanding them
+concretely is useful. UTS isolates the strings returned by uname() -
+primarily the hostname - so that a container can advertise a different identity
+to any software that calls gethostname(). IPC isolates the kernel
+objects used for inter-process communication: System V shared memory segments,
+semaphores, and message queues, plus POSIX message queues. Without IPC
+namespaces, two containers on the same host could accidentally (or maliciously)
+share memory.
+
+
+What You Will Learn
+
+
+What UTS namespaces isolate and how to set a container hostname with sethostname() and Go's SysProcAttr.Hostname
+What System V IPC objects are and why IPC namespace isolation matters for security
+How to demonstrate IPC isolation in C: creating a shared memory segment on the host and verifying a child in a new IPC namespace cannot see it
+How to inspect IPC objects with ipcs and delete them with ipcrm
+How POSIX message queues are also isolated and why containers should mount a fresh /dev/mqueue
+A Go runtime skeleton combining UTS, IPC, PID, and mount namespace flags
+
+
+UTS Namespaces
+
+
+UTS stands for "UNIX Time-sharing System" - a legacy name from the original
+uname structure. The fields isolated by a UTS namespace are
+nodename (hostname) and domainname (NIS domain), both modifiable
+with syscalls:
+
+
+
+sethostname(const char *name, size_t len)
+setdomainname(const char *name, size_t len)
+
+
+
+Both require CAP_SYS_ADMIN in the UTS namespace you want to modify (or
+CAP_SYS_ADMIN in the initial namespace if you have not entered a new one).
+
+
+C: Before and After a UTS Namespace
+
+
+#define _GNU_SOURCE
+#include <sched.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/utsname.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define STACK_SIZE (512 * 1024)
+
+static void print_uts(const char *label) {
+    struct utsname u;
+    uname(&u);
+    printf("[%s] nodename=%s domainname=%s\n",
+           label, u.nodename, u.domainname);
+}
+
+static int child_main(void *arg) {
+    (void)arg;
+    /* We are now in a new UTS namespace */
+    print_uts("before sethostname");
+
+    sethostname("my-container", 12);
+    setdomainname("localdomain", 11);
+
+    print_uts("after sethostname");
+
+    pause(); /* Stay alive for inspection */
+    return 0;
+}
+
+int main(void) {
+    print_uts("host before clone");
+
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) { perror("malloc"); return 1; }
+
+    pid_t pid = clone(child_main, stack + STACK_SIZE,
+                      CLONE_NEWUTS | SIGCHLD, NULL);
+    if (pid == -1) { perror("clone"); return 1; }
+
+    /* Host namespace unchanged */
+    print_uts("host after clone");
+
+    waitpid(pid, NULL, 0);
+    free(stack);
+    return 0;
+}
+
+
+
+The host's hostname is unaffected by the child's sethostname() call
+because each side has its own UTS namespace object. Run with sudo ./uts
+and confirm by running hostname in another terminal while the child is
+paused.
+
+
+Go: UTS Namespace
+
+
+package main
+
+import (
+    "fmt"
+    "os"
+    "os/exec"
+    "syscall"
+)
+
+func main() {
+    cmd := exec.Command("/bin/sh")
+    cmd.Stdin  = os.Stdin
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.SysProcAttr = &syscall.SysProcAttr{
+        Cloneflags: syscall.CLONE_NEWUTS,
+    }
+
+    if err := cmd.Start(); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+
+    /* Set the child's hostname via /proc/<pid>/ns/uts
+       Actually the child needs to call sethostname itself.
+       We demonstrate the namespace is separate. */
+    fmt.Printf("child PID on host: %d\n", cmd.Process.Pid)
+
+    cmd.Wait()
+}
+
+
+
+To call sethostname before the child exec runs you can use
+cmd.SysProcAttr.Hostname - Go's syscall package on Linux sets
+the hostname inside the new UTS namespace automatically when this field is set:
+
+
+
+cmd.SysProcAttr = &syscall.SysProcAttr{
+    Cloneflags: syscall.CLONE_NEWUTS,
+    Hostname:   "my-go-container",
+}
+
+
+IPC Namespaces
+
+
+System V IPC provides three object types:
+
+
+
+Shared memory - shmget(), shmat(), shmdt(), shmctl()
+Semaphores - semget(), semop(), semctl()
+Message queues - msgget(), msgsnd(), msgrcv(), msgctl()
+
+
+
+All three are identified by integer keys and live in the kernel globally. Without
+an IPC namespace, any process on the host can attach to a shared memory segment
+if it knows (or guesses) the key. With IPC namespaces, each namespace has its
+own independent set of objects.
+
+
+C: Shared Memory Before and After IPC Namespace
+
+
+This example creates a shared memory segment in the host namespace, then shows
+that a child in a new IPC namespace cannot see it:
+
+
+
+#define _GNU_SOURCE
+#include <sched.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define STACK_SIZE (512 * 1024)
+#define SHM_KEY    0x1234
+
+static int child_main(void *arg) {
+    (void)arg;
+    /* Try to attach to the segment created in the host namespace */
+    int shmid = shmget(SHM_KEY, 0, 0);
+    if (shmid == -1) {
+        printf("[child] shmget failed - segment not visible (correct!)\n");
+    } else {
+        printf("[child] shmget succeeded with id=%d (WRONG - leaked!)\n",
+               shmid);
+    }
+    return 0;
+}
+
+int main(void) {
+    /* Create a shared memory segment in the host namespace */
+    int shmid = shmget(SHM_KEY, 4096, IPC_CREAT | 0600);
+    if (shmid == -1) { perror("shmget"); return 1; }
+    printf("[host] created shm id=%d\n", shmid);
+
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) { perror("malloc"); return 1; }
+
+    pid_t pid = clone(child_main, stack + STACK_SIZE,
+                      CLONE_NEWIPC | SIGCHLD, NULL);
+    if (pid == -1) { perror("clone"); return 1; }
+
+    waitpid(pid, NULL, 0);
+
+    /* Clean up host segment */
+    shmctl(shmid, IPC_RMID, NULL);
+    free(stack);
+    return 0;
+}
+
+
+
+Without CLONE_NEWIPC the child would successfully find the segment.
+With it, the child's IPC namespace starts empty and the shmget() call
+returns EINVAL (no such segment).
+
+
+Inspecting IPC Objects
+
+
+# List all shared memory segments
+ipcs -m
+
+# List all semaphores
+ipcs -s
+
+# List all message queues
+ipcs -q
+
+# Delete a specific segment by ID
+ipcrm -m <id>
+
+# Show IPC namespace of a process
+readlink /proc/self/ns/ipc
+
+
+POSIX Message Queues
+
+
+POSIX message queues (mq_open(), mq_send(), mq_receive())
+are also isolated by IPC namespaces. They appear under /dev/mqueue when
+that filesystem is mounted. Inside a container with a new IPC namespace, mount
+the POSIX MQ filesystem to get a clean view:
+
+
+
+mount -t mqueue none /dev/mqueue
+
+
+
+Any queues created by host processes will not be visible. This matters for
+applications like databases and message brokers that use POSIX queues for
+internal IPC - without namespace isolation two instances on the same host could
+interfere.
+
+
+Combining UTS and IPC with a Go Runtime Skeleton
+
+
+package main
+
+import (
+    "fmt"
+    "os"
+    "os/exec"
+    "syscall"
+)
+
+func run() error {
+    args := os.Args[1:]
+    if len(args) == 0 {
+        args = []string{"/bin/sh"}
+    }
+
+    cmd := exec.Command(args[0], args[1:]...)
+    cmd.Stdin  = os.Stdin
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.SysProcAttr = &syscall.SysProcAttr{
+        Cloneflags: syscall.CLONE_NEWUTS |
+                    syscall.CLONE_NEWIPC |
+                    syscall.CLONE_NEWPID |
+                    syscall.CLONE_NEWNS,
+        Hostname: "container",
+    }
+    return cmd.Run()
+}
+
+func main() {
+    if err := run(); err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+}
+
+
+
+This skeleton will be expanded in later articles to add rootfs isolation,
+cgroups, and security policies.
+
+
+Summary
+
+
+UTS namespaces isolate the hostname and NIS domain name so each container can
+advertise its own identity without affecting the host. IPC namespaces give each
+container a private set of System V shared memory segments, semaphores, message
+queues, and POSIX message queues — preventing accidental or malicious sharing
+between containers on the same host. Both are straightforward to add as flags
+to clone() or SysProcAttr.Cloneflags in Go.
+
+
+Further Reading
+
+
+uts_namespaces(7) - Linux man page
+ipc_namespaces(7) - Linux man page
+shmget(2) - Linux man page
+Namespaces in operation, part 1 (LWN)
+
+
+See Also
+
+
+The clone() and unshare() Syscalls
+PID Namespaces
+Network Namespaces
+

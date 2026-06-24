@@ -1,0 +1,445 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>LLM - Part 16: Implementing a Mini LangChain in Go</title>
+    <meta name="description" content="Build chains, prompt templates, a router, and an LLM-backed step in ~200 lines of Go - implementing the core LangChain patterns from scratch.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="go, llm, llama.cpp, agents">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="llm-16-mini-langchain.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../go.htm">go</a>, <a href="../../llm.htm">llm</a>, <a href="../../llama.cpp.htm">llama.cpp</a>, <a href="../../agents.htm">agents</a></i>
+        <h2>LLM - Part 16: Implementing a Mini LangChain in Go</h2>
+        <p>
+Article 15 described LangChain's abstractions conceptually. This article implements them
+in Go: a <code>Chain</code> interface, prompt templates, a sequential chain, a router
+chain, and an LLM chain that ties them to an API call. The entire implementation is about
+200 lines. Reading it gives you a clear mental model of what LangChain actually does,
+which makes you better at debugging it and better at deciding when to use it vs rolling
+your own.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The Chain interface: a single-input, single-output callable step</li>
+<li>PromptTemplate: string interpolation that produces a ready-to-send prompt</li>
+<li>SequentialChain: piping output of one chain as input to the next</li>
+<li>RouterChain: selecting a sub-chain at runtime based on the input</li>
+<li>LLMChain: wrapping a prompt template and an API call into a Chain</li>
+<li>How the ~200-line implementation maps to LangChain's Python equivalent</li>
+</ul>
+
+
+<h3>The Chain Interface</h3>
+
+<pre>
+package chain
+
+import "context"
+
+// Chain is the core interface. Every processing step implements it.
+type Chain interface {
+    Run(ctx context.Context, input string) (string, error)
+}
+
+// ChainFunc lets a plain function satisfy Chain.
+type ChainFunc func(ctx context.Context, input string) (string, error)
+
+func (f ChainFunc) Run(ctx context.Context, input string) (string, error) {
+    return f(ctx, input)
+}
+</pre>
+
+<h3>Prompt Templates</h3>
+
+<pre>
+import "strings"
+
+// PromptTemplate formats a template string with named variables.
+// Variables are written as {name} in the template.
+type PromptTemplate struct {
+    Template string
+}
+
+func (pt *PromptTemplate) Format(vars map[string]string) string {
+    result := pt.Template
+    for k, v := range vars {
+        result = strings.ReplaceAll(result, "{"+k+"}", v)
+    }
+    return result
+}
+
+// AsChain returns a Chain that formats the template with a single
+// variable named "input", substituting the chain's input string.
+func (pt *PromptTemplate) AsChain() Chain {
+    return ChainFunc(func(ctx context.Context, input string) (string, error) {
+        return pt.Format(map[string]string{"input": input}), nil
+    })
+}
+</pre>
+
+<h3>Sequential Chain</h3>
+
+<pre>
+// SequentialChain runs steps in order, piping each output into the next.
+type SequentialChain struct {
+    Steps []Chain
+}
+
+func (sc *SequentialChain) Run(ctx context.Context, input string) (string, error) {
+    current := input
+    for i, step := range sc.Steps {
+        var err error
+        current, err = step.Run(ctx, current)
+        if err != nil {
+            return "", fmt.Errorf("step %d: %w", i, err)
+        }
+    }
+    return current, nil
+}
+</pre>
+
+<h3>LLM Chain</h3>
+
+<p>
+The LLM chain wraps an API call. It takes the input string as the user message and
+returns the model's reply. Optionally, a system prompt can be prepended.
+</p>
+
+<pre>
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+)
+
+type LLMChain struct {
+    APIKey       string
+    Model        string
+    SystemPrompt string
+    Temperature  float64
+}
+
+func (c *LLMChain) Run(ctx context.Context, input string) (string, error) {
+    msgs := []map[string]string{}
+    if c.SystemPrompt != "" {
+        msgs = append(msgs, map[string]string{"role": "system", "content": c.SystemPrompt})
+    }
+    msgs = append(msgs, map[string]string{"role": "user", "content": input})
+
+    req := map[string]interface{}{
+        "model":       c.Model,
+        "messages":    msgs,
+        "temperature": c.Temperature,
+    }
+    data, _ := json.Marshal(req)
+
+    r, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+        "http://localhost:8001/v1/chat/completions", bytes.NewReader(data))
+    r.Header.Set("Content-Type", "application/json")
+    r.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+    resp, err := http.DefaultClient.Do(r)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    if resp.StatusCode != http.StatusOK {
+        return "", fmt.Errorf("API %d: %s", resp.StatusCode, body)
+    }
+
+    var result struct {
+        Choices []struct {
+            Message struct{ Content string `json:"content"` } `json:"message"`
+        } `json:"choices"`
+    }
+    json.Unmarshal(body, &amp;result)
+    if len(result.Choices) == 0 {
+        return "", fmt.Errorf("no choices")
+    }
+    return result.Choices[0].Message.Content, nil
+}
+</pre>
+
+<h3>Transform Chain</h3>
+
+<p>
+A transform chain applies a function to the input string - parsing, cleaning,
+truncating, extracting fields. No model call required.
+</p>
+
+<pre>
+// TransformChain applies a pure function to the input.
+type TransformChain struct {
+    Fn func(string) (string, error)
+}
+
+func (tc *TransformChain) Run(_ context.Context, input string) (string, error) {
+    return tc.Fn(input)
+}
+
+// Example transforms
+func Uppercase(s string) (string, error) {
+    return strings.ToUpper(s), nil
+}
+
+func TruncateTo(n int) func(string) (string, error) {
+    return func(s string) (string, error) {
+        if len(s) &lt;= n {
+            return s, nil
+        }
+        return s[:n] + "...", nil
+    }
+}
+</pre>
+
+<h3>Router Chain</h3>
+
+<p>
+A router chain selects which chain to run based on the input. The selection logic can
+be a simple keyword match, a regex, or an LLM call that classifies the input.
+</p>
+
+<pre>
+type Route struct {
+    Name  string
+    Chain Chain
+}
+
+type RouterChain struct {
+    Routes  []Route
+    Default Chain
+    // Classify takes an input and returns a route name.
+    // If it returns "", the Default chain is used.
+    Classify func(ctx context.Context, input string) (string, error)
+}
+
+func (rc *RouterChain) Run(ctx context.Context, input string) (string, error) {
+    name, err := rc.Classify(ctx, input)
+    if err != nil {
+        return "", fmt.Errorf("classify: %w", err)
+    }
+    for _, route := range rc.Routes {
+        if route.Name == name {
+            return route.Chain.Run(ctx, input)
+        }
+    }
+    if rc.Default != nil {
+        return rc.Default.Run(ctx, input)
+    }
+    return "", fmt.Errorf("no route matched %q", name)
+}
+</pre>
+
+<p>
+An LLM-based classifier - the model picks a route name from a fixed list:
+</p>
+
+<pre>
+func LLMClassifier(apiKey, model string, routeNames []string) func(ctx context.Context, input string) (string, error) {
+    return func(ctx context.Context, input string) (string, error) {
+        prompt := fmt.Sprintf(
+            "Classify the following query into one of: %s\n"+
+                "Return ONLY the category name, nothing else.\n\n"+
+                "Query: %s",
+            strings.Join(routeNames, ", "), input,
+        )
+        c := &amp;LLMChain{APIKey: apiKey, Model: model, Temperature: 0}
+        result, err := c.Run(ctx, prompt)
+        if err != nil {
+            return "", err
+        }
+        return strings.TrimSpace(strings.ToLower(result)), nil
+    }
+}
+</pre>
+
+<h3>A Complete Pipeline</h3>
+
+<pre>
+func main() {
+    apiKey := os.Getenv("OPENAI_API_KEY")
+
+    codeChain := &amp;SequentialChain{Steps: []Chain{
+        (&amp;PromptTemplate{
+            Template: "You are a Go programming expert. Answer this Go question concisely: {input}",
+        }).AsChain(),
+        &amp;LLMChain{APIKey: apiKey, Model: "gpt-4o-mini", Temperature: 0.2},
+    }}
+
+    generalChain := &amp;LLMChain{
+        APIKey:       apiKey,
+        Model:        "gpt-4o-mini",
+        SystemPrompt: "You are a helpful assistant.",
+        Temperature:  0.7,
+    }
+
+    router := &amp;RouterChain{
+        Routes: []Route{
+            {Name: "go",      Chain: codeChain},
+            {Name: "general", Chain: generalChain},
+        },
+        Default:  generalChain,
+        Classify: LLMClassifier(apiKey, "gpt-4o-mini", []string{"go", "general"}),
+    }
+
+    questions := []string{
+        "How do I range over a map in Go?",
+        "What is the capital of Japan?",
+        "Why does Go not have a ternary operator?",
+    }
+
+    for _, q := range questions {
+        result, err := router.Run(context.Background(), q)
+        if err != nil {
+            fmt.Println("error:", err)
+            continue
+        }
+        fmt.Printf("Q: %s\nA: %s\n\n", q, result)
+    }
+}
+</pre>
+
+<h3>Reflection Pattern</h3>
+
+<p>
+A reflection chain generates output, critiques it, then optionally revises. Implement
+it as a chain that runs a generate–critique–revise loop:
+</p>
+
+<pre>
+type ReflectionChain struct {
+    Generator Chain   // generates the initial response
+    Critic    Chain   // critiques the response; returns "OK" if acceptable
+    Reviser   Chain   // revises based on critique
+    MaxRounds int
+}
+
+func (rc *ReflectionChain) Run(ctx context.Context, input string) (string, error) {
+    current, err := rc.Generator.Run(ctx, input)
+    if err != nil {
+        return "", err
+    }
+
+    for i := 0; i &lt; rc.MaxRounds; i++ {
+        critique, err := rc.Critic.Run(ctx, current)
+        if err != nil {
+            return current, nil // return what we have on critique error
+        }
+        if strings.Contains(strings.ToLower(critique), "ok") {
+            return current, nil // accepted
+        }
+        revised, err := rc.Reviser.Run(ctx,
+            fmt.Sprintf("Original:\n%s\n\nCritique:\n%s\n\nRevised version:", current, critique))
+        if err != nil {
+            return current, nil
+        }
+        current = revised
+    }
+    return current, nil
+}
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+A <code>Chain</code> is just a function from string to string. A <code>PromptTemplate</code>
+is a format string that produces a prompt. A <code>SequentialChain</code> pipes chains
+together; a <code>RouterChain</code> selects among named sub-chains by routing key; an
+<code>LLMChain</code> wraps a template and an API call. The entire pattern is ~200 lines
+of idiomatic Go with no framework dependency — understanding it helps you reason about
+what LangChain is doing internally and decide when its abstractions add value.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://python.langchain.com/docs/expression_language/">LangChain Expression Language (LCEL)</a></li>
+<li><a href="https://pkg.go.dev/text/template">Go text/template - more powerful template engine for complex prompt generation</a></li>
+<li><a href="https://arxiv.org/abs/2303.11366">Reflexion: Language Agents with Verbal Reinforcement Learning (2023)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="llm-15-langchain-concepts.htm">LangChain &amp; LangGraph Concepts</a> - conceptual background for what this implements</li>
+<li><a href="llm-04-agent-loop.htm">Building a Simple Agent Loop</a> - the loop that sits at the centre of a LangGraph agent</li>
+<li><a href="llm-17-multi-agent.htm">Multi-Agent Orchestration</a> - composing multiple agents, the next step up from chains</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

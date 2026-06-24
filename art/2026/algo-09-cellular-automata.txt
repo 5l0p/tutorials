@@ -1,5 +1,5 @@
 Algorithmic Composition - Part 9: Cellular Automata
-2026-01-19
+2026-06-01
 
 
 A cellular automaton is a grid of cells, each in one of a small number of states (usually

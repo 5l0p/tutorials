@@ -72,11 +72,107 @@
 <h1>~5l0p/tut</h1>
 <!-- header end -->
         <a href="https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
-        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="cpp.htm">cpp</a>, <a href="graphics.htm">graphics</a>, <a href="openframeworks.htm">openframeworks</a></i>
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="audio-plugins.htm">audio-plugins</a>, <a href="build-systems.htm">build-systems</a>, <a href="c.htm">c</a>, <a href="catch2.htm">catch2</a>, <a href="ci.htm">ci</a>, <a href="cmake.htm">cmake</a>, <a href="cpp.htm">cpp</a>, <a href="cross-platform.htm">cross-platform</a>, <a href="dependencies.htm">dependencies</a>, <a href="distribution.htm">distribution</a>, <a href="dsp.htm">dsp</a>, <a href="externals.htm">externals</a>, <a href="graphics.htm">graphics</a>, <a href="libpd.htm">libpd</a>, <a href="make.htm">make</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="puredata.htm">puredata</a>, <a href="raii.htm">raii</a>, <a href="static-linking.htm">static-linking</a>, <a href="testing.htm">testing</a>, <a href="unity.htm">unity</a>, <a href="vendoring.htm">vendoring</a>, <a href="vst.htm">vst</a>, <a href="vst3.htm">vst3</a></i>
 <h2>Tutorials</h2>
 <h2>cpp-</h2>
-<p><b><a href="art/2026/of-01-what-is-of.htm">openFrameworks - Part 1: What Is openFrameworks?</a></b> - 2026-06-09<br>
+<p><b><a href="art/2026/of-03-lifecycle.htm">openFrameworks - Part 3: The ofApp Lifecycle</a></b> - 2026-06-01<br>
+A detailed look at setup(), update(), draw(), and exit() - how the openFrameworks event loop works, how to use delta time, and how the OpenGL context interacts with the lifecycle.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/dsp-26-vendoring-cpp.htm">DSP - Part 26: Vendoring C and C++ Dependencies</a></b> - 2026-06-01<br>
+Three patterns for taking ownership of a dependency: git submodules (libsndfile, RtAudio), source-copy with a third_party/ tree, and single-file amalgamations (the stb pattern). Covers pkg-config, writing a FindXxx.cmake shim, and when to vendor vs link dynamically.<br>
+<i><a href="c.htm">c</a>, <a href="cpp.htm">cpp</a>, <a href="make.htm">make</a>, <a href="dependencies.htm">dependencies</a>, <a href="vendoring.htm">vendoring</a></i></p>
+<p><b><a href="art/2026/of-13-addons.htm">openFrameworks - Part 13: Addons - Structure & Best Practices</a></b> - 2026-06-01<br>
+How openFrameworks addons are structured, how to write your own addon from scratch, and when to reach for one versus rolling your own code.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-26-testing.htm">openFrameworks - Part 26: Testing oF Code</a></b> - 2026-06-01<br>
+Separating testable logic from oF lifecycle code, unit testing with Catch2, compiling the logic layer as a static library with its own Makefile, headless rendering to an offscreen FBO for pixel-level regression tests, and running tests in CI without a display server (Xvfb).<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="testing.htm">testing</a>, <a href="catch2.htm">catch2</a>, <a href="ci.htm">ci</a></i></p>
+<p><b><a href="art/2026/dsp-27-static-linking.htm">DSP - Part 27: Static Linking and Distribution</a></b> - 2026-06-01<br>
+Producing a self-contained binary: -static on Linux, otool/install_name_tool on macOS, DLL bundling on Windows. ldd/otool -L/dumpbin to audit runtime deps. Stripping debug info, UPX compression, and a checklist for shipping an offline-distributable C/C++ binary.<br>
+<i><a href="c.htm">c</a>, <a href="cpp.htm">cpp</a>, <a href="distribution.htm">distribution</a>, <a href="static-linking.htm">static-linking</a>, <a href="make.htm">make</a></i></p>
+<p><b><a href="art/2026/of-23-framebuffers.htm">openFrameworks - Part 23: Framebuffers & Post-Processing</a></b> - 2026-06-01<br>
+FBO render-to-texture with raw OpenGL and ofFbo, ping-pong buffers for feedback and iterative effects, full-screen quad post-processing shaders, and feedback loops for generative visuals.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-22-opengl-core.htm">openFrameworks - Part 22: OpenGL Core Profile</a></b> - 2026-06-01<br>
+Requesting a core profile in openFrameworks, understanding VAOs and VBOs, writing a complete programmable pipeline from scratch - uploading geometry to the GPU and drawing it without oF's fixed-function abstractions.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-08-ofxgui.htm">openFrameworks - Part 8: ofxGui: Built-in UI Controls</a></b> - 2026-06-01<br>
+Using the ofxGui addon to add sliders, toggles, buttons, and colour pickers to your sketch - with ofParameter bindings, ofParameterGroup, and saving/loading presets.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/dsp-29-vst3-crossplatform.htm">DSP - Part 29: Cross-Platform VST3 Builds</a></b> - 2026-06-01<br>
+One CMakeLists.txt that builds the VST3 plugin from Part 22 on Linux (gcc), macOS (clang, universal binary), and Windows (MSVC and MinGW). GitHub Actions CI matrix. macOS code-signing for local development. Installers: .deb on Linux, .pkg on macOS, NSIS on Windows.<br>
+<i><a href="c.htm">c</a>, <a href="cpp.htm">cpp</a>, <a href="vst3.htm">vst3</a>, <a href="cmake.htm">cmake</a>, <a href="cross-platform.htm">cross-platform</a>, <a href="audio-plugins.htm">audio-plugins</a></i></p>
+<p><b><a href="art/2026/of-16-linux-builds.htm">openFrameworks - Part 16: Linux Builds</a></b> - 2026-06-01<br>
+The Makefile-based oF workflow on Linux - debug and release builds, ALSA vs JACK audio, resolving library dependencies, packaging a release binary, and cross-compiling for ARM.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-11-shaders.htm">openFrameworks - Part 11: Shaders & GLSL</a></b> - 2026-06-01<br>
+What shaders are, how the vertex/fragment pipeline works, and how to write GLSL shaders in openFrameworks that react to mouse position, audio amplitude, and texture data.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-06-typography.htm">openFrameworks - Part 6: Typography</a></b> - 2026-06-01<br>
+Rendering text in openFrameworks using ofTrueTypeFont - loading fonts, drawing strings, measuring text bounds, supporting UTF-8, and using ofDrawBitmapString for quick debug output.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/dsp-28-testing.htm">DSP - Part 28: Testing DSP Code</a></b> - 2026-06-01<br>
+Unit testing C DSP code with the Unity test framework: numerical tolerance assertions (TEST_ASSERT_FLOAT_WITHIN), impulse-response comparison, offline WAV render-and-compare, running the test binary in CI, and a Makefile target that builds and runs all tests.<br>
+<i><a href="c.htm">c</a>, <a href="cpp.htm">cpp</a>, <a href="testing.htm">testing</a>, <a href="dsp.htm">dsp</a>, <a href="unity.htm">unity</a></i></p>
+<p><b><a href="art/2026/of-24-compute-shaders.htm">openFrameworks - Part 24: Compute Shaders</a></b> - 2026-06-01<br>
+OpenGL 4.3 compute shaders in openFrameworks - GL_COMPUTE_SHADER, layout(local_size), Shader Storage Buffer Objects, glDispatchCompute, memory barriers, spectral processing on the GPU, and a particle simulation.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-14-yaml.htm">openFrameworks - Part 14: YAML in C++ with yaml-cpp</a></b> - 2026-06-01<br>
+Adding yaml-cpp to an openFrameworks project, parsing and writing YAML config files, using YAML as a preset format for ofParameter groups, and knowing when to prefer it over JSON.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-17-windows-builds.htm">openFrameworks - Part 17: Windows Builds</a></b> - 2026-06-01<br>
+Visual Studio workflow for openFrameworks on Windows - WASAPI audio, path and Unicode pitfalls, DLL distribution, debugging, and fixing common Windows-specific compile errors.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-21-sdl2.htm">openFrameworks - Part 21: SDL2 as a Lighter Alternative</a></b> - 2026-06-01<br>
+Using SDL2 for window management, rendering, input, and text when you do not need the full openFrameworks stack - and connecting SDL2 audio to DSP code from the Series 4 articles.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-12-3d.htm">openFrameworks - Part 12: 3D: Meshes, Lights, and Cameras</a></b> - 2026-06-01<br>
+Building 3D scenes in openFrameworks with ofNode transform hierarchies, ofEasyCam, ofLight, ofMesh, the depth buffer, and procedurally generated geometry.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/dsp-25-makefiles.htm">DSP - Part 25: Makefiles for C and C++</a></b> - 2026-06-01<br>
+Writing a Makefile from scratch: variables, pattern rules, automatic header dependency generation with -MMD, phony targets, debug/release configurations, and a multi-target Makefile that builds a static library and a test binary side by side.<br>
+<i><a href="c.htm">c</a>, <a href="cpp.htm">cpp</a>, <a href="make.htm">make</a>, <a href="build-systems.htm">build-systems</a></i></p>
+<p><b><a href="art/2026/libpd-12-cpp-interop.htm">libpd in C++ Applications</a></b> - 2026-06-01<br>
+How to use libpd cleanly from C++ — RAII wrappers, exception safety, integrating with C++ audio frameworks, and embedding Pure Data as a typed DSP module in a larger C++ codebase.<br>
+<i><a href="libpd.htm">libpd</a>, <a href="cpp.htm">cpp</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="dsp.htm">dsp</a>, <a href="raii.htm">raii</a></i></p>
+<p><b><a href="art/2026/of-18-macos-builds.htm">openFrameworks - Part 18: macOS Builds</a></b> - 2026-06-01<br>
+Xcode project generator, CoreAudio backend, app bundle structure, ofToDataPath() and bundle-relative paths, ad-hoc signing for development, notarisation for distribution, and ARM vs x86_64 universal binaries.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-10-osc.htm">openFrameworks - Part 10: OSC: OpenSoundControl</a></b> - 2026-06-01<br>
+Using the ofxOSC addon to send and receive Open Sound Control messages between openFrameworks and other software - Pure Data, Max, TouchDesigner, and more.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-19-android.htm">openFrameworks - Part 19: Android</a></b> - 2026-06-01<br>
+Building openFrameworks apps for Android - NDK toolchain, Android Studio project structure, ofxAndroid activity lifecycle, touch input, audio backends, APK build from CLI, and adb logcat debugging.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-09-audio.htm">openFrameworks - Part 9: Audio I/O with ofSoundStream</a></b> - 2026-06-01<br>
+Setting up real-time audio input and output in openFrameworks using ofSoundStream and ofSoundStreamSettings, writing DSP code in the audioIn/audioOut callbacks, and managing buffer size and latency.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-07-input.htm">openFrameworks - Part 7: Mouse, Keyboard & Touch Input</a></b> - 2026-06-01<br>
+Handling mouse, keyboard, and touch events in openFrameworks - the event callbacks, OF_KEY constants, ofGetMouseX/Y, and building an interactive sketch.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-05-images-textures.htm">openFrameworks - Part 5: Images & Textures</a></b> - 2026-06-01<br>
+Loading and drawing images with ofImage, working with ofPixels for CPU-side pixel manipulation, uploading data to the GPU with ofTexture, and using ofFbo for render-to-texture.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-01-what-is-of.htm">openFrameworks - Part 1: What Is openFrameworks?</a></b> - 2026-06-01<br>
 An introduction to openFrameworks: what it is, how it compares to Processing and p5.js, and why C++ is a compelling choice for creative coding.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-04-2d-drawing.htm">openFrameworks - Part 4: 2D Drawing Primitives</a></b> - 2026-06-01<br>
+A complete guide to openFrameworks' 2D drawing API: colors, shapes, filled and stroked geometry, custom polygons with ofBeginShape, and the coordinate system.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-15-cross-platform.htm">openFrameworks - Part 15: Cross-Platform Overview</a></b> - 2026-06-01<br>
+How openFrameworks abstracts the platform layer, what actually differs between Linux, macOS, and Windows, and how to write a single codebase that builds cleanly on all three.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/dsp-24-cpp-pd-externals.htm">C++ PD Externals: Porting DSP Classes to Pure Data</a></b> - 2026-06-01<br>
+How to write Pure Data externals in C++ — wrapping a C++ DSP class with a thin m_pd.h shim, managing object lifetime with placement new, and porting a VST-style processor to a Pd object.<br>
+<i><a href="dsp.htm">dsp</a>, <a href="puredata.htm">puredata</a>, <a href="cpp.htm">cpp</a>, <a href="externals.htm">externals</a>, <a href="vst.htm">vst</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/of-02-setup.htm">openFrameworks - Part 2: Setup & Project Generator</a></b> - 2026-06-01<br>
+How to download openFrameworks, use the project generator to create a new project, understand the folder layout, and build and run your first sketch on Linux, macOS, and Windows.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-25-av-sketch.htm">openFrameworks - Part 25: Putting It Together - Audio-Visual Sketch</a></b> - 2026-06-01<br>
+Series capstone: a complete audio-visual sketch combining live audio input, FFT analysis, shader-driven visuals reacting to frequency bands, an ofEasyCam 3D scene, and ofxGui live tweaking. Full source for main.cpp, ofApp.h, ofApp.cpp, and both shaders.<br>
+<i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
+<p><b><a href="art/2026/of-20-portable-code.htm">openFrameworks - Part 20: Writing Portable oF Code</a></b> - 2026-06-01<br>
+Practical patterns for writing openFrameworks code that builds cleanly on Linux, macOS, Windows, and Android - preprocessor guards, interface abstraction, ofToDataPath(), endianness, and a portability audit checklist.<br>
 <i><a href="cpp.htm">cpp</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="graphics.htm">graphics</a></i></p>
 
 <!-- footer begin -->

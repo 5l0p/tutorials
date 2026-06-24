@@ -1,5 +1,5 @@
 LLM - Part 14: Putting It Together: A Full Agent
-2026-06-23
+2026-06-01
 
 
 This article assembles everything from articles 01–13 into a single Go binary: a

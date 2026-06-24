@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 9: Monomachine SID Engine
-2026-01-01
+2026-06-01
 
 
 The Monomachine's SID engine emulates the MOS6581 and MOS8580 SID chips — the sound

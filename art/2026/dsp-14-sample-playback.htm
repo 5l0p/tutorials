@@ -1,0 +1,458 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>DSP - Part 14: Sample Playback</title>
+    <meta name="description" content="Loading PCM from a WAV file in C, float buffer storage, one-shot and looping playback, linear and cubic Hermite interpolation, and pitch shifting via playback rate.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="dsp-14-sample-playback.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a></i>
+        <h2>DSP - Part 14: Sample Playback</h2>
+        <p>
+Every sampler, drum machine, and audio player starts the same way: read PCM samples from
+a file, store them in memory, then replay them at a pitch and speed that may be
+completely different from the original. The interesting problem is fractional positioning
+— playing back at a rate that does not land on integer sample indices. Get the
+interpolation wrong and you hear aliasing, muffled high frequencies, or faint chirping.
+Get it right and a 44.1 kHz snare sounds clean at any playback rate.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How to parse a RIFF/WAV header in C and extract raw PCM samples.</li>
+<li>How to store audio data as a normalised float buffer.</li>
+<li>How to implement one-shot and looping playback with a fractional phase accumulator.</li>
+<li>How linear interpolation works and where it falls short.</li>
+<li>How cubic Hermite interpolation improves quality for pitched playback.</li>
+<li>How a complete playback voice struct ties all of this together.</li>
+</ul>
+
+<h3>The RIFF/WAV Format</h3>
+
+<p>
+A WAV file is a RIFF container. The outer RIFF chunk wraps a WAVE form type, followed by
+one or more sub-chunks. For basic PCM audio we care about exactly two sub-chunks:
+<b>fmt </b> (format parameters) and <b>data</b> (the raw PCM samples). All multi-byte
+integers in RIFF are little-endian.
+</p>
+
+<pre>
+/* Minimal WAV header layout (all values little-endian) */
+
+/* RIFF chunk */
+char  riff_id[4];        /* "RIFF" */
+uint32_t riff_size;      /* file size - 8 */
+char  wave_id[4];        /* "WAVE" */
+
+/* fmt  sub-chunk */
+char  fmt_id[4];         /* "fmt " (note trailing space) */
+uint32_t fmt_size;       /* 16 for PCM */
+uint16_t audio_format;   /* 1 = PCM, 3 = IEEE float */
+uint16_t num_channels;   /* 1 = mono, 2 = stereo */
+uint32_t sample_rate;    /* e.g. 44100 or 48000 */
+uint32_t byte_rate;      /* sample_rate * num_channels * bits/8 */
+uint16_t block_align;    /* num_channels * bits/8 */
+uint16_t bits_per_sample;/* 8, 16, 24, or 32 */
+
+/* data sub-chunk */
+char  data_id[4];        /* "data" */
+uint32_t data_size;      /* number of bytes of PCM data */
+/* PCM samples follow immediately */
+</pre>
+
+<p>
+Real WAV files may have extra chunks (LIST, smpl, cue, etc.) between fmt and data. A
+robust parser must skip unknown chunks by reading their size field and seeking forward.
+</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+typedef struct {
+    float    *samples;       /* normalised float, mono (interleaved if stereo) */
+    int       num_samples;   /* total sample frames */
+    int       num_channels;
+    int       sample_rate;
+} WavBuffer;
+
+static uint16_t read_u16le(FILE *f) {
+    uint8_t b[2];
+    fread(b, 1, 2, f);
+    return (uint16_t)(b[0] | (b[1] &lt;&lt; 8));
+}
+
+static uint32_t read_u32le(FILE *f) {
+    uint8_t b[4];
+    fread(b, 1, 4, f);
+    return (uint32_t)(b[0] | (b[1]&lt;&lt;8) | (b[2]&lt;&lt;16) | (b[3]&lt;&lt;24));
+}
+
+/* Load a 16-bit PCM WAV file into a WavBuffer.
+   Returns 0 on success, non-zero on error. */
+int wav_load(const char *path, WavBuffer *wb) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    /* RIFF header */
+    char id[4];
+    fread(id, 1, 4, f);
+    if (memcmp(id, "RIFF", 4) != 0) { fclose(f); return -2; }
+    read_u32le(f);           /* riff_size, ignore */
+    fread(id, 1, 4, f);
+    if (memcmp(id, "WAVE", 4) != 0) { fclose(f); return -3; }
+
+    uint16_t audio_format = 0, num_channels = 0, bits = 0;
+    uint32_t sample_rate = 0, data_size = 0;
+    int found_fmt = 0, found_data = 0;
+
+    while (!found_data) {
+        if (fread(id, 1, 4, f) != 4) break;
+        uint32_t chunk_size = read_u32le(f);
+
+        if (memcmp(id, "fmt ", 4) == 0) {
+            audio_format  = read_u16le(f);
+            num_channels  = read_u16le(f);
+            sample_rate   = read_u32le(f);
+            read_u32le(f);              /* byte_rate */
+            read_u16le(f);              /* block_align */
+            bits          = read_u16le(f);
+            /* Skip any extra fmt bytes */
+            if (chunk_size &gt; 16)
+                fseek(f, (long)(chunk_size - 16), SEEK_CUR);
+            found_fmt = 1;
+        } else if (memcmp(id, "data", 4) == 0) {
+            data_size = chunk_size;
+            found_data = 1;
+        } else {
+            /* Unknown chunk: skip */
+            fseek(f, (long)chunk_size, SEEK_CUR);
+        }
+    }
+
+    if (!found_fmt || !found_data || audio_format != 1 || bits != 16) {
+        fclose(f);
+        return -4;   /* Only 16-bit PCM supported here */
+    }
+
+    int total_frames = (int)(data_size / (num_channels * 2));
+    float *buf = malloc(total_frames * num_channels * sizeof(float));
+    if (!buf) { fclose(f); return -5; }
+
+    /* Read 16-bit signed samples and normalise to [-1, 1] */
+    for (int i = 0; i &lt; total_frames * num_channels; i++) {
+        int16_t s;
+        fread(&amp;s, 2, 1, f);
+        buf[i] = (float)s / 32768.0f;
+    }
+
+    fclose(f);
+
+    wb-&gt;samples      = buf;
+    wb-&gt;num_samples  = total_frames;
+    wb-&gt;num_channels = num_channels;
+    wb-&gt;sample_rate  = (int)sample_rate;
+    return 0;
+}
+
+void wav_free(WavBuffer *wb) {
+    free(wb-&gt;samples);
+    wb-&gt;samples = NULL;
+}
+</pre>
+
+<h3>The Playback Voice</h3>
+
+<p>
+A playback voice tracks position within the buffer as a floating-point phase. Each
+audio sample, the phase advances by <code>rate</code>: a rate of 1.0 plays at the
+original pitch, 2.0 plays an octave up, 0.5 an octave down.
+</p>
+
+<pre>
+typedef enum { PLAYBACK_ONE_SHOT, PLAYBACK_LOOP } PlaybackMode;
+
+typedef struct {
+    const WavBuffer *buf;     /* source sample (not owned) */
+    double   phase;           /* current read position (fractional index) */
+    double   rate;            /* samples-per-output-sample advance */
+    float    gain;            /* linear gain [0..1] */
+    PlaybackMode mode;
+    int      loop_start;      /* sample frame index for loop start */
+    int      loop_end;        /* sample frame index for loop end (exclusive) */
+    int      active;          /* 0 = silent / finished */
+} PlaybackVoice;
+
+void voice_init(PlaybackVoice *v, const WavBuffer *buf,
+                double rate, float gain, PlaybackMode mode) {
+    v-&gt;buf        = buf;
+    v-&gt;phase      = 0.0;
+    v-&gt;rate       = rate;
+    v-&gt;gain       = gain;
+    v-&gt;mode       = mode;
+    v-&gt;loop_start = 0;
+    v-&gt;loop_end   = buf-&gt;num_samples;
+    v-&gt;active     = 1;
+}
+</pre>
+
+<h3>Linear Interpolation</h3>
+
+<p>
+When <code>phase</code> has a fractional part, the output sample lies between two
+adjacent input samples. Linear interpolation blends them in proportion to the fractional
+distance. It is cheap (one multiply-add) but introduces a gentle low-pass effect at
+high frequencies that becomes audible at rates far from 1.0.
+</p>
+
+<pre>
+/* Read one mono sample from buf at fractional position pos using linear interp */
+static float interp_linear(const float *samples, int len, double pos) {
+    int i0 = (int)pos;
+    int i1 = i0 + 1;
+    if (i1 &gt;= len) i1 = len - 1;   /* clamp at end */
+    float frac = (float)(pos - (double)i0);
+    return samples[i0] + frac * (samples[i1] - samples[i0]);
+}
+</pre>
+
+<h3>Cubic Hermite Interpolation</h3>
+
+<p>
+Cubic Hermite interpolation uses four sample points — one before and two after the
+fractional position — to fit a smooth cubic polynomial. It preserves slopes at the
+sample points, eliminates most of the linear low-pass blur, and still requires no
+trigonometric functions. The cost is three extra multiplies compared to linear.
+</p>
+
+<pre>
+/* Cubic Hermite interpolation across four points p0..p3.
+   t is the fractional position in [0, 1] between p1 and p2. */
+static float hermite4(float p0, float p1, float p2, float p3, float t) {
+    float c0 =  p1;
+    float c1 = (p2 - p0) * 0.5f;
+    float c2 =  p0 - 2.5f*p1 + 2.0f*p2 - 0.5f*p3;
+    float c3 = -0.5f*p0 + 1.5f*p1 - 1.5f*p2 + 0.5f*p3;
+    return ((c3*t + c2)*t + c1)*t + c0;
+}
+
+static float interp_cubic(const float *samples, int len, double pos) {
+    int i1 = (int)pos;
+    int i0 = i1 - 1;  if (i0 &lt; 0)    i0 = 0;
+    int i2 = i1 + 1;  if (i2 &gt;= len) i2 = len - 1;
+    int i3 = i1 + 2;  if (i3 &gt;= len) i3 = len - 1;
+    float t = (float)(pos - (double)i1);
+    return hermite4(samples[i0], samples[i1], samples[i2], samples[i3], t);
+}
+</pre>
+
+<p>
+Gotcha: at playback rates greater than 1.0 (pitch up) the voice advances more than one
+sample per output sample. Cubic interpolation still works correctly because it always
+reads the four nearest input samples, regardless of the advance rate. However, for very
+high ratios (4x and above) you will start to hear aliasing from the spectral folding of
+the original content. Proper anti-aliasing for large-ratio pitch shifts requires a
+more expensive resampling filter — out of scope here, but worth knowing about.
+</p>
+
+<h3>Rendering a Playback Voice</h3>
+
+<pre>
+/* Render 'frames' mono output samples from voice v into out[].
+   Uses cubic Hermite interpolation. */
+void voice_render(PlaybackVoice *v, float *out, int frames) {
+    if (!v-&gt;active) {
+        for (int i = 0; i &lt; frames; i++) out[i] = 0.0f;
+        return;
+    }
+
+    const float *src = v-&gt;buf-&gt;samples;
+    int len = v-&gt;buf-&gt;num_samples;
+
+    for (int i = 0; i &lt; frames; i++) {
+        /* Bounds check */
+        if (v-&gt;phase &gt;= (double)(len - 1)) {
+            if (v-&gt;mode == PLAYBACK_LOOP) {
+                /* Wrap back to loop_start */
+                double loop_len = (double)(v-&gt;loop_end - v-&gt;loop_start);
+                while (v-&gt;phase &gt;= (double)v-&gt;loop_end)
+                    v-&gt;phase -= loop_len;
+            } else {
+                /* One-shot: done */
+                out[i] = 0.0f;
+                v-&gt;active = 0;
+                for (int j = i + 1; j &lt; frames; j++) out[j] = 0.0f;
+                return;
+            }
+        }
+
+        out[i] = v-&gt;gain * interp_cubic(src, len, v-&gt;phase);
+        v-&gt;phase += v-&gt;rate;
+    }
+}
+</pre>
+
+<h3>Pitch Shifting via Playback Rate</h3>
+
+<p>
+To play a sample at a different pitch, compute the rate from the desired frequency ratio.
+For MIDI note-based pitch shifting, the rate relative to the root note is:
+</p>
+
+<pre>
+/* Compute playback rate for a given MIDI note relative to the root note.
+   root_note is the MIDI note at which rate = 1.0 (original pitch).
+   target_note is the desired MIDI note to play. */
+double rate_for_note(int root_note, int target_note) {
+    return pow(2.0, (target_note - root_note) / 12.0);
+}
+
+/* Example: sample recorded at A4 (MIDI 69), play at C5 (MIDI 72) */
+/* rate = pow(2, 3/12.0) = 1.1892...  (about 1.19x speed) */
+</pre>
+
+<p>
+If the sample's original pitch is not A4, pass the correct root_note. Some WAV files
+embed their root note in a <code>smpl</code> chunk; for simple use the root is usually
+documented with the sample library or set to 60 (middle C).
+</p>
+
+<h3>Stereo Playback</h3>
+
+<p>
+For stereo WAV files, the samples array is interleaved: L[0], R[0], L[1], R[1], ...
+Adjust the read position accordingly:
+</p>
+
+<pre>
+/* Read one stereo frame at fractional frame position pos.
+   Fills *left and *right. */
+void interp_stereo(const WavBuffer *wb, double pos, float *left, float *right) {
+    int len  = wb-&gt;num_samples;
+    int i1   = (int)pos;
+    float t  = (float)(pos - (double)i1);
+
+    /* Helper: get sample at frame index, channel ch (0=L, 1=R) */
+    #define S(idx, ch) wb-&gt;samples[((idx) &lt; len ? (idx) : len-1) * 2 + (ch)]
+
+    int i0 = (i1 &gt; 0)      ? i1-1 : 0;
+    int i2 = (i1+1 &lt; len)  ? i1+1 : len-1;
+    int i3 = (i1+2 &lt; len)  ? i1+2 : len-1;
+
+    *left  = hermite4(S(i0,0), S(i1,0), S(i2,0), S(i3,0), t);
+    *right = hermite4(S(i0,1), S(i1,1), S(i2,1), S(i3,1), t);
+    #undef S
+}
+</pre>
+
+<h3>Summary</h3>
+
+<p>
+Loading a WAV file is a matter of parsing its RIFF sub-chunks and converting integer
+PCM to float. Playback is a phase accumulator that advances by <code>rate</code> each
+sample; linear interpolation is fast but blurry at high pitch ratios; cubic Hermite
+is the standard quality/cost trade-off. Looping wraps the phase back to
+<code>loop_start</code> when it reaches <code>loop_end</code>. Pitch shifting is
+just rate scaling derived from a semitone interval.
+</p>
+
+<p>
+Part 15 builds on this by pre-computing waveforms into a table and using the same
+interpolation techniques for a wavetable oscillator — the efficient alternative to
+computing <code>sin()</code> per sample.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="http://soundfile.sapp.org/doc/WaveFormat/">WAV PCM soundfile format - Craig Stuart Sapp</a></li>
+<li><a href="https://ccrma.stanford.edu/~jos/pasp/Cubic_Interpolation.html">Cubic Interpolation - Julius O. Smith III (CCRMA)</a></li>
+<li><a href="https://ccrma.stanford.edu/~jos/pasp/Lagrange_Interpolation.html">Lagrange Interpolation - Julius O. Smith III (CCRMA)</a></li>
+<li><a href="https://www.musicdsp.org/en/latest/Other/93-hermite-interpollation.html">Hermite Interpolation - musicdsp.org</a></li>
+<li><a href="https://www.ietf.org/rfc/rfc2361.txt">MIME Type Registrations for AIFF and WAV (RFC 2361)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="dsp-15-wavetable.htm">Wavetable Synthesis</a></li>
+<li><a href="dsp-03-oscillators.htm">Oscillators</a></li>
+<li><a href="dsp-13-denormals.htm">Denormal Numbers</a></li>
+<li><a href="dsp-01-audio-fundamentals.htm">Audio Fundamentals</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

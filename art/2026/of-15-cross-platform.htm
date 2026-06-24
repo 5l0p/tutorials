@@ -1,0 +1,339 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>openFrameworks - Part 15: Cross-Platform Overview</title>
+    <meta name="description" content="How openFrameworks abstracts the platform layer, what actually differs between Linux, macOS, and Windows, and how to write a single codebase that builds cleanly on all three.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="cpp, openframeworks, graphics">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="of-15-cross-platform.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../cpp.htm">cpp</a>, <a href="../../openframeworks.htm">openframeworks</a>, <a href="../../graphics.htm">graphics</a></i>
+        <h2>openFrameworks - Part 15: Cross-Platform Overview</h2>
+        <p>
+openFrameworks advertises itself as cross-platform, and for the most part the claim holds -
+the same <code>ofApp</code> code that draws circles on Linux draws circles on macOS and
+Windows without modification. But "the same code" breaks down the moment you write a path with
+a backslash, use a Linux-only audio API, or assume the home directory is at
+<code>/home/user</code>. The platform layer is thinner than you think, and understanding
+where the seams are makes the difference between a sketch that ports cleanly and one that
+spends a weekend in build-system purgatory.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+  <li>How oF abstracts windowing, audio backends, and filesystem paths.</li>
+  <li>What concretely differs between Linux, macOS, and Windows builds.</li>
+  <li>The <code>ofxTargetPlatform</code> preprocessor flags and when to use them.</li>
+  <li>Why you must always use <code>ofToDataPath()</code> for asset paths.</li>
+  <li>Filesystem path conventions and their cross-platform pitfalls.</li>
+  <li>A checklist for auditing a codebase for portability.</li>
+</ul>
+
+<h3>What oF Abstracts (and What It Does Not)</h3>
+
+<p>
+The oF abstraction covers four areas:
+</p>
+
+<ul>
+  <li><b>Window creation:</b> GLFW handles this on all three desktop platforms. You write
+  <code>ofSetupOpenGL(w, h, OF_WINDOW)</code> and get a window. The platform-specific
+  code is inside oF.</li>
+  <li><b>OpenGL context:</b> Same API on all three. Driver quality differs, but GLSL and
+  the draw calls you write are identical.</li>
+  <li><b>Input events:</b> Mouse, keyboard, and touch are unified behind the
+  <code>ofBaseApp</code> virtual methods. You do not call <code>XNextEvent</code> or
+  <code>GetMessage</code> directly.</li>
+  <li><b>File I/O paths:</b> <code>ofToDataPath()</code> resolves a relative path to an
+  absolute path that works regardless of platform, executable location, or bundle structure.</li>
+</ul>
+
+<p>
+oF does <i>not</i> abstract:
+</p>
+
+<ul>
+  <li>The audio backend (ALSA/JACK vs CoreAudio vs WASAPI - the API surface looks the same
+  through <code>ofSoundStream</code>, but backend selection and device enumeration differ).</li>
+  <li>Platform-specific shared libraries (DLL vs dylib vs .so).</li>
+  <li>File permission models and home directory locations.</li>
+  <li>Process spawn / shell execution APIs.</li>
+</ul>
+
+<h3>Windowing: GLFW on All Three Platforms</h3>
+
+<p>
+oF 0.12.x uses GLFW 3.x for window management on Linux, macOS, and Windows. The window hint
+flags you set in <code>main.cpp</code> (fullscreen, resizable, OpenGL version request) work
+the same everywhere. Platform-specific considerations:
+</p>
+
+<ul>
+  <li><b>Linux (X11):</b> GLFW targets X11 by default; Wayland support requires a build flag
+  (see Part 16). HiDPI scaling is compositor-controlled.</li>
+  <li><b>macOS (Cocoa):</b> Retina display support is automatic; GLFW reports logical pixel
+  counts. The framebuffer is 2× the window size on Retina screens.</li>
+  <li><b>Windows:</b> HiDPI requires a DPI-awareness manifest entry in the executable. oF
+  includes this in its Visual Studio project template.</li>
+</ul>
+
+<h3>Audio Backends</h3>
+
+<p>
+<code>ofSoundStream</code> sits in front of the platform audio layer and exposes a uniform
+interface. The concrete backend:
+</p>
+
+<ul>
+  <li><b>Linux:</b> ALSA (default) or JACK (if compiled with <code>OF_AUDIO_BACKEND=jack</code>).
+  ALSA works out of the box on most distributions; JACK gives lower latency and better
+  multi-application routing.</li>
+  <li><b>macOS:</b> CoreAudio. Exclusive by default; no extra setup. Low latency (256 samples
+  is achievable).</li>
+  <li><b>Windows:</b> WASAPI via RTAudio. Shared mode (default, higher latency) or exclusive
+  mode (lower latency, requires driver support). ASIO4ALL enables ASIO on hardware that
+  does not natively support it.</li>
+</ul>
+
+<p>
+The <code>ofSoundStreamSettings</code> API is identical across platforms. Device enumeration
+differs in the names reported but not the C++ API you call.
+</p>
+
+<h3>Preprocessor Platform Flags</h3>
+
+<p>
+oF defines preprocessor macros that identify the target platform. Use them for any
+platform-specific code block:
+</p>
+
+<pre>
+#include &lt;ofMain.h&gt;   // brings in ofConstants.h which defines the flags
+
+#ifdef TARGET_LINUX
+    // Linux-specific code
+    #include &lt;sys/utsname.h&gt;
+#endif
+
+#ifdef TARGET_OSX
+    // macOS-specific code
+    #include &lt;CoreFoundation/CoreFoundation.h&gt;
+#endif
+
+#ifdef TARGET_WIN32
+    // Windows-specific code (also true on 64-bit Windows in oF)
+    #include &lt;windows.h&gt;
+#endif
+
+#ifdef TARGET_LINUX_ARM
+    // ARM Linux (Raspberry Pi)
+#endif
+</pre>
+
+<p>
+The full set is defined in <code>libs/openFrameworks/utils/ofConstants.h</code>. Note that
+<code>TARGET_WIN32</code> is defined on 64-bit Windows builds of oF - it is a historical name,
+not an architecture flag.
+</p>
+
+<h3>ofToDataPath() - The Single Most Important Portability Rule</h3>
+
+<p>
+Asset files (images, shaders, config files, samples) live in <code>bin/data/</code> on Linux
+and Windows, and inside the app bundle's <code>Resources/</code> directory on macOS. The
+absolute path to those locations is different on every machine and every platform. Hard-coding
+paths breaks immediately on any computer other than the one the code was written on.
+</p>
+
+<p>
+<code>ofToDataPath(relativePath)</code> returns the correct absolute path on the current
+platform. It is the <i>only</i> correct way to build asset paths:
+</p>
+
+<pre>
+// WRONG on macOS bundles and any machine with a different home dir:
+std::string path = "/home/alice/project/bin/data/shaders/plasma.frag";
+
+// WRONG: relative paths depend on the current working directory,
+// which differs between IDE runs and command-line runs:
+std::string path = "shaders/plasma.frag";
+
+// CORRECT: always resolves to the right place:
+std::string path = ofToDataPath("shaders/plasma.frag");
+</pre>
+
+<p>
+oF sets the working directory to <code>bin/data/</code> at startup on Linux and Windows, so
+bare relative paths work in practice most of the time - until you run from an IDE, a packaged
+app, or a symlink. Use <code>ofToDataPath</code> unconditionally and never debug path issues
+again.
+</p>
+
+<h3>Path Separator: Forward Slash Works Everywhere</h3>
+
+<p>
+C++ file APIs on Windows accept forward slashes as well as backslashes in paths. The Win32
+API has supported forward slashes since Windows NT. Therefore:
+</p>
+
+<pre>
+// Works on all three platforms:
+YAML::LoadFile(ofToDataPath("config/synth.yaml"));
+
+// Do NOT write:
+YAML::LoadFile(ofToDataPath("config\\synth.yaml"));  // breaks on Linux/macOS
+</pre>
+
+<p>
+The only place backslashes are unavoidable is when passing paths to <code>cmd.exe</code> or
+certain Windows-only legacy APIs. Everywhere else, forward slash is correct.
+</p>
+
+<h3>Home Directory and User Data</h3>
+
+<p>
+If you need to store user data (settings, recordings) outside the application bundle:
+</p>
+
+<pre>
+std::string userHome() {
+#ifdef TARGET_WIN32
+    // USERPROFILE is "C:\Users\alice" on modern Windows
+    const char *h = std::getenv("USERPROFILE");
+    return h ? h : "C:\\Users\\Default";
+#else
+    const char *h = std::getenv("HOME");
+    return h ? h : "/tmp";
+#endif
+}
+
+std::string settingsPath = userHome() + "/Documents/MySketch/settings.yaml";
+</pre>
+
+<p>
+On macOS, prefer <code>~/Library/Application Support/MySketch/</code> to match platform
+conventions. On Linux, use <code>~/.config/mysketch/</code> per the XDG spec.
+</p>
+
+<h3>A Portability Checklist</h3>
+
+<p>
+Run through this list before claiming a project is cross-platform:
+</p>
+
+<ul>
+  <li>All asset paths go through <code>ofToDataPath()</code>.</li>
+  <li>No hardcoded absolute paths anywhere in source code.</li>
+  <li>All path separators are forward slashes.</li>
+  <li>Platform-specific code is inside <code>#ifdef TARGET_*</code> blocks.</li>
+  <li>No use of POSIX APIs (<code>popen</code>, <code>fork</code>, UNIX socket headers) outside
+  a Linux/macOS guard.</li>
+  <li>No use of Windows-only APIs (<code>CreateFile</code>, <code>CoInitialize</code>) outside
+  a <code>TARGET_WIN32</code> guard.</li>
+  <li>Audio buffer size is a variable, not hardcoded to a value that only one backend accepts.</li>
+  <li>Shader source uses GLSL version 1.20 (or explicitly requests a higher version that is
+  available on all target platforms).</li>
+  <li>Font files are included in <code>bin/data/</code>, not assumed to be at a system path.</li>
+</ul>
+
+<h3>Summary</h3>
+
+<p>
+oF's cross-platform abstraction covers windowing, input, and the <code>ofSoundStream</code>
+surface. The audio backend, path conventions, and platform-specific system APIs are your
+responsibility. The tools: <code>ofToDataPath()</code> for asset paths, <code>TARGET_*</code>
+macros for conditional compilation, and forward-slash paths everywhere. The next three
+articles go platform-specific: Part 16 covers the Linux Makefile workflow in detail, Part 17
+covers Windows and Visual Studio, and Part 18 covers macOS and Xcode.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+  <li><a href="https://openframeworks.cc/documentation/utils/ofUtils/#!show_ofToDataPath">ofToDataPath() Reference</a></li>
+  <li><a href="https://github.com/openframeworks/openFrameworks/blob/master/libs/openFrameworks/utils/ofConstants.h">ofConstants.h on GitHub</a></li>
+  <li><a href="https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html">XDG Base Directory Specification</a></li>
+  <li><a href="https://www.glfw.org/docs/latest/intro_guide.html">GLFW Introduction</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+  <li><a href="of-16-linux-builds.htm">Linux Builds</a></li>
+  <li><a href="of-17-windows-builds.htm">Windows Builds</a></li>
+  <li><a href="of-18-macos-builds.htm">macOS Builds</a></li>
+  <li><a href="of-20-portable-code.htm">Writing Portable oF Code</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

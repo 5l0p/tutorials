@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 8: Machinedrum PI — Pitched Instruments
-2026-01-01
+2026-06-01
 
 
 The PI machines add a set of non-drum percussion instruments to the Machinedrum's

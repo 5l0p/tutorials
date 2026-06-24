@@ -1,5 +1,5 @@
 Elektron Synthesis - Part 13: Monomachine DigiPro Engine
-2026-01-01
+2026-06-01
 
 
 The Monomachine's DigiPro engine uses digital oscillator techniques that go beyond

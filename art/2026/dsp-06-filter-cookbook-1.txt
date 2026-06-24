@@ -1,0 +1,294 @@
+DSP - Part 6: Filter Cookbook: Lowpass, Highpass & Resonance
+2026-06-01
+
+
+The biquad filter is only useful once you know what coefficients to plug in. This article
+derives the coefficients for lowpass and highpass filters from first principles using the
+Audio EQ Cookbook formulas, explains the role of Q (resonance), and provides complete C
+code to compute and apply these filters at runtime.
+
+
+What You Will Learn
+
+
+The three cookbook parameters: centre frequency, sample rate, and Q (resonance)
+Deriving biquad coefficients for a lowpass filter from the Audio EQ Cookbook formulas
+Deriving coefficients for a highpass filter
+What Q controls physically and what values produce flat, resonant, and self-oscillating responses
+How to apply the filter to a block of samples in C and smooth coefficient updates to avoid clicks
+
+
+The Cookbook Parameters
+
+
+All the filter types in this and the next article share the same three control parameters:
+
+
+
+Fc: the cutoff (or centre) frequency in Hz.
+Fs: the sample rate in Hz (typically 44100 or 48000).
+Q: the quality factor - controls the width of the transition band and the
+    amount of resonant boost at the cutoff frequency. Q = 1/sqrt(2) ≈ 0.7071 gives
+    the maximally flat (Butterworth) response with no resonance peak.
+
+
+
+The intermediate values used in every formula:
+
+
+
+w0    = 2 * pi * Fc / Fs    /* angular frequency, radians per sample */
+cos_w = cos(w0)
+sin_w = sin(w0)
+alpha = sin_w / (2 * Q)     /* bandwidth term */
+
+
+Lowpass Filter (LPF)
+
+
+A lowpass filter passes frequencies below Fc and attenuates frequencies above Fc. The
+roll-off rate for a single biquad is 12 dB/octave. The Audio EQ Cookbook coefficients:
+
+
+
+b0 =  (1 - cos_w) / 2
+b1 =   1 - cos_w
+b2 =  (1 - cos_w) / 2
+a0 =   1 + alpha
+a1 =  -2 * cos_w
+a2 =   1 - alpha
+
+
+
+All coefficients are then divided by a0 to normalise the denominator. In C:
+
+
+
+#include <math.h>
+
+#define M_PI 3.14159265358979323846
+
+typedef struct {
+    float b0, b1, b2, a1, a2;
+} BiquadCoeffs;
+
+void biquad_lpf(BiquadCoeffs *c, float fc, float q, float fs) {
+    float w0    = 2.0f * M_PI * fc / fs;
+    float cos_w = cosf(w0);
+    float sin_w = sinf(w0);
+    float alpha = sin_w / (2.0f * q);
+    float a0    = 1.0f + alpha;
+
+    c->b0 = (1.0f - cos_w) / 2.0f / a0;
+    c->b1 =  (1.0f - cos_w)       / a0;
+    c->b2 = (1.0f - cos_w) / 2.0f / a0;
+    c->a1 = -2.0f * cos_w         / a0;
+    c->a2 = (1.0f - alpha)        / a0;
+}
+
+
+Highpass Filter (HPF)
+
+
+A highpass filter passes frequencies above Fc and attenuates those below. The cookbook
+derivation is the complement of the lowpass:
+
+
+
+b0 =  (1 + cos_w) / 2
+b1 = -(1 + cos_w)
+b2 =  (1 + cos_w) / 2
+a0 =   1 + alpha
+a1 =  -2 * cos_w
+a2 =   1 - alpha
+
+
+
+The denominator (a0, a1, a2) is identical to the lowpass - only the numerator changes.
+
+
+
+void biquad_hpf(BiquadCoeffs *c, float fc, float q, float fs) {
+    float w0    = 2.0f * M_PI * fc / fs;
+    float cos_w = cosf(w0);
+    float sin_w = sinf(w0);
+    float alpha = sin_w / (2.0f * q);
+    float a0    = 1.0f + alpha;
+
+    c->b0 =  (1.0f + cos_w) / 2.0f / a0;
+    c->b1 = -(1.0f + cos_w)        / a0;
+    c->b2 =  (1.0f + cos_w) / 2.0f / a0;
+    c->a1 = -2.0f * cos_w          / a0;
+    c->a2 = (1.0f - alpha)         / a0;
+}
+
+
+Understanding Q and Resonance
+
+
+Q determines the sharpness of the filter's transition and, at high values, creates a
+resonant peak at the cutoff frequency. Some key Q values:
+
+
+
+Q = 0.5       very wide, overdamped, no peak
+Q = 0.7071    Butterworth: maximally flat, -3 dB exactly at Fc
+Q = 1.0       slight peak (~1 dB) at Fc
+Q = 2.0       moderate resonance (~4 dB peak)
+Q = 5.0       sharp resonance (~14 dB peak)
+Q = 10.0+     near-oscillation; filter may be unstable at very low Fc
+
+
+
+The height of the resonance peak in dB is approximately:
+
+
+
+peak_dB ≈ 20 * log10(Q)   (for Q > 0.7071)
+
+
+
+For a synthesiser filter you typically expose Q on a logarithmic scale to the user, since
+the perceptual effect of resonance is non-linear. A linear knob from Q=0.5 to Q=10 is
+acceptable; alternatively, expose "resonance" as 0..1 and map to Q with:
+
+
+
+float resonance_to_q(float r) {
+    /* r in [0, 1): maps to Q in [0.7071, ~20] */
+    if (r >= 1.0f) r = 0.9999f;
+    return 1.0f / (2.0f * (1.0f - r));
+}
+
+
+Applying the Filter to a Block
+
+
+Using the TDF-II biquad from the previous article:
+
+
+
+#include <string.h>
+
+typedef struct {
+    float b0, b1, b2, a1, a2;
+    float s1, s2;
+} BiquadTDF2;
+
+void biquad_set(BiquadTDF2 *f, const BiquadCoeffs *c) {
+    f->b0 = c->b0; f->b1 = c->b1; f->b2 = c->b2;
+    f->a1 = c->a1; f->a2 = c->a2;
+}
+
+void biquad_render(BiquadTDF2 *f, const float *in,
+                   float *out, int n) {
+    float b0=f->b0, b1=f->b1, b2=f->b2, a1=f->a1, a2=f->a2;
+    float s1=f->s1, s2=f->s2;
+    for (int i = 0; i < n; i++) {
+        float x = in[i];
+        float y = b0*x + s1;
+        s1      = b1*x - a1*y + s2;
+        s2      = b2*x - a2*y;
+        out[i]  = y;
+    }
+    f->s1 = s1; f->s2 = s2;
+}
+
+
+Smoothing Coefficient Updates
+
+
+If you recompute coefficients every block as a filter sweeps (e.g., from a filter
+envelope), the coefficients change step-wise at the block boundary. This can introduce
+a subtle zipper noise at high sweep rates. Two mitigations:
+
+
+
+Per-sample update: Recompute coefficients every sample. Expensive but smooth.
+    Works at block sizes of 64 or larger where the cost is diluted.
+Linear interpolation: Compute target and current coefficients, then interpolate
+    per-sample inside the block. Four extra multiplies per sample.
+
+
+
+/* Linearly interpolate two coefficient sets over a block */
+void biquad_render_smoothed(BiquadTDF2 *f,
+                            const BiquadCoeffs *c_new,
+                            const float *in, float *out, int n) {
+    float ib0 = f->b0, ib1 = f->b1, ib2 = f->b2;
+    float ia1 = f->a1, ia2 = f->a2;
+    float db0 = (c_new->b0 - ib0) / n;
+    float db1 = (c_new->b1 - ib1) / n;
+    float db2 = (c_new->b2 - ib2) / n;
+    float da1 = (c_new->a1 - ia1) / n;
+    float da2 = (c_new->a2 - ia2) / n;
+    float s1=f->s1, s2=f->s2;
+    float b0=ib0, b1=ib1, b2=ib2, a1=ia1, a2=ia2;
+    for (int i = 0; i < n; i++) {
+        float x = in[i];
+        float y = b0*x + s1;
+        s1      = b1*x - a1*y + s2;
+        s2      = b2*x - a2*y;
+        out[i]  = y;
+        b0 += db0; b1 += db1; b2 += db2;
+        a1 += da1; a2 += da2;
+    }
+    f->s1=s1; f->s2=s2;
+    biquad_set(f, c_new);
+}
+
+
+A Complete Example
+
+
+#define SAMPLE_RATE 48000
+#define BLOCK_SIZE  512
+
+int main(void) {
+    BiquadTDF2  filt  = {0};
+    BiquadCoeffs coef = {0};
+
+    /* 1 kHz lowpass, Q=0.7071 (Butterworth) */
+    biquad_lpf(&coef, 1000.0f, 0.7071f, SAMPLE_RATE);
+    biquad_set(&filt, &coef);
+
+    float in[BLOCK_SIZE], out[BLOCK_SIZE];
+
+    /* Fill input with white noise for testing */
+    for (int i = 0; i < BLOCK_SIZE; i++)
+        in[i] = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+
+    biquad_render(&filt, in, out, BLOCK_SIZE);
+
+    /* Check: output should have less high-frequency energy than input */
+    return 0;
+}
+
+
+Summary
+
+
+Lowpass and highpass biquad coefficients are derived from three parameters:
+centre frequency, sample rate, and Q. The intermediate value
+w0 = 2π·f/sr and alpha = sin(w0)/(2·Q) appear in all cookbook
+formulas. Q below 1/√2 (~0.707) is underdamped (flat); above it produces
+resonance; above ~0.5/alpha the filter self-oscillates. Always smooth
+coefficient changes over a block (or use a one-pole smoother) to avoid
+discontinuity clicks.
+
+
+Further Reading
+
+
+Audio EQ Cookbook - Robert Bristow-Johnson
+Butterworth Lowpass - Julius O. Smith III
+RBJ Audio EQ Cookbook on musicdsp.org
+
+
+See Also
+
+
+Biquad Filters
+Filter Cookbook: Bandpass, Notch & Shelves
+Envelope Follower & Parameter Smoothing
+

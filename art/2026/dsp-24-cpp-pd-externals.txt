@@ -1,0 +1,716 @@
+C++ PD Externals: Porting DSP Classes to Pure Data
+2026-06-01
+
+
+You have a polished C++ DSP class — a biquad filter with a clean interface, or a
+VST-style processor with prepare() and process() methods —
+and you want it inside a Pure Data patch as a native object. The m_pd.h API is a C
+API, but that does not mean you have to rewrite your class in C. The constraint is
+not the language; it is the object model. Once you understand why Pd manages object
+memory the way it does, the path from a C++ class to a working external is a handful
+of lines of shim code.
+
+
+
+This article builds directly on dsp-21. You already know about t_object,
+class_new(), dsp_add(), and the perform()
+routine. What changes when you switch from C to C++ is covered here — nothing else
+is re-explained from scratch.
+
+
+What You Will Learn
+
+
+Why Pd's pd_new() / class_new() memory model conflicts with C++ constructors, and how placement new resolves the conflict.
+How to embed a C++ object inside a Pd struct without a separate heap allocation.
+How to build a complete biquadcpp~ external that wraps the C++ BiquadFilter class from Part 5.
+How to handle constructor and destructor lifetime correctly so that C++ member destructors run when a Pd object is freed.
+How to port a VST-style processor — with prepare(), process(), and multiple parameters — to a multi-inlet Pd object.
+How to compile C++ Pd externals with g++ and the correct flags.
+
+
+Why C++ and m_pd.h Don't Naturally Mix
+
+
+Pd allocates object memory with pd_new(), which calls getbytes()
+internally — a raw allocator that returns zeroed memory of exactly sizeof(your_struct)
+bytes. It does not call any constructor. The class struct you pass to class_new()
+tells Pd how big the allocation should be, but Pd has no concept of C++ construction.
+
+
+
+This creates two problems. First, if your Pd struct contains a C++ member object
+(say, a BiquadFilter), that member's constructor never runs. The memory
+is zeroed, not constructed. If BiquadFilter has a std::vector
+or any non-trivial member, you get undefined behaviour the moment you call a method
+on it. Second, when Pd frees the object it calls your _free function and
+then freebytes() — again with no destructor call. Any C++ member that
+allocated resources during construction will leak them.
+
+
+
+The solution is placement new. After Pd allocates the memory, you
+construct C++ members into that memory yourself using new (ptr) Type(args).
+In your _free function, you explicitly call the destructor before Pd calls
+freebytes(). The memory itself is still managed by Pd; you are only
+managing the C++ object lifecycle layered on top of it.
+
+
+
+You also need to compile the external as C++, which means the setup()
+function must be declared extern "C" so its name is not mangled. Pd
+looks for biquadcpp_tilde_setup by name via dlsym; if the
+symbol is mangled the external will not load.
+
+
+The Placement New Pattern for Pd Objects
+
+
+Here is the pattern in its minimal form. The Pd struct holds a C++ member by value.
+Placement new is called in the Pd constructor; the explicit destructor call is in
+_free.
+
+
+
+#include "m_pd.h"
+#include <new>      /* for placement new */
+
+/* A trivial C++ class to illustrate the pattern */
+class MyProcessor {
+public:
+    MyProcessor() : value(0.0f) {}
+    ~MyProcessor() {}             /* would free resources here */
+    void reset() { value = 0.0f; }
+    float process(float x) { return x; }
+private:
+    float value;
+};
+
+/* The Pd struct: t_object first, then a raw storage region
+   sized to hold MyProcessor, aligned to hold any type. */
+typedef struct _mypd {
+    t_object      x_obj;            /* MUST be first */
+    t_float       x_f;              /* dummy float for MAINSIGNALIN */
+    t_outlet     *x_out;
+    /* Storage for the C++ object — NOT a pointer, not a value,
+       but raw aligned bytes that we construct into ourselves. */
+    union {
+        MyProcessor proc;
+        char        _raw[sizeof(MyProcessor)];
+    } u;
+} t_mypd;
+
+static t_class *mypd_class;
+
+static void *mypd_new(void) {
+    t_mypd *x = (t_mypd *)pd_new(mypd_class);
+    /* Pd has zero-initialised x. Now construct the C++ member. */
+    new (&x->u.proc) MyProcessor();
+    x->x_out = outlet_new(&x->x_obj, &s_signal);
+    return (void *)x;
+}
+
+static void mypd_free(t_mypd *x) {
+    /* Explicitly destruct the C++ member before Pd frees the memory. */
+    x->u.proc.~MyProcessor();
+    outlet_free(x->x_out);
+}
+
+
+
+The union trick is not strictly required — you can write MyProcessor proc;
+directly in the struct because Pd allocates the right number of bytes. The union is a
+habit from older compilers where embedding a non-trivial C++ object in a C-compatible
+struct triggered warnings. In modern C++ (C++11 onward) you can write the member
+directly; just make sure the struct is compiled as C++, not C.
+
+
+
+One simpler alternative is to store a pointer and use new/delete:
+
+
+
+typedef struct _mypd2 {
+    t_object      x_obj;
+    t_float       x_f;
+    t_outlet     *x_out;
+    MyProcessor  *proc;    /* heap-allocated C++ object */
+} t_mypd2;
+
+static void *mypd2_new(void) {
+    t_mypd2 *x = (t_mypd2 *)pd_new(mypd_class);
+    x->proc   = new MyProcessor();
+    x->x_out  = outlet_new(&x->x_obj, &s_signal);
+    return (void *)x;
+}
+
+static void mypd2_free(t_mypd2 *x) {
+    delete x->proc;
+    outlet_free(x->x_out);
+}
+
+
+
+The pointer approach is simpler and fine for most externals. The embedded (placement
+new) approach avoids the extra allocation and keeps the C++ object adjacent to the
+Pd object in memory, which is slightly better for cache behaviour in patches with many
+instances. Use whichever you find clearer; both are correct.
+
+
+Wrapping a C++ Class: the BiquadFilter~ External
+
+
+The BiquadFilter class below is the Direct Form II Transposed biquad from
+Part 5, written as a proper C++ class with constructor, setCoeffs, and a block-processing
+render() method. It owns its state. There is no global mutable state.
+
+
+
+/* biquad_filter.h — C++ biquad filter class (Part 5 TDF-II) */
+#pragma once
+#include <cmath>
+
+struct BiquadCoeffs {
+    float b0, b1, b2, a1, a2;
+};
+
+class BiquadFilter {
+public:
+    BiquadFilter()
+        : b0(1.0f), b1(0.0f), b2(0.0f), a1(0.0f), a2(0.0f),
+          s1(0.0f), s2(0.0f) {}
+
+    void setCoeffs(const BiquadCoeffs &c) {
+        b0 = c.b0; b1 = c.b1; b2 = c.b2;
+        a1 = c.a1; a2 = c.a2;
+        /* do not reset state — allows smooth coefficient updates */
+    }
+
+    void clear() { s1 = s2 = 0.0f; }
+
+    /* Block render: in and out may alias */
+    void render(const float *in, float *out, int n) {
+        float lb0 = b0, lb1 = b1, lb2 = b2;
+        float la1 = a1, la2 = a2;
+        float ls1 = s1, ls2 = s2;
+        for (int i = 0; i < n; i++) {
+            float x  = in[i];
+            float y  = lb0 * x + ls1;
+            ls1      = lb1 * x - la1 * y + ls2;
+            ls2      = lb2 * x - la2 * y;
+            out[i]   = y;
+        }
+        s1 = ls1; s2 = ls2;
+    }
+
+private:
+    float b0, b1, b2, a1, a2;
+    float s1, s2;
+};
+
+
+
+Now the Pd external wraps it. The external is named biquadcpp~ to distinguish
+it from the C version in dsp-21. It accepts the same [coefs b0 b1 b2 a1 a2(
+message and a [clear( message.
+
+
+
+/* biquadcpp_tilde.cpp
+   Pd external wrapping the C++ BiquadFilter class.
+
+   Build (Linux):
+     g++ -std=c++11 -shared -fPIC -O2 \
+         -o biquadcpp~.pd_linux biquadcpp_tilde.cpp \
+         $(pd-config --cflags) -lm
+*/
+#include "m_pd.h"
+#include "biquad_filter.h"
+#include <new>
+
+/* The Pd struct */
+typedef struct _biquadcpp {
+    t_object     x_obj;
+    t_float      x_f;       /* dummy for CLASS_MAINSIGNALIN */
+    t_outlet    *x_out;
+    BiquadFilter filter;    /* C++ member, constructed via placement new */
+} t_biquadcpp;
+
+static t_class *biquadcpp_class;
+
+/* Message: [coefs b0 b1 b2 a1 a2( */
+static void biquadcpp_coefs(t_biquadcpp *x,
+                             t_floatarg b0, t_floatarg b1, t_floatarg b2,
+                             t_floatarg a1, t_floatarg a2) {
+    BiquadCoeffs c;
+    c.b0 = (float)b0; c.b1 = (float)b1; c.b2 = (float)b2;
+    c.a1 = (float)a1; c.a2 = (float)a2;
+    x->filter.setCoeffs(c);
+}
+
+/* Message: [clear( — reset filter state */
+static void biquadcpp_clear(t_biquadcpp *x) {
+    x->filter.clear();
+}
+
+/* DSP perform routine */
+static t_int *biquadcpp_perform(t_int *w) {
+    t_biquadcpp *x   = (t_biquadcpp *)(w[1]);
+    t_sample    *in  = (t_sample *)(w[2]);
+    t_sample    *out = (t_sample *)(w[3]);
+    int          n   = (int)(w[4]);
+    x->filter.render(in, out, n);
+    return w + 5;
+}
+
+static void biquadcpp_dsp(t_biquadcpp *x, t_signal **sp) {
+    dsp_add(biquadcpp_perform, 4,
+            x, sp[0]->s_vec, sp[1]->s_vec, (t_int)sp[0]->s_n);
+}
+
+static void *biquadcpp_new(void) {
+    t_biquadcpp *x = (t_biquadcpp *)pd_new(biquadcpp_class);
+    /* Pd allocated sizeof(t_biquadcpp) bytes zeroed.
+       Construct the C++ BiquadFilter member into that memory. */
+    new (&x->filter) BiquadFilter();
+    x->x_out = outlet_new(&x->x_obj, &s_signal);
+    return (void *)x;
+}
+
+static void biquadcpp_free(t_biquadcpp *x) {
+    /* Run the BiquadFilter destructor before Pd frees the bytes. */
+    x->filter.~BiquadFilter();
+    outlet_free(x->x_out);
+}
+
+/* setup() must be extern "C" so Pd can find it by name */
+extern "C" void biquadcpp_tilde_setup(void) {
+    biquadcpp_class = class_new(
+        gensym("biquadcpp~"),
+        (t_newmethod)biquadcpp_new,
+        (t_method)biquadcpp_free,
+        sizeof(t_biquadcpp),
+        CLASS_DEFAULT,
+        0
+    );
+    CLASS_MAINSIGNALIN(biquadcpp_class, t_biquadcpp, x_f);
+    class_addmethod(biquadcpp_class,
+                    (t_method)biquadcpp_dsp, gensym("dsp"), A_CANT, 0);
+    class_addmethod(biquadcpp_class,
+                    (t_method)biquadcpp_coefs, gensym("coefs"),
+                    A_FLOAT, A_FLOAT, A_FLOAT, A_FLOAT, A_FLOAT, 0);
+    class_addmethod(biquadcpp_class,
+                    (t_method)biquadcpp_clear, gensym("clear"), 0);
+}
+
+
+
+The audio path is unchanged from the C version: the perform routine casts the
+t_int * arguments, calls filter.render(), and returns
+w + 5. All of the C++ specifics live in _new, _free,
+and the placement new / destructor pair.
+
+
+Constructor, Destructor, and _free
+
+
+The lifetime rules are straightforward once you treat the Pd allocation as a raw memory
+arena and the C++ constructors/destructors as operations you perform on that arena:
+
+
+
+In _new: call pd_new() first to let Pd do the allocation, then use placement new for every C++ member that has a non-trivial constructor.
+In _free: call the C++ destructor explicitly on every member that was placement-new'd, in reverse construction order, before freeing inlets/outlets. Pd calls freebytes() after your _free returns.
+Do not call delete on the Pd object pointer itself — Pd owns that memory.
+If you chose the pointer approach instead, call delete x->filter in _free normally.
+
+
+
+If your C++ class has a trivial constructor (no new, no RAII, all POD
+members), the zero-initialisation that pd_new() does is sufficient and you
+can skip placement new. Placement new is only required when construction does real work.
+For most DSP classes — even ones with state — the constructor just sets floats to 0.0f,
+which is exactly what zero-initialisation produces. In that case, skipping placement new
+is safe. But calling it is never wrong, and it is the correct habit.
+
+
+
+One subtle point: extern "C" applies to the setup() function,
+not to the methods you register with class_addmethod(). The registered
+methods are cast to t_method (which is void (*)(void)) and
+called through a function pointer — name mangling does not affect them. Only the symbol
+that Pd resolves by name at load time (biquadcpp_tilde_setup) needs C
+linkage.
+
+
+The perform() Method and Signal Processing
+
+
+The perform() function itself does not change. It remains a plain C function
+with C linkage (or linkage compatible with Pd's call convention). The only thing that
+changes is what it calls: instead of calling a C function like biquad_tdf2_render()
+it calls a C++ method like x->filter.render().
+
+
+
+There is no overhead from this. A method call on a concrete type (not through a virtual
+dispatch, not through a pointer to a base class) compiles to exactly the same machine
+code as a C function call with the object pointer passed as the first argument. The C++
+syntax is just notation for the same thing.
+
+
+
+Virtual dispatch does add overhead — one indirect branch per call. Inside a
+sample loop that would be expensive. If your C++ class hierarchy uses virtual functions,
+devirtualise at the Pd boundary: know the concrete type, hold a pointer to the concrete
+type (not to a base class), and call the concrete method. The compiler eliminates the
+virtual dispatch.
+
+
+
+/* Example: devirtualised call from perform() */
+static t_int *myfilt_perform(t_int *w) {
+    t_myfilt *x  = (t_myfilt *)(w[1]);
+    t_sample *in  = (t_sample *)(w[2]);
+    t_sample *out = (t_sample *)(w[3]);
+    int       n   = (int)(w[4]);
+
+    /* x->filter is BiquadFilter*, not IFilter*.
+       The call is direct — no vtable lookup. */
+    x->filter->render(in, out, n);
+
+    return w + 5;
+}
+
+
+
+For multi-channel or cascade processing, loop over channels inside the perform routine.
+Allocate an array of BiquadFilter instances (or a cascade class) and call
+render() on each. The Pd block size (sp[0]->s_n) is
+consistent across all channels in a single dsp_add() call.
+
+
+Porting a VST-Style Processor: a Complete Example
+
+
+The VST processor from Part 22 had a clean audio API: prepare(sampleRate,
+blockSize) called once when the graph is set up, and process(inputs,
+outputs, numSamples) called per block. Mapping this to a Pd external requires:
+
+
+
+Calling prepare() from the Pd dsp() method, which runs whenever the audio graph is (re)compiled — the right moment to update sample rate and block size.
+Calling process() from the Pd perform routine.
+Mapping the processor's parameters to Pd inlets or message handlers.
+
+
+
+Here is a self-contained processor class modelled on the VST pattern, followed by the
+complete Pd wrapper. The processor is a simple one-pole lowpass with a cutoff parameter
+and a sample-rate-aware prepare() step.
+
+
+
+/* onepole_processor.h — VST-style processor in pure C++ */
+#pragma once
+#include <cmath>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+class OnePoleProcessor {
+public:
+    OnePoleProcessor()
+        : sampleRate(44100.0f), cutoffHz(1000.0f),
+          coeff(0.0f), state(0.0f) {}
+
+    /* Called when the audio graph is set up or reconfigured */
+    void prepare(float sr, int /*blockSize*/) {
+        sampleRate = sr;
+        updateCoeff();
+    }
+
+    /* Parameter update — safe to call from the message thread */
+    void setCutoff(float hz) {
+        cutoffHz = hz;
+        updateCoeff();
+    }
+
+    void reset() { state = 0.0f; }
+
+    /* Block processing */
+    void process(const float *in, float *out, int n) {
+        float c = coeff;
+        float s = state;
+        for (int i = 0; i < n; i++) {
+            s     = s + c * (in[i] - s);
+            out[i] = s;
+        }
+        state = s;
+    }
+
+private:
+    float sampleRate;
+    float cutoffHz;
+    float coeff;
+    float state;
+
+    void updateCoeff() {
+        /* One-pole coefficient from cutoff frequency */
+        float w = 2.0f * (float)M_PI * cutoffHz / sampleRate;
+        coeff   = (w < 1.0f) ? w : 1.0f;  /* clamp at Nyquist */
+    }
+};
+
+
+
+/* onepole_tilde.cpp — Pd external wrapping OnePoleProcessor
+   Object name: onepole~
+   Inlet 0: signal input
+   Inlet 1: control-rate float — cutoff frequency in Hz (cold inlet)
+   Outlet 0: signal output
+
+   Build (Linux):
+     g++ -std=c++11 -shared -fPIC -O2 \
+         -o onepole~.pd_linux onepole_tilde.cpp \
+         $(pd-config --cflags) -lm
+*/
+#include "m_pd.h"
+#include "onepole_processor.h"
+#include <new>
+
+typedef struct _onepole {
+    t_object         x_obj;
+    t_float          x_f;       /* dummy for MAINSIGNALIN */
+    t_inlet         *x_cutoff_in;   /* cold float inlet for cutoff */
+    t_outlet        *x_out;
+    OnePoleProcessor proc;
+} t_onepole;
+
+static t_class *onepole_class;
+
+/* Message handler for the cutoff inlet: [Hz( */
+static void onepole_cutoff(t_onepole *x, t_floatarg f) {
+    x->proc.setCutoff((float)f);
+}
+
+/* Message: [reset( */
+static void onepole_reset(t_onepole *x) {
+    x->proc.reset();
+}
+
+static t_int *onepole_perform(t_int *w) {
+    t_onepole *x  = (t_onepole *)(w[1]);
+    t_sample  *in  = (t_sample *)(w[2]);
+    t_sample  *out = (t_sample *)(w[3]);
+    int        n   = (int)(w[4]);
+    x->proc.process(in, out, n);
+    return w + 5;
+}
+
+/* dsp() is called whenever the audio graph is compiled.
+   This is where we call prepare() on the processor. */
+static void onepole_dsp(t_onepole *x, t_signal **sp) {
+    x->proc.prepare((float)sp[0]->s_sr, (int)sp[0]->s_n);
+    dsp_add(onepole_perform, 4,
+            x, sp[0]->s_vec, sp[1]->s_vec, (t_int)sp[0]->s_n);
+}
+
+static void *onepole_new(t_floatarg init_cutoff) {
+    t_onepole *x = (t_onepole *)pd_new(onepole_class);
+    new (&x->proc) OnePoleProcessor();
+
+    /* A float inlet for cutoff. inlet_new with &s_float sends floats
+       to the onepole_cutoff handler registered for the "float" selector
+       on the right inlet. Using floatinlet_new is simpler: */
+    x->x_cutoff_in = floatinlet_new(&x->x_obj, &x->proc.cutoffHz_public());
+    /* NOTE: floatinlet_new writes directly to a t_float member.
+       For a processor that needs to recompute derived state on change,
+       use a proper inlet with a message handler instead (shown below). */
+
+    x->x_out = outlet_new(&x->x_obj, &s_signal);
+
+    /* Apply creation argument if provided */
+    if (init_cutoff > 0.0f)
+        x->proc.setCutoff(init_cutoff);
+    else
+        x->proc.setCutoff(1000.0f);
+
+    return (void *)x;
+}
+
+static void onepole_free(t_onepole *x) {
+    x->proc.~OnePoleProcessor();
+    inlet_free(x->x_cutoff_in);
+    outlet_free(x->x_out);
+}
+
+extern "C" void onepole_tilde_setup(void) {
+    onepole_class = class_new(
+        gensym("onepole~"),
+        (t_newmethod)onepole_new,
+        (t_method)onepole_free,
+        sizeof(t_onepole),
+        CLASS_DEFAULT,
+        A_DEFFLOAT,   /* optional creation argument: initial cutoff Hz */
+        0
+    );
+    CLASS_MAINSIGNALIN(onepole_class, t_onepole, x_f);
+    class_addmethod(onepole_class,
+                    (t_method)onepole_dsp, gensym("dsp"), A_CANT, 0);
+    class_addmethod(onepole_class,
+                    (t_method)onepole_cutoff, gensym("cutoff"), A_FLOAT, 0);
+    class_addmethod(onepole_class,
+                    (t_method)onepole_reset, gensym("reset"), 0);
+}
+
+
+
+The floatinlet_new call shown above writes directly to a t_float
+member. That is fine for parameters where Pd can write the value directly with no
+side effects. For the one-pole filter, setting cutoffHz without calling
+updateCoeff() would leave coeff stale. The correct approach for
+parameters with derived state is a proper cold inlet connected to a message handler, as
+shown below. Remove floatinlet_new and replace with:
+
+
+
+/* In onepole_new — proper cold inlet that triggers coefficient update */
+x->x_cutoff_in = inlet_new(&x->x_obj, &x->x_obj.ob_pd,
+                            gensym("float"), gensym("cutoff"));
+/* This routes floats arriving on inlet 1 to the "cutoff" message handler. */
+
+
+
+With this form, any float sent to inlet 1 calls onepole_cutoff(), which
+calls proc.setCutoff(), which recomputes coeff. The processor
+is always consistent.
+
+
+
+The key observation for porting VST-style processors: the Pd dsp() method
+corresponds directly to IAudioProcessor::setupProcessing(). It is called
+when the graph is (re)compiled, before audio starts, with the sample rate and block size.
+The perform routine corresponds to process(). Parameter changes arrive via
+messages instead of IParamValueQueue, but the semantics are the same —
+updates between blocks.
+
+
+Building and Loading the External
+
+
+The build command changes from cc to g++ and you add
+-std=c++11 (or later). Everything else is the same as the C case.
+
+
+
+# Linux — biquadcpp~ external:
+g++ -std=c++11 -shared -fPIC -O2 \
+    -o biquadcpp~.pd_linux biquadcpp_tilde.cpp \
+    $(pd-config --cflags) -lm
+
+# If pd-config is unavailable:
+g++ -std=c++11 -shared -fPIC -O2 \
+    -I/usr/include/pd \
+    -o biquadcpp~.pd_linux biquadcpp_tilde.cpp -lm
+
+# macOS:
+g++ -std=c++11 -shared -fPIC -O2 \
+    -o biquadcpp~.pd_darwin biquadcpp_tilde.cpp \
+    $(pd-config --cflags) -lm
+
+# Windows (MinGW):
+g++ -std=c++11 -shared -O2 \
+    -o biquadcpp~.dll biquadcpp_tilde.cpp \
+    $(pd-config --cflags) -lm
+
+
+
+If your external includes multiple translation units (say, the processor class in a
+separate .cpp file), list them all on the command line or use an intermediate .o step:
+
+
+
+# Multi-file build:
+g++ -std=c++11 -fPIC -O2 -c biquad_filter.cpp -o biquad_filter.o \
+    $(pd-config --cflags)
+g++ -std=c++11 -fPIC -O2 -c biquadcpp_tilde.cpp -o biquadcpp_tilde.o \
+    $(pd-config --cflags)
+g++ -shared -o biquadcpp~.pd_linux biquad_filter.o biquadcpp_tilde.o -lm
+
+
+
+Place the compiled file in one of:
+
+
+
+The directory of the patch that uses it.
+~/.pd/externals/ (user-local, Pd 0.47+).
+A path added in Pd's preferences under Startup > Path.
+
+
+
+In the patch, create an object box and type biquadcpp~. If Pd cannot find
+the external you will see an error in the console: biquadcpp~: can't load library.
+Run Pd with -verbose from the terminal to see the exact paths it searches.
+
+
+
+A common build failure is forgetting extern "C" on the setup function.
+The external will compile and link, but Pd will fail silently or print can't find
+symbol biquadcpp_tilde_setup. Check with nm -D biquadcpp~.pd_linux | grep
+setup — the symbol must appear as a plain C name, not mangled.
+
+
+
+# Verify the exported symbol is unmangled:
+nm -D biquadcpp~.pd_linux | grep setup
+# Expected output (Linux):
+#   0000... T biquadcpp_tilde_setup
+# Mangled output (missing extern "C") looks like:
+#   0000... T _Z21biquadcpp_tilde_setupv
+
+
+Summary
+
+
+Writing a Pd external in C++ reduces to three additions over the C approach from dsp-21:
+first, extern "C" on the setup function; second, placement new in the
+constructor and explicit destructor call in _free for any C++ member with a
+non-trivial constructor; third, compiling with g++ -std=c++11. The perform
+routine, the dsp method, the message handlers, and the class registration are structurally
+identical to their C counterparts.
+
+
+
+This closes a loop that runs through three series. Series 4 (DSP in C) built the core
+algorithms: the biquad filter in Parts 5–7, signal processing patterns throughout.
+Series 6 (libpd) embedded Pd in a C++ application and sent messages to patches.
+This article inverts the direction: your C++ DSP code enters the Pd patch as a native
+object. The same BiquadFilter class can be a module in your standalone
+application, a processor inside a VST3 plugin (Part 22), and a Pd external — all from
+the same header, with thin shims adapting each host's calling convention.
+
+
+Further Reading
+
+
+Writing Pd Externals — puredata.info official HOWTO
+pure-data/externals-howto on GitHub — the canonical externals tutorial
+pd-lib-builder — Makefile template for cross-platform Pd external builds
+Placement new — cppreference.com
+musicdsp.org — DSP algorithms and C/C++ source code
+DaisySP — open-source C++ DSP library with many wrappable modules
+
+
+See Also
+
+
+Writing a Pure Data External in C
+Writing a VST3 Plugin
+Biquad Filters (TDF-II implementation)
+Filter Cookbook: Lowpass & Highpass
+What is libpd?
+libpd: Initialising and Loading a Patch
+

@@ -1,0 +1,551 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Lua - Part 5: Tables as Configuration</title>
+    <meta name="description" content="Read top-level and nested Lua tables from C - lua_getglobal, lua_getfield, lua_next iteration, required-field validation, and a complete audio config loader.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, lua, scripting">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="lua-05-tables-config.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../lua.htm">lua</a>, <a href="../../scripting.htm">scripting</a></i>
+        <h2>Lua - Part 5: Tables as Configuration</h2>
+        <p>
+Every application has configuration - sample rates, buffer sizes, file paths, plugin
+lists. The usual options are INI files (flat, no nesting, no types), JSON (typed but
+verbose, no comments, requires a parser library), and YAML (complex parser, ambiguous
+syntax, notorious edge cases). Lua tables give you something better: a configuration
+format that is also a full programming language. Defaults can be computed.
+Values can be validated. Lists and nested structures are first-class. And you already
+have a Lua interpreter in your process, so the "parser" is zero extra code.
+This article shows the complete C workflow for reading a Lua config file:
+top-level values, nested tables, sequences, hash-table iteration, required fields, and
+error messages that tell the user exactly what is missing and where.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How to read top-level Lua globals from C with <code>lua_getglobal</code> and <code>lua_getfield</code>.</li>
+<li>How to read nested tables by chaining <code>lua_getfield</code> calls.</li>
+<li>How to read sequence tables (arrays) with <code>lua_rawgeti</code> and <code>luaL_len</code>.</li>
+<li>How to iterate over hash tables with <code>lua_next</code>.</li>
+<li>How to validate required fields and supply defaults for optional ones.</li>
+<li>A complete C config loader for an audio application.</li>
+</ul>
+
+<h3>Why lua_getfield Instead of lua_getglobal</h3>
+
+<p>
+<code>lua_getglobal(L, "sample_rate")</code> retrieves the global variable named
+<code>sample_rate</code> and pushes its value onto the stack. That works for flat
+configs but breaks down immediately when your config has structure:
+</p>
+
+<pre>
+-- config.lua
+audio = {
+    sample_rate = 48000,
+    buffer_size = 512,
+    plugins = { "reverb", "compressor", "limiter" },
+    output = {
+        device = "hw:0,0",
+        channels = 2
+    }
+}
+</pre>
+
+<p>
+To read <code>audio.output.channels</code>, you navigate the table hierarchy in C using
+<code>lua_getfield</code>. The key insight: <code>lua_getfield(L, index, key)</code>
+reads <code>key</code> from the table at stack position <code>index</code> and pushes
+the result. After each call, the new value is on top of the stack.
+</p>
+
+<pre>
+/* Step 1: get the top-level 'audio' table */
+lua_getglobal(L, "audio");          /* stack: [audio_table]          */
+if (!lua_istable(L, -1)) {
+    fprintf(stderr, "config: 'audio' must be a table\n");
+    lua_pop(L, 1);
+    return -1;
+}
+
+/* Step 2: get audio.sample_rate */
+lua_getfield(L, -1, "sample_rate"); /* stack: [audio_table, sr]      */
+int sr = (int)luaL_optinteger(L, -1, 44100);
+lua_pop(L, 1);                      /* stack: [audio_table]          */
+
+/* Step 3: navigate into audio.output */
+lua_getfield(L, -1, "output");      /* stack: [audio_table, output]  */
+if (lua_istable(L, -1)) {
+    lua_getfield(L, -1, "channels");/* stack: [audio_table, output, channels] */
+    int ch = (int)luaL_optinteger(L, -1, 2);
+    lua_pop(L, 1);                  /* stack: [audio_table, output]  */
+}
+lua_pop(L, 1);                      /* stack: [audio_table]          */
+
+lua_pop(L, 1);                      /* stack: []  - done with audio  */
+</pre>
+
+<p>
+The pattern is always: push the value you want to inspect, inspect it, pop it before
+moving on. Keep careful count of what is on the stack. A useful discipline: note the
+stack depth at the entry of a function and assert it is the same (plus any intended
+return values) at exit.
+</p>
+
+<h3>Reading Sequences with lua_rawgeti</h3>
+
+<p>
+A Lua sequence (a table used as an array, with consecutive integer keys starting at 1)
+is read with <code>lua_rawgeti(L, tableindex, i)</code>. This pushes the value at
+integer key <code>i</code> without invoking metamethods - safe and fast for plain tables.
+</p>
+
+<pre>
+/* Read audio.plugins as a C string array */
+lua_getglobal(L, "audio");           /* stack: [audio]          */
+lua_getfield(L, -1, "plugins");      /* stack: [audio, plugins] */
+
+if (lua_istable(L, -1)) {
+    /* lua_rawlen returns the # operator result: length of the sequence */
+    lua_Integer n = lua_rawlen(L, -1);
+
+    for (lua_Integer i = 1; i &lt;= n; i++) {
+        lua_rawgeti(L, -1, i);       /* stack: [..., plugins, plugin_i] */
+        const char *name = lua_tostring(L, -1);
+        if (name) {
+            printf("  plugin[%lld] = %s\n", (long long)i, name);
+        }
+        lua_pop(L, 1);               /* stack: [..., plugins]   */
+    }
+}
+
+lua_pop(L, 1);  /* pop plugins */
+lua_pop(L, 1);  /* pop audio   */
+</pre>
+
+<p>
+Use <code>lua_rawgeti</code> rather than <code>lua_geti</code> for sequence reading.
+The raw version skips metamethod lookup, which makes it faster and avoids surprising
+behaviour if someone attaches an <code>__index</code> metamethod to the table.
+<code>lua_rawlen</code> similarly gives the raw length without metamethod invocation.
+</p>
+
+<h3>Iterating Hash Tables with lua_next</h3>
+
+<p>
+When you need to iterate over a table's key-value pairs without knowing the keys in
+advance, use <code>lua_next</code>. It implements the Lua <code>next()</code> function:
+given a table and a key, it finds the next key-value pair in iteration order and pushes
+them both.
+</p>
+
+<p>
+The loop structure is always the same: push nil as the initial key, then call
+<code>lua_next</code> in a loop until it returns 0 (no more pairs). At the start of
+each iteration, the key is at index -2 and the value at index -1. You must pop the
+value before the next call to <code>lua_next</code>, but the key stays - it is consumed
+by the next call.
+</p>
+
+<pre>
+/* Iterate over all key/value pairs in a table */
+/* Assumes the table is on top of the stack    */
+static void dump_table(lua_State *L, int table_idx) {
+    lua_pushnil(L);   /* first key - nil means "start from the beginning" */
+                      /* stack: [..., table, nil]                          */
+
+    while (lua_next(L, table_idx) != 0) {
+        /* stack: [..., table, key, value]                                 */
+
+        /* lua_tostring on the key would modify it in place for numbers    */
+        /* Use lua_type + specific getters to avoid that                   */
+        const char *key = "(non-string)";
+        if (lua_type(L, -2) == LUA_TSTRING)
+            key = lua_tostring(L, -2);
+
+        const char *val_type = lua_typename(L, lua_type(L, -1));
+        printf("  %s = (%s)\n", key, val_type);
+
+        lua_pop(L, 1);  /* pop value; key stays for next lua_next call    */
+                        /* stack: [..., table, key]                        */
+    }
+    /* stack: [..., table] - lua_next popped the key on the final iteration */
+}
+</pre>
+
+<p>
+<b>Critical gotcha:</b> do not call <code>lua_tostring</code> on the key while iterating.
+<code>lua_tostring</code> may convert a number key to a string in place, and
+<code>lua_next</code> uses the key's original type for its lookup. Converting the key
+corrupts the iteration. If you need the key as a string, use <code>lua_tostring</code>
+on a copy, or check the type first and only call it on confirmed string keys.
+</p>
+
+<h3>Validating Required Fields</h3>
+
+<p>
+A config loader that silently uses defaults for missing required fields creates subtle
+bugs. When a required field is missing, the error message should name the field and its
+location in the config structure:
+</p>
+
+<pre>
+/* require_integer: read an integer field, error if absent or wrong type */
+static lua_Integer require_integer(lua_State *L, int table_idx,
+                                   const char *field, const char *context) {
+    lua_getfield(L, table_idx, field);      /* push the value */
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        luaL_error(L, "config: required field '%s.%s' is missing", context, field);
+    }
+    if (!lua_isinteger(L, -1) &amp;&amp; !lua_isnumber(L, -1)) {
+        lua_pop(L, 1);
+        luaL_error(L, "config: '%s.%s' must be a number (got %s)",
+                   context, field, lua_typename(L, lua_type(L, -1)));
+    }
+    lua_Integer val = lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    return val;
+}
+
+/* optional_string: read a string field, return default if absent */
+static const char *optional_string(lua_State *L, int table_idx,
+                                   const char *field, const char *def) {
+    lua_getfield(L, table_idx, field);
+    if (lua_isnil(L, -1) || !lua_isstring(L, -1)) {
+        lua_pop(L, 1);
+        return def;
+    }
+    /* Copy - the pointer into Lua memory is only valid while the string is on the stack */
+    const char *s = lua_tostring(L, -1);
+    /* Caller must not store the raw pointer past the stack lifetime */
+    /* For persistent storage: strdup(s) and manage ownership in C  */
+    lua_pop(L, 1);
+    return s;  /* valid until next Lua API call that may GC */
+}
+</pre>
+
+<h3>Complete Audio Config Loader</h3>
+
+<p>
+A complete C program that loads and validates an audio configuration from Lua:
+</p>
+
+<pre>
+/* config_loader.c */
+#include &lt;lua.h&gt;
+#include &lt;lualib.h&gt;
+#include &lt;lauxlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+#define MAX_PLUGINS 32
+
+typedef struct {
+    int    sample_rate;
+    int    buffer_size;
+    char   device[64];
+    int    channels;
+    char   plugins[MAX_PLUGINS][64];
+    int    plugin_count;
+} AudioConfig;
+
+static int load_audio_config(lua_State *L, AudioConfig *cfg) {
+    /* Get top-level 'audio' table */
+    lua_getglobal(L, "audio");               /* stack: [audio?]            */
+    if (!lua_istable(L, -1)) {
+        fprintf(stderr, "config: 'audio' table not found\n");
+        lua_pop(L, 1);
+        return -1;
+    }
+    int audio_idx = lua_gettop(L);           /* remember the table's index */
+
+    /* Required: sample_rate */
+    lua_getfield(L, audio_idx, "sample_rate");
+    if (lua_isnil(L, -1)) {
+        fprintf(stderr, "config: audio.sample_rate is required\n");
+        lua_pop(L, 2);
+        return -1;
+    }
+    cfg-&gt;sample_rate = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+
+    /* Required: buffer_size */
+    lua_getfield(L, audio_idx, "buffer_size");
+    if (lua_isnil(L, -1)) {
+        fprintf(stderr, "config: audio.buffer_size is required\n");
+        lua_pop(L, 2);
+        return -1;
+    }
+    cfg-&gt;buffer_size = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+
+    /* Validate sensible values */
+    if (cfg-&gt;sample_rate != 44100 &amp;&amp; cfg-&gt;sample_rate != 48000 &amp;&amp;
+        cfg-&gt;sample_rate != 96000) {
+        fprintf(stderr, "config: audio.sample_rate %d is not supported\n",
+                cfg-&gt;sample_rate);
+        lua_pop(L, 1);
+        return -1;
+    }
+
+    /* Nested: audio.output */
+    lua_getfield(L, audio_idx, "output");    /* stack: [audio, output?]    */
+    if (lua_istable(L, -1)) {
+        int out_idx = lua_gettop(L);
+
+        lua_getfield(L, out_idx, "device");
+        const char *dev = lua_isstring(L, -1) ? lua_tostring(L, -1) : "default";
+        strncpy(cfg-&gt;device, dev, sizeof(cfg-&gt;device) - 1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, out_idx, "channels");
+        cfg-&gt;channels = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : 2;
+        lua_pop(L, 1);
+    } else {
+        /* Defaults if output table absent */
+        strncpy(cfg-&gt;device, "default", sizeof(cfg-&gt;device) - 1);
+        cfg-&gt;channels = 2;
+    }
+    lua_pop(L, 1);  /* pop output */
+
+    /* Sequence: audio.plugins */
+    cfg-&gt;plugin_count = 0;
+    lua_getfield(L, audio_idx, "plugins");   /* stack: [audio, plugins?]   */
+    if (lua_istable(L, -1)) {
+        lua_Integer n = lua_rawlen(L, -1);
+        int plugins_idx = lua_gettop(L);
+        for (lua_Integer i = 1; i &lt;= n &amp;&amp; cfg-&gt;plugin_count &lt; MAX_PLUGINS; i++) {
+            lua_rawgeti(L, plugins_idx, i);  /* stack: [..., plugins, name] */
+            if (lua_isstring(L, -1)) {
+                const char *name = lua_tostring(L, -1);
+                strncpy(cfg-&gt;plugins[cfg-&gt;plugin_count], name, 63);
+                cfg-&gt;plugin_count++;
+            }
+            lua_pop(L, 1);                   /* stack: [..., plugins]      */
+        }
+    }
+    lua_pop(L, 1);  /* pop plugins */
+
+    lua_pop(L, 1);  /* pop audio table */
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    const char *cfgfile = argc &gt; 1 ? argv[1] : "audio.lua";
+
+    lua_State *L = luaL_newstate();
+    luaL_openlibs(L);
+
+    if (luaL_loadfile(L, cfgfile) != LUA_OK) {
+        fprintf(stderr, "load error: %s\n", lua_tostring(L, -1));
+        lua_close(L);
+        return 1;
+    }
+    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+        fprintf(stderr, "runtime error: %s\n", lua_tostring(L, -1));
+        lua_close(L);
+        return 1;
+    }
+
+    AudioConfig cfg = {0};
+    if (load_audio_config(L, &amp;cfg) != 0) {
+        lua_close(L);
+        return 1;
+    }
+
+    printf("sample_rate  = %d\n",   cfg.sample_rate);
+    printf("buffer_size  = %d\n",   cfg.buffer_size);
+    printf("device       = %s\n",   cfg.device);
+    printf("channels     = %d\n",   cfg.channels);
+    printf("plugins      = %d\n",   cfg.plugin_count);
+    for (int i = 0; i &lt; cfg.plugin_count; i++)
+        printf("  [%d] %s\n", i, cfg.plugins[i]);
+
+    lua_close(L);
+    return 0;
+}
+</pre>
+
+<p>
+The Lua config file:
+</p>
+
+<pre>
+-- audio.lua
+audio = {
+    sample_rate = 48000,
+    buffer_size = 512,
+
+    output = {
+        device   = "hw:0,0",
+        channels = 2,
+    },
+
+    plugins = {
+        "noise_gate",
+        "eq_8band",
+        "compressor",
+        "reverb",
+        "limiter",
+    },
+}
+</pre>
+
+<pre>
+gcc -o config_loader config_loader.c $(pkg-config --cflags --libs lua5.4)
+./config_loader audio.lua
+# sample_rate  = 48000
+# buffer_size  = 512
+# device       = hw:0,0
+# channels     = 2
+# plugins      = 5
+#   [0] noise_gate
+#   [1] eq_8band
+#   [2] compressor
+#   [3] reverb
+#   [4] limiter
+</pre>
+
+<h3>Comparison with JSON and INI</h3>
+
+<p>
+INI files cannot represent nested structure without inventing a convention
+(<code>[audio.output]</code> as a section name is not standard). They have no types -
+everything is a string. Adding a list requires another convention. Comments are not
+part of the format in most implementations.
+</p>
+
+<p>
+JSON is typed, supports nesting and arrays, and is language-neutral. It cannot have
+comments (technically). It cannot compute values. A JSON parser must be linked. For a
+configuration file in a Lua-embedding application, using JSON means shipping two
+parsers - the Lua interpreter you already have, plus a JSON library.
+</p>
+
+<p>
+Lua config tables have a genuine limitation: they are code. A malicious config file
+can execute arbitrary code when loaded. For controlled environments (your own
+deployments, development tools, game modding with a trusted modder base) this is
+acceptable. For configs loaded from untrusted sources, see Part 9 (sandboxing):
+you can load config files inside a restricted Lua state that has no access to
+<code>io</code>, <code>os</code>, or <code>require</code>.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Lua tables are an excellent configuration format when you already embed Lua. Load the
+file with <code>luaL_loadfile</code> + <code>lua_pcall</code>, navigate to the top-level
+table with <code>lua_getglobal</code>, and descend into nested tables with chained
+<code>lua_getfield</code> calls. Read sequences with <code>lua_rawgeti</code> inside a
+<code>lua_rawlen</code> loop. Iterate unknown-key tables with <code>lua_next</code>,
+remembering not to modify the key during iteration.
+</p>
+
+<p>
+Write small helper functions for required and optional fields - the error messages they
+produce ("config: required field 'audio.sample_rate' is missing") are what your users
+will read when something goes wrong.
+</p>
+
+<p>
+The next article scales this idea up: instead of reading passive values, you read a
+<code>modules</code> table that describes a graph of application components, and the C
+code dispatches based on a <code>type</code> field in each entry.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://www.lua.org/manual/5.4/manual.html#lua_next">lua_next - Lua 5.4 Reference Manual</a></li>
+<li><a href="https://www.lua.org/manual/5.4/manual.html#lua_getfield">lua_getfield - Lua 5.4 Reference Manual</a></li>
+<li><a href="https://www.lua.org/manual/5.4/manual.html#lua_rawgeti">lua_rawgeti - Lua 5.4 Reference Manual</a></li>
+<li><a href="https://www.lua.org/pil/25.1.html">Programming in Lua - Accessing Global Variables</a></li>
+<li><a href="https://www.lua.org/pil/25.3.html">Programming in Lua - Configuring Your Application</a></li>
+<li><a href="https://www.lua.org/manual/5.4/manual.html#luaL_optinteger">luaL_optinteger - Lua 5.4 Reference Manual</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="lua-03-running-lua.htm">Running Lua from C</a></li>
+<li><a href="lua-04-calling-c-from-lua.htm">Calling C from Lua</a></li>
+<li><a href="lua-06-module-tables.htm">Module Tables and Hot-Reload</a></li>
+<li><a href="lua-09-sandboxing.htm">Sandboxing Lua</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

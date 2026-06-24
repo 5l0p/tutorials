@@ -72,10 +72,28 @@
 <h1>~5l0p/tut</h1>
 <!-- header end -->
         <a href="https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
-        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="c.htm">c</a>, <a href="drums.htm">drums</a>, <a href="puredata.htm">puredata</a>, <a href="synthesis.htm">synthesis</a></i>
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="c.htm">c</a>, <a href="drums.htm">drums</a>, <a href="effects.htm">effects</a>, <a href="lua.htm">lua</a>, <a href="puredata.htm">puredata</a>, <a href="synthesis.htm">synthesis</a></i>
 <h2>Tutorials</h2>
 <h2>drums-</h2>
-<p><b><a href="art/2026/drums-01-architecture.htm">Drums - Part 1: Electronic Drum Synthesis — Architecture and Approach</a></b> - 2026-06-09<br>
+<p><b><a href="art/2026/drums-06-effects.htm">Drums - Part 6: Per-Channel Effects with Airwindows Pd Externals</a></b> - 2026-06-01<br>
+Using the airwindows Pd externals as per-channel inserts on drum voices: mackity~ for input stage colour, totape9~ for tape saturation, dubplate2~ for vinyl EQ, zacidlowpass~ for resonant filtering, and chorusensemble~ for pitch widening. Building an effects chain in Pd with normalised 0–1 parameters.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="effects.htm">effects</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/drums-05-clap.htm">Drums - Part 5: Clap Synthesis in Pure Data</a></b> - 2026-06-01<br>
+Building a parametric clap in Pure Data: three parallel noise sources (white, SID, pink), a pre-attack roll cluster via metro, dual MAIN/VERB envelope paths, shelf EQ, and a Freeverb reverb tail. Patch switching with a Lua preset system.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/drums-02-kick.htm">Drums - Part 2: Kick Drum Synthesis in Pure Data</a></b> - 2026-06-01<br>
+Building a deep, punchy, programmable kick drum in Pure Data: two sine oscillators with pitch envelopes, triangle/pulse oscillators with phase modulation, filtered noise burst, transient click, soft-clip distortion, and a final extend-decay output envelope.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/drums-07-machine.htm">Drums - Part 7: Assembling a Drum Machine in Pure Data and Lua</a></b> - 2026-06-01<br>
+Combining the four drum voices into a sequenced drum machine: a Pd step sequencer with pattern storage, per-step velocity, tempo sync, a Lua UI with step buttons and pattern banks, the simple drum machine patch as a starting point, and a minimal techno pattern to verify the whole system.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="lua.htm">lua</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/drums-04-hihat.htm">Drums - Part 4: Hi-Hat Synthesis in Pure Data</a></b> - 2026-06-01<br>
+Building the classic metallic hi-hat in Pure Data: six detuned square wave oscillators, SID-style noise blending, three-band filter split with independent decay envelopes, open/closed hat via decay time, and an optional flanger effect.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/drums-03-snare.htm">Drums - Part 3: Snare Drum Synthesis in Pure Data</a></b> - 2026-06-01<br>
+Building a parametric snare in Pure Data: two sine oscillators for the body tone, SID-style noise through dual LPF/HPF filter envelopes, a resonant body filter, dual short delay lines for snare rattle, and two-stage distortion.<br>
+<i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
+<p><b><a href="art/2026/drums-01-architecture.htm">Drums - Part 1: Electronic Drum Synthesis — Architecture and Approach</a></b> - 2026-06-01<br>
 How classic electronic drum machines synthesise their sounds from first principles: tonal oscillators with pitch sweeps, filtered noise, transient clicks, and the Prok Drums extend-decay envelope pattern. Building blocks for every voice in the series.<br>
 <i><a href="c.htm">c</a>, <a href="puredata.htm">puredata</a>, <a href="audio.htm">audio</a>, <a href="synthesis.htm">synthesis</a>, <a href="drums.htm">drums</a></i></p>
 

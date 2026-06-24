@@ -1,0 +1,345 @@
+openFrameworks - Part 7: Mouse, Keyboard & Touch Input
+2026-06-01
+
+
+A sketch that does not respond to input is an animation, not an interactive piece. openFrameworks
+routes OS input events to virtual methods on your ofApp subclass. You override the
+ones you care about and ignore the rest. This article covers every mouse and keyboard callback,
+explains the key code system, shows how to query input state continuously rather than
+event-driven, and builds a small interactive paint tool that combines all of these.
+
+
+What You Will Learn
+
+
+Mouse callbacks: mousePressed, mouseReleased, mouseMoved, mouseDragged, mouseScrolled
+Keyboard callbacks: keyPressed and keyReleased with OF_KEY constants for special keys
+Querying input state continuously with ofGetMouseX/Y and ofGetKeyPressed()
+The difference between event-driven and polling input and when to use each
+Building a paint tool: stroke recording, colour selection, clear and save actions
+
+
+Mouse Event Callbacks
+
+
+Declare these methods in ofApp.h and define them in ofApp.cpp:
+
+
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void update();
+    void draw();
+
+    void mouseMoved(int x, int y);
+    void mousePressed(int x, int y, int button);
+    void mouseReleased(int x, int y, int button);
+    void mouseDragged(int x, int y, int button);
+    void mouseScrolled(int x, int y, float scrollX, float scrollY);
+    void mouseEntered(int x, int y);
+    void mouseExited(int x, int y);
+};
+
+
+
+The button parameter is one of:
+
+
+
+  OF_MOUSE_BUTTON_LEFT (0)
+  OF_MOUSE_BUTTON_MIDDLE (1)
+  OF_MOUSE_BUTTON_RIGHT (2)
+
+
+
+void ofApp::mousePressed(int x, int y, int button) {
+    if (button == OF_MOUSE_BUTTON_LEFT) {
+        strokes.push_back({});             // start a new stroke
+        strokes.back().push_back({(float)x, (float)y});
+    }
+}
+
+void ofApp::mouseDragged(int x, int y, int button) {
+    if (button == OF_MOUSE_BUTTON_LEFT && !strokes.empty()) {
+        strokes.back().push_back({(float)x, (float)y});
+    }
+}
+
+void ofApp::mouseScrolled(int x, int y, float scrollX, float scrollY) {
+    brushSize = ofClamp(brushSize + scrollY * 2.0f, 2.0f, 80.0f);
+}
+
+
+Querying Mouse State Continuously
+
+
+Sometimes you want to act every frame while the mouse button is held, rather than reacting
+to discrete press/drag events. Use these free functions in update():
+
+
+
+void ofApp::update() {
+    if (ofGetMousePressed(OF_MOUSE_BUTTON_LEFT)) {
+        float x = ofGetMouseX();
+        float y = ofGetMouseY();
+        // add a particle every frame the button is held
+        particles.push_back({x, y});
+    }
+}
+
+
+
+ofGetMousePressed() with no argument returns true if any button is pressed.
+ofGetMouseX() and ofGetMouseY() return the current position. The
+previous frame's position is available via ofGetPreviousMouseX() /
+ofGetPreviousMouseY(), which lets you compute velocity:
+
+
+
+float vx = ofGetMouseX() - ofGetPreviousMouseX();
+float vy = ofGetMouseY() - ofGetPreviousMouseY();
+float speed = sqrt(vx * vx + vy * vy);
+
+
+Keyboard Event Callbacks
+
+
+class ofApp : public ofBaseApp {
+public:
+    // ...
+    void keyPressed(int key);
+    void keyReleased(int key);
+};
+
+
+
+void ofApp::keyPressed(int key) {
+    switch (key) {
+        case 'c':
+        case 'C':
+            strokes.clear();               // clear canvas
+            break;
+        case 'f':
+        case 'F':
+            ofToggleFullscreen();
+            break;
+        case 's':
+        case 'S':
+            ofSaveScreen("screenshot.png");
+            ofLogNotice() << "Screenshot saved.";
+            break;
+        case OF_KEY_BACKSPACE:
+            if (!strokes.empty()) strokes.pop_back();
+            break;
+        case OF_KEY_ESC:
+            ofExit();
+            break;
+    }
+}
+
+
+Special Key Constants
+
+
+Printable ASCII characters are passed as their ASCII values (e.g. 'a' is 97).
+Special keys use named constants:
+
+
+
+  OF_KEY_RETURN - Enter
+  OF_KEY_ESC - Escape
+  OF_KEY_BACKSPACE - Backspace
+  OF_KEY_TAB - Tab
+  OF_KEY_UP, OF_KEY_DOWN, OF_KEY_LEFT, OF_KEY_RIGHT
+  OF_KEY_F1 … OF_KEY_F12
+  OF_KEY_SHIFT, OF_KEY_CONTROL, OF_KEY_ALT
+  OF_KEY_SUPER - the Windows/Command key
+  OF_KEY_PAGE_UP, OF_KEY_PAGE_DOWN, OF_KEY_HOME, OF_KEY_END
+
+
+Querying Keyboard State Continuously
+
+
+void ofApp::update() {
+    float speed = 200.0f * ofGetLastFrameTime();
+
+    if (ofGetKeyPressed(OF_KEY_UP)    || ofGetKeyPressed('w')) playerY -= speed;
+    if (ofGetKeyPressed(OF_KEY_DOWN)  || ofGetKeyPressed('s')) playerY += speed;
+    if (ofGetKeyPressed(OF_KEY_LEFT)  || ofGetKeyPressed('a')) playerX -= speed;
+    if (ofGetKeyPressed(OF_KEY_RIGHT) || ofGetKeyPressed('d')) playerX += speed;
+}
+
+
+Modifier Key Detection
+
+
+void ofApp::mousePressed(int x, int y, int button) {
+    bool shift = ofGetKeyPressed(OF_KEY_SHIFT);
+    bool ctrl  = ofGetKeyPressed(OF_KEY_CONTROL);
+
+    if (shift) {
+        // constrain to horizontal/vertical
+    }
+    if (ctrl && button == OF_MOUSE_BUTTON_LEFT) {
+        // pick colour from canvas
+    }
+}
+
+
+Touch Events
+
+
+On touch-capable platforms (Android, iOS, some touchscreen Linux devices) oF provides
+touch callbacks in addition to the mouse callbacks. The mouse callbacks also fire for
+single-finger touch, which is sufficient for many use cases.
+
+
+
+class ofApp : public ofBaseApp {
+public:
+    void touchDown(int x, int y, int id);
+    void touchMoved(int x, int y, int id);
+    void touchUp(int x, int y, int id);
+    void touchDoubleTap(int x, int y, int id);
+    void touchCancelled(int x, int y, int id);
+};
+
+
+
+The id parameter identifies each finger (0 for the first touch, 1 for the second,
+etc.), enabling multi-touch handling. The ofxMultiTouch addon provides
+higher-level gesture recognition (pinch, rotate) on top of these callbacks.
+
+
+Window Resize Events
+
+
+class ofApp : public ofBaseApp {
+public:
+    void windowResized(int w, int h);
+};
+
+void ofApp::windowResized(int w, int h) {
+    // Re-allocate any FBOs that must match the window size
+    renderTarget.allocate(w, h, GL_RGBA);
+    ofLogNotice("ofApp") << "Window resized to " << w << "x" << h;
+}
+
+
+A Complete Interactive Paint Sketch
+
+
+// ofApp.h
+#pragma once
+#include <ofMain.h>
+
+struct Stroke {
+    std::vector<ofVec2f> pts;
+    ofColor color;
+    float   width;
+};
+
+class ofApp : public ofBaseApp {
+public:
+    void setup();
+    void draw();
+    void mousePressed(int x, int y, int button);
+    void mouseDragged(int x, int y, int button);
+    void keyPressed(int key);
+    void mouseScrolled(int x, int y, float sx, float sy);
+private:
+    std::vector<Stroke> strokes;
+    float hue        = 200.0f;
+    float brushSize  = 8.0f;
+};
+
+
+
+// ofApp.cpp
+#include "ofApp.h"
+
+void ofApp::setup() {
+    ofSetFrameRate(60);
+    ofBackground(15, 15, 25);
+    ofEnableSmoothing();
+    ofEnableAlphaBlending();
+}
+
+void ofApp::draw() {
+    ofBackground(15, 15, 25);
+
+    for (const auto &stroke : strokes) {
+        if (stroke.pts.size() < 2) continue;
+        ofSetColor(stroke.color);
+        ofSetLineWidth(stroke.width);
+        ofBeginShape();
+        for (const auto &p : stroke.pts) ofCurveVertex(p.x, p.y);
+        ofEndShape(false);
+    }
+
+    // Cursor preview
+    ofNoFill();
+    ofSetColor(255, 255, 255, 80);
+    ofSetLineWidth(1);
+    ofDrawCircle(ofGetMouseX(), ofGetMouseY(), brushSize);
+    ofFill();
+
+    ofSetColor(200, 200, 200);
+    ofDrawBitmapString("Scroll: brush size  |  C: clear  |  S: save", 10, ofGetHeight() - 10);
+}
+
+void ofApp::mousePressed(int x, int y, int button) {
+    if (button == OF_MOUSE_BUTTON_LEFT) {
+        Stroke s;
+        s.color = ofColor::fromHsb(hue, 200, 230, 200);
+        s.width = brushSize;
+        s.pts.push_back({(float)x, (float)y});
+        strokes.push_back(s);
+        hue = fmod(hue + 8.0f, 255.0f);
+    }
+}
+
+void ofApp::mouseDragged(int x, int y, int button) {
+    if (button == OF_MOUSE_BUTTON_LEFT && !strokes.empty()) {
+        strokes.back().pts.push_back({(float)x, (float)y});
+    }
+}
+
+void ofApp::mouseScrolled(int x, int y, float sx, float sy) {
+    brushSize = ofClamp(brushSize + sy * 1.5f, 1.0f, 60.0f);
+}
+
+void ofApp::keyPressed(int key) {
+    if (key == 'c' || key == 'C') strokes.clear();
+    if (key == 's' || key == 'S') ofSaveScreen("painting.png");
+}
+
+
+Summary
+
+
+Override mouse and keyboard methods on ofApp — mousePressed,
+mouseDragged, keyPressed, and so on — to handle events as they
+arrive. For state that changes gradually (camera pan, held keys), query
+ofGetMouseX()/ofGetMouseY() or ofGetKeyPressed(key)
+in update() instead. Use OF_KEY_LEFT, OF_KEY_RETURN,
+and similar constants for non-printable keys. The modifier state (shift, ctrl, alt) is
+available via ofGetKeyPressed(OF_KEY_SHIFT).
+
+
+Further Reading
+
+
+  ofBaseApp Callbacks Reference
+  ofEvents Documentation
+  ofGetMousePressed / ofGetKeyPressed
+
+
+See Also
+
+
+  The ofApp Lifecycle
+  ofxGui: Built-in UI Controls
+  2D Drawing Primitives
+

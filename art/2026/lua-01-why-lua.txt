@@ -1,5 +1,5 @@
 Lua - Part 1: Why Lua? The Embedding Case
-2026-06-09
+2026-06-01
 
 
 World of Warcraft's addon system runs Lua. So does the Roblox game engine, the Redis

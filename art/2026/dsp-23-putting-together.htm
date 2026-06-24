@@ -1,0 +1,588 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>DSP - Part 23: Putting It All Together — a Complete Monophonic Synthesiser</title>
+    <meta name="description" content="A complete playable monophonic synth under 500 lines: wavetable oscillator, biquad filter, ADSR envelope, ALSA MIDI input, and SDL2 audio output, with a series retrospective.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="dsp-23-putting-together.txt">plain/text</a> | <i>2026-06-01</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a></i>
+        <h2>DSP - Part 23: Putting It All Together — a Complete Monophonic Synthesiser</h2>
+        <p>
+Twenty-two articles of theory, code, and gotchas lead here: a synthesiser you can
+actually play. It has a wavetable oscillator with band-limited tables, a two-pole
+lowpass biquad filter with resonance, an ADSR envelope controlling both amplitude and
+filter cutoff, and it responds to MIDI note-on/off and pitch-bend from any ALSA
+sequencer source. The audio output goes through SDL2 so the same code builds on Linux,
+macOS, and Windows. The whole thing fits in 480 lines of C. This article walks the
+architecture, shows the full source, and closes out the series.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How to thread together the components from Parts 5, 8, 15, 18, 19, and 20 into a single program.</li>
+<li>The shared state layout that separates the MIDI thread from the audio thread safely.</li>
+<li>How note priority (last-note) and legato work in a monophonic voice.</li>
+<li>How to apply the filter envelope: modulating cutoff from the ADSR output.</li>
+<li>A retrospective on the series: what was covered and what comes next.</li>
+</ul>
+
+<h3>Architecture</h3>
+
+<p>
+The program has three threads:
+</p>
+
+<ol>
+<li><b>Main thread</b>: initialises SDL2 audio and ALSA MIDI, then blocks waiting for
+    the user to press Enter (or sends a quit signal). Also handles denormal flags on startup.</li>
+<li><b>MIDI thread</b>: polls the ALSA sequencer for events, parses them with the Part 18
+    state machine, and writes note/pitch-bend data to the shared voice state through a
+    lightweight spinlock.</li>
+<li><b>Audio thread</b>: the SDL2 callback. Reads voice state, advances the oscillator
+    and envelopes, runs the filter, and writes samples to the output buffer.</li>
+</ol>
+
+<p>
+The shared voice state is a small struct protected by an SDL mutex. The audio callback
+holds the lock for less than a microsecond to read parameters; the MIDI thread holds it
+briefly to write note events. The lock is taken at callback entry and released at exit —
+short enough that it will never cause underruns at 512-sample buffers.
+</p>
+
+<h3>Shared Voice State</h3>
+
+<pre>
+#include &lt;SDL2/SDL.h&gt;
+#include &lt;alsa/asoundlib.h&gt;
+#include &lt;math.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;pthread.h&gt;
+#include &lt;xmmintrin.h&gt;
+#include &lt;pmmintrin.h&gt;
+
+#define SAMPLE_RATE  48000
+#define WT_SIZE      2048
+#define TWO_PI       (2.0f * 3.14159265358979f)
+
+/* ---- Wavetable (band-limited saw, 8 octave tables) ---- */
+#define NUM_WT_TABLES 8
+static float wt_tables[NUM_WT_TABLES][WT_SIZE];
+static float wt_top_freq[NUM_WT_TABLES];  /* highest freq valid for each table */
+
+/* ---- Biquad filter (Direct Form II transposed) ---- */
+typedef struct { float b0,b1,b2,a1,a2,z1,z2; } Biquad;
+
+/* ---- ADSR envelope ---- */
+typedef enum { ENV_IDLE, ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE } EnvState;
+typedef struct {
+    EnvState state;
+    float    env;
+    float    att_c, dec_c, sus, rel_c;
+} ADSR;
+
+/* ---- Voice parameters (written by MIDI thread, read by audio thread) ---- */
+typedef struct {
+    int   note_active;     /* 1 = note is held */
+    int   note;            /* MIDI note number 0-127 */
+    float pitch_bend;      /* semitones, [-2, +2] */
+    int   note_off_req;    /* 1 = note-off received, not yet processed */
+    SDL_mutex *lock;
+} VoiceParams;
+
+/* ---- Synthesiser state (owned by audio thread only) ---- */
+typedef struct {
+    /* Oscillator */
+    double osc_phase;
+    double osc_inc;
+    int    osc_table;      /* which band-limited table to use */
+
+    /* Filter */
+    Biquad filt;
+    float  filt_base_cutoff;   /* Hz at full envelope open */
+    float  filt_env_amount;    /* semitones of cutoff shift at env peak */
+
+    /* Envelopes */
+    ADSR   amp_env;
+    ADSR   filt_env;
+
+    /* Note state (local copy, updated from VoiceParams each callback) */
+    int   current_note;
+    float current_bend;    /* semitones */
+    int   gate;            /* 1 = note held */
+} SynthVoice;
+</pre>
+
+<h3>Building Block Functions</h3>
+
+<pre>
+/* Time to one-pole IIR coefficient */
+static float tc(float ms) {
+    if (ms &lt;= 0.0f) return 0.0f;
+    return expf(-1.0f / (ms * 0.001f * SAMPLE_RATE));
+}
+
+/* ADSR */
+static void adsr_init(ADSR *e, float a, float d, float s, float r) {
+    e-&gt;att_c = tc(a); e-&gt;dec_c = tc(d);
+    e-&gt;sus   = s;      e-&gt;rel_c = tc(r);
+    e-&gt;env   = 0.0f;   e-&gt;state = ENV_IDLE;
+}
+static void adsr_gate_on(ADSR *e)  { e-&gt;state = ENV_ATTACK; }
+static void adsr_gate_off(ADSR *e) { if (e-&gt;state != ENV_IDLE) e-&gt;state = ENV_RELEASE; }
+
+static float adsr_next(ADSR *e) {
+    switch (e-&gt;state) {
+    case ENV_ATTACK:
+        e-&gt;env = e-&gt;att_c * e-&gt;env + (1.0f - e-&gt;att_c) * 1.05f;
+        if (e-&gt;env &gt;= 1.0f) { e-&gt;env = 1.0f; e-&gt;state = ENV_DECAY; }
+        break;
+    case ENV_DECAY:
+        e-&gt;env = e-&gt;dec_c * e-&gt;env + (1.0f - e-&gt;dec_c) * e-&gt;sus;
+        if (fabsf(e-&gt;env - e-&gt;sus) &lt; 1e-4f) e-&gt;state = ENV_SUSTAIN;
+        break;
+    case ENV_SUSTAIN:
+        e-&gt;env = e-&gt;sus;
+        break;
+    case ENV_RELEASE:
+        e-&gt;env = e-&gt;rel_c * e-&gt;env;
+        if (e-&gt;env &lt; 1e-5f) { e-&gt;env = 0.0f; e-&gt;state = ENV_IDLE; }
+        break;
+    default: e-&gt;env = 0.0f; break;
+    }
+    return e-&gt;env;
+}
+
+/* Biquad: lowpass, Direct Form II transposed */
+static void bq_lowpass(Biquad *f, float fc, float q) {
+    float w0  = TWO_PI * fc / SAMPLE_RATE;
+    float al  = sinf(w0) / (2.0f * q);
+    float cw  = cosf(w0);
+    float a0  = 1.0f + al;
+    f-&gt;b0 = (1.0f - cw) * 0.5f / a0;
+    f-&gt;b1 = (1.0f - cw)        / a0;
+    f-&gt;b2 = f-&gt;b0;
+    f-&gt;a1 = -2.0f * cw          / a0;
+    f-&gt;a2 = (1.0f - al)         / a0;
+}
+static float bq_process(Biquad *f, float x) {
+    float y = f-&gt;b0*x + f-&gt;z1;
+    f-&gt;z1   = f-&gt;b1*x - f-&gt;a1*y + f-&gt;z2 + 1e-25f;  /* DC guard */
+    f-&gt;z2   = f-&gt;b2*x - f-&gt;a2*y;
+    return y;
+}
+
+/* Build band-limited saw wavetable set */
+static void build_wavetables(void) {
+    float nyquist = (float)SAMPLE_RATE * 0.5f;
+    float top = 55.0f;
+    for (int t = 0; t &lt; NUM_WT_TABLES; t++) {
+        wt_top_freq[t] = top * 2.0f;
+        int max_h = (int)(nyquist / top);
+        if (max_h &lt; 1) max_h = 1;
+        memset(wt_tables[t], 0, sizeof(wt_tables[t]));
+        for (int h = 1; h &lt;= max_h; h++) {
+            float amp = 1.0f / h;
+            for (int i = 0; i &lt; WT_SIZE; i++)
+                wt_tables[t][i] += amp * sinf(TWO_PI * h * i / WT_SIZE);
+        }
+        /* Normalise */
+        float pk = 0.0f;
+        for (int i = 0; i &lt; WT_SIZE; i++) {
+            float v = fabsf(wt_tables[t][i]);
+            if (v &gt; pk) pk = v;
+        }
+        if (pk &gt; 0.0f) for (int i = 0; i &lt; WT_SIZE; i++) wt_tables[t][i] /= pk;
+        top *= 2.0f;
+    }
+}
+
+/* Select wavetable for given frequency */
+static int wt_table_for(float freq) {
+    for (int t = 0; t &lt; NUM_WT_TABLES - 1; t++)
+        if (freq &lt;= wt_top_freq[t]) return t;
+    return NUM_WT_TABLES - 1;
+}
+
+/* Wavetable oscillator: linear interpolation */
+static float wt_osc(double *phase, double inc, int table) {
+    int   i0 = (int)*phase;
+    int   i1 = (i0 + 1) &amp; (WT_SIZE - 1);
+    float t  = (float)(*phase - (double)i0);
+    float s  = wt_tables[table][i0] + t * (wt_tables[table][i1] - wt_tables[table][i0]);
+    *phase  += inc;
+    if (*phase &gt;= WT_SIZE) *phase -= WT_SIZE;
+    return s;
+}
+
+/* MIDI note to frequency */
+static float note_to_freq(int note, float bend_semitones) {
+    return 440.0f * powf(2.0f, ((float)(note - 69) + bend_semitones) / 12.0f);
+}
+</pre>
+
+<h3>The Audio Callback</h3>
+
+<pre>
+static VoiceParams *g_params;   /* shared with MIDI thread */
+static SynthVoice   g_voice;
+
+static void audio_callback(void *userdata, Uint8 *stream, int len) {
+    /* Flush-to-zero: silence denormals (x86 only; see Part 13) */
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+
+    SynthVoice *v = &amp;g_voice;
+    float      *buf = (float *)stream;
+    int         n   = len / (int)sizeof(float);
+
+    /* Snapshot MIDI state under lock */
+    SDL_LockMutex(g_params-&gt;lock);
+    int   note         = g_params-&gt;note;
+    float bend         = g_params-&gt;pitch_bend;
+    int   gate         = g_params-&gt;note_active;
+    int   note_off_req = g_params-&gt;note_off_req;
+    g_params-&gt;note_off_req = 0;
+    SDL_UnlockMutex(g_params-&gt;lock);
+
+    /* Note-on: new note */
+    if (gate &amp;&amp; note != v-&gt;current_note) {
+        v-&gt;current_note = note;
+        v-&gt;current_bend = bend;
+        float freq = note_to_freq(note, bend);
+        v-&gt;osc_table = wt_table_for(freq);
+        v-&gt;osc_inc   = (double)WT_SIZE * freq / SAMPLE_RATE;
+        adsr_gate_on(&amp;v-&gt;amp_env);
+        adsr_gate_on(&amp;v-&gt;filt_env);
+        v-&gt;gate = 1;
+    }
+    /* Note-off */
+    if (note_off_req &amp;&amp; v-&gt;gate) {
+        adsr_gate_off(&amp;v-&gt;amp_env);
+        adsr_gate_off(&amp;v-&gt;filt_env);
+        v-&gt;gate = 0;
+    }
+    /* Pitch bend (continuous) */
+    if (v-&gt;gate &amp;&amp; fabsf(bend - v-&gt;current_bend) &gt; 0.001f) {
+        v-&gt;current_bend = bend;
+        float freq = note_to_freq(v-&gt;current_note, bend);
+        v-&gt;osc_table = wt_table_for(freq);
+        v-&gt;osc_inc   = (double)WT_SIZE * freq / SAMPLE_RATE;
+    }
+
+    for (int i = 0; i &lt; n; i++) {
+        float amp_env  = adsr_next(&amp;v-&gt;amp_env);
+        float filt_env = adsr_next(&amp;v-&gt;filt_env);
+
+        /* Filter cutoff modulation: envelope shifts cutoff up to filt_env_amount semitones */
+        float cutoff = v-&gt;filt_base_cutoff *
+                       powf(2.0f, filt_env * v-&gt;filt_env_amount / 12.0f);
+        if (cutoff &gt; 20000.0f) cutoff = 20000.0f;
+        bq_lowpass(&amp;v-&gt;filt, cutoff, 1.5f);   /* resonant filter: Q=1.5 */
+
+        float osc_out = wt_osc(&amp;v-&gt;osc_phase, v-&gt;osc_inc, v-&gt;osc_table);
+        float filt_out = bq_process(&amp;v-&gt;filt, osc_out);
+        buf[i] = filt_out * amp_env * 0.4f;   /* 0.4 = safe output level */
+    }
+}
+</pre>
+
+<p>
+Gotcha: recomputing the biquad coefficients every sample is expensive.
+For a slow-moving filter envelope you can update the coefficients once per block instead
+(outside the inner loop). For the capstone demo the simplicity of per-sample updates
+outweighs the CPU cost; in a production synthesiser with many voices you would
+pre-compute the biquad coefficients once per block.
+</p>
+
+<h3>The MIDI Thread</h3>
+
+<pre>
+typedef struct {
+    snd_seq_t   *seq;
+    int          port_id;
+    VoiceParams *params;
+    int          running;
+} MidiThread;
+
+static void *midi_thread_fn(void *arg) {
+    MidiThread *mt = (MidiThread *)arg;
+
+    int npfds = snd_seq_poll_descriptors_count(mt-&gt;seq, POLLIN);
+    struct pollfd *pfds = malloc((size_t)npfds * sizeof(struct pollfd));
+    snd_seq_poll_descriptors(mt-&gt;seq, pfds, (unsigned int)npfds, POLLIN);
+
+    while (mt-&gt;running) {
+        if (poll(pfds, (nfds_t)npfds, 100) &lt;= 0) continue;
+
+        snd_seq_event_t *ev;
+        while (snd_seq_event_input(mt-&gt;seq, &amp;ev) &gt; 0) {
+            SDL_LockMutex(mt-&gt;params-&gt;lock);
+            switch (ev-&gt;type) {
+            case SND_SEQ_EVENT_NOTEON:
+                if (ev-&gt;data.note.velocity &gt; 0) {
+                    mt-&gt;params-&gt;note        = ev-&gt;data.note.note;
+                    mt-&gt;params-&gt;note_active = 1;
+                } else {
+                    /* Note-on velocity 0 = note-off (running status optimisation) */
+                    mt-&gt;params-&gt;note_off_req = 1;
+                    mt-&gt;params-&gt;note_active  = 0;
+                }
+                break;
+            case SND_SEQ_EVENT_NOTEOFF:
+                mt-&gt;params-&gt;note_off_req = 1;
+                mt-&gt;params-&gt;note_active  = 0;
+                break;
+            case SND_SEQ_EVENT_PITCHBEND:
+                /* ALSA delivers pitch bend -8192..+8191; map to ±2 semitones */
+                mt-&gt;params-&gt;pitch_bend =
+                    (float)ev-&gt;data.control.value / 8192.0f * 2.0f;
+                break;
+            default: break;
+            }
+            SDL_UnlockMutex(mt-&gt;params-&gt;lock);
+        }
+    }
+
+    free(pfds);
+    return NULL;
+}
+</pre>
+
+<h3>main(): Wiring It Together</h3>
+
+<pre>
+int main(int argc, char **argv) {
+    /* Build wavetables */
+    build_wavetables();
+
+    /* Shared params */
+    VoiceParams params;
+    memset(&amp;params, 0, sizeof(params));
+    params.lock = SDL_CreateMutex();
+    g_params    = &amp;params;
+
+    /* Initialise voice */
+    memset(&amp;g_voice, 0, sizeof(g_voice));
+    adsr_init(&amp;g_voice.amp_env,   10.0f, 200.0f, 0.7f, 400.0f);
+    adsr_init(&amp;g_voice.filt_env,   5.0f, 300.0f, 0.3f, 500.0f);
+    g_voice.filt_base_cutoff = 800.0f;
+    g_voice.filt_env_amount  = 36.0f;   /* 3 octaves of filter sweep */
+    g_voice.current_note     = 60;
+    bq_lowpass(&amp;g_voice.filt, g_voice.filt_base_cutoff, 1.5f);
+
+    /* Open ALSA MIDI sequencer */
+    snd_seq_t *seq;
+    int midi_port;
+    if (snd_seq_open(&amp;seq, "default", SND_SEQ_OPEN_INPUT, 0) &lt; 0) {
+        fprintf(stderr, "Cannot open ALSA sequencer\n");
+        return 1;
+    }
+    snd_seq_set_client_name(seq, "monosynth");
+    midi_port = snd_seq_create_simple_port(seq, "input",
+        SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE,
+        SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION);
+
+    /* Auto-connect first available hardware MIDI input if arg given */
+    if (argc &gt; 1) {
+        int src_c = 0, src_p = 0;
+        if (sscanf(argv[1], "%d:%d", &amp;src_c, &amp;src_p) == 2) {
+            snd_seq_port_subscribe_t *sub;
+            snd_seq_port_subscribe_alloca(&amp;sub);
+            snd_seq_addr_t sender = {(unsigned char)src_c, (unsigned char)src_p};
+            snd_seq_addr_t dest   = {(unsigned char)snd_seq_client_id(seq),
+                                     (unsigned char)midi_port};
+            snd_seq_port_subscribe_set_sender(sub, &amp;sender);
+            snd_seq_port_subscribe_set_dest(sub, &amp;dest);
+            snd_seq_subscribe_port(seq, sub);
+            printf("Connected to %d:%d\n", src_c, src_p);
+        }
+    } else {
+        printf("Usage: %s client:port\n  (find ports with: aconnect -l)\n", argv[0]);
+    }
+
+    /* Start MIDI thread */
+    MidiThread mt = { seq, midi_port, &amp;params, 1 };
+    pthread_t midi_tid;
+    pthread_create(&amp;midi_tid, NULL, midi_thread_fn, &amp;mt);
+
+    /* Open SDL2 audio */
+    if (SDL_Init(SDL_INIT_AUDIO) &lt; 0) {
+        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        return 1;
+    }
+    SDL_AudioSpec desired, obtained;
+    memset(&amp;desired, 0, sizeof(desired));
+    desired.freq     = SAMPLE_RATE;
+    desired.format   = AUDIO_F32SYS;
+    desired.channels = 1;
+    desired.samples  = 512;
+    desired.callback = audio_callback;
+    desired.userdata = NULL;
+    SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &amp;desired, &amp;obtained,
+        SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+    if (dev == 0) { fprintf(stderr, "SDL_OpenAudioDevice: %s\n", SDL_GetError()); return 1; }
+    SDL_PauseAudioDevice(dev, 0);
+
+    printf("Monophonic synth running. Press Enter to quit.\n");
+    getchar();
+
+    /* Shutdown */
+    mt.running = 0;
+    pthread_join(midi_tid, NULL);
+    SDL_CloseAudioDevice(dev);
+    SDL_Quit();
+    snd_seq_close(seq);
+    SDL_DestroyMutex(params.lock);
+    return 0;
+}
+</pre>
+
+<pre>
+/* Compile (Linux):
+   cc -O2 -o monosynth monosynth.c -lSDL2 -lasound -lpthread -lm
+
+   Run (find your keyboard's ALSA port first):
+   aconnect -l
+   ./monosynth 20:0
+*/
+</pre>
+
+<h3>Series Retrospective</h3>
+
+<p>
+Twenty-three articles, and every line of this synthesiser connects back to something we
+built along the way:
+</p>
+
+<ul>
+<li>Parts 1–2: the sample rate and block model that <code>SAMPLE_RATE</code> and the
+    SDL2 callback embody.</li>
+<li>Part 3: the phase accumulator at the heart of <code>wt_osc()</code>.</li>
+<li>Parts 4–7: the biquad filter and its cookbook coefficients used in <code>bq_lowpass</code>.</li>
+<li>Part 8: the ADSR envelope pattern repeated verbatim.</li>
+<li>Part 13: FTZ+DAZ at the start of the callback, and the DC guard in the biquad.</li>
+<li>Part 15: the band-limited wavetable build and selection logic.</li>
+<li>Parts 18–19: MIDI parsing, the ALSA sequencer subscription, and the poll loop.</li>
+<li>Part 20: SDL2 AudioSpec, SDL_OpenAudioDevice, and the callback threading model.</li>
+</ul>
+
+<p>
+What the series did not cover: physical modelling (waveguides, resonators), sample-based
+synthesis with multi-sample velocity layers, surround audio, MIDI 2.0, hardware
+interfacing (I2S on embedded targets), or any of the frequency-domain synthesis
+techniques beyond the phase vocoder sketch in Part 12. Those are threads to pull next.
+</p>
+
+<p>
+The code in this series is intentionally minimal — no error recovery, no GUI, no
+multi-voice polyphony. Each article is a foundation, not a finished product. Take the
+pieces, read what they do, and build from there.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+The monophonic synthesiser is 480 lines that demonstrate end-to-end real-time audio
+programming in C. ALSA MIDI provides the note events; SDL2 provides the audio callback;
+the oscillator, filter, and envelopes fill the buffer. The threading model — MIDI thread
+writes parameters under a mutex, audio callback reads them — is the pattern used by
+every real synthesiser, scaled up to more voices, more parameters, and more DSP.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://ccrma.stanford.edu/~jos/pasp/">Physical Audio Signal Processing - Julius O. Smith III</a></li>
+<li><a href="https://www.kvraudio.com/forum/viewforum.php?f=33">KVR Audio DSP and Plug-in Development Forum</a></li>
+<li><a href="https://www.musicdsp.org/">musicdsp.org — community DSP archive</a></li>
+<li><a href="https://dspguide.com/">The Scientist and Engineer's Guide to Digital Signal Processing - Steven W. Smith</a></li>
+<li><a href="https://www.routledge.com/The-Audio-Programming-Book/Boulanger-Lazzarini/p/book/9780262014465">The Audio Programming Book - Boulanger &amp; Lazzarini (MIT Press)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="dsp-15-wavetable.htm">Wavetable Synthesis</a></li>
+<li><a href="dsp-05-biquad.htm">Biquad Filters</a></li>
+<li><a href="dsp-08-envelope-follower.htm">Envelope Follower &amp; Parameter Smoothing</a></li>
+<li><a href="dsp-19-midi-linux.htm">MIDI I/O on Linux with ALSA</a></li>
+<li><a href="dsp-20-sdl2-audio.htm">SDL2 as Audio Backend</a></li>
+<li><a href="dsp-13-denormals.htm">Denormal Numbers</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

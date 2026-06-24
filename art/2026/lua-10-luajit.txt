@@ -1,0 +1,322 @@
+Lua - Part 10: LuaJIT
+2026-06-01
+
+
+Standard Lua is fast for an interpreted language - benchmarks regularly show it at 50-100x
+the speed of Python for tight loops. LuaJIT is fast by the standards of any language:
+a tracing JIT compiler that emits native machine code, with an FFI extension that calls C
+functions at speeds indistinguishable from direct C calls. The same embedding API you have
+learned in this series works with LuaJIT unchanged - the C API is source-compatible. But
+LuaJIT adds a layer that changes the performance calculus: you can call your C DSP
+functions, struct constructors, and system APIs directly from Lua without writing a single
+lua_CFunction wrapper. This article explains the JIT, the FFI, and where LuaJIT
+fits in the decision of what to embed.
+
+
+What You Will Learn
+
+
+How LuaJIT's tracing JIT works and what "hot trace" means.
+The embedding API: why LuaJIT is a drop-in replacement for Lua 5.1.
+The FFI extension: ffi.cdef, ffi.load, calling C functions directly.
+Passing structs by value and by pointer through the FFI.
+Why FFI calls in JIT-compiled code are near-zero overhead.
+When to choose LuaJIT and when to stay on Lua 5.4.
+
+
+The Tracing JIT
+
+
+LuaJIT uses a tracing JIT, not a method JIT like the JVM's HotSpot. A method
+JIT compiles whole functions when they become "hot". A tracing JIT records a specific
+execution path - a trace - when it becomes hot, and compiles that path to native code.
+
+
+
+The implications: LuaJIT excels at tight inner loops with predictable control flow.
+When a loop body executes thousands of times on the same path, LuaJIT records a trace,
+compiles it, and subsequent iterations run native code directly, no interpreter overhead.
+Type information is inferred per-trace: if every iteration processes a double, the
+compiled trace omits the type checks and dispatches. The result is code that approaches
+the speed of hand-written C.
+
+
+
+LuaJIT is less effective on highly polymorphic code, deep recursive functions, and code
+paths that change frequently. A loop that sometimes processes doubles and sometimes
+tables will not compile to a single efficient trace. The interpreter (which is itself
+faster than the reference Lua interpreter, due to LuaJIT's hand-optimised bytecode
+dispatch) runs such code.
+
+
+
+You can inspect JIT compilation decisions with the -jv flag:
+
+
+
+luajit -jv script.lua
+# [LuaJIT -- JITL (default)]:
+# [TRACE  1 script.lua:3 loop]
+# [TRACE  2 script.lua:8 loop]
+
+
+
+jit.off() and jit.on() in Lua code toggle compilation for
+specific functions, which is useful when a function causes JIT compilation to fail
+("abort") and you want to isolate the cause.
+
+
+Embedding LuaJIT: The API is Identical
+
+
+LuaJIT implements the Lua 5.1 C API. The same headers, the same function names, the
+same stack model. A C host that embeds standard Lua 5.1 recompiles against LuaJIT
+headers without source changes. If you have been writing code against Lua 5.4 in this
+series, the primary differences are:
+
+
+
+lua_Integer is 32-bit on 32-bit platforms in LuaJIT (64-bit on 64-bit).
+LUA_MULTRET, LUA_OK, lua_pcall, luaL_newstate - all present and identical.
+Lua 5.4 lua_resume takes a int *nresults 4th parameter not present in 5.1/LuaJIT. Use lua_gettop instead.
+No lua_Integer/lua_Number split for the language: LuaJIT's Lua 5.1 has a single number type (double by default, or int64 via FFI).
+Generational GC (Lua 5.4) not available. LuaJIT uses its own incremental GC.
+
+
+
+/* Compile a C host against LuaJIT instead of Lua 5.4 */
+gcc -o host host.c $(pkg-config --cflags --libs luajit)
+/* or on some systems: */
+gcc -o host host.c -I/usr/include/luajit-2.1 -lluajit-5.1
+
+
+The FFI Extension
+
+
+LuaJIT's FFI (Foreign Function Interface) is the most significant addition over
+standard Lua. It allows Lua code to call C functions and manipulate C data structures
+without writing C wrapper code. You declare C types and function signatures
+as strings, and LuaJIT compiles calls to them directly.
+
+
+
+-- Load the FFI library (LuaJIT built-in, not available in standard Lua)
+local ffi = require("ffi")
+
+-- Declare C types and functions using C syntax as a string
+ffi.cdef[[
+    /* Standard C library functions */
+    void  free(void *ptr);
+    void *malloc(size_t size);
+
+    /* A custom C struct */
+    typedef struct {
+        double b0, b1, b2;
+        double a1, a2;
+        double x1, x2, y1, y2;
+        int    sample_rate;
+    } BiquadFilter;
+
+    /* C functions from our DSP library */
+    void   biquad_set_lowpass(BiquadFilter *f, double fc, double q);
+    double biquad_process(BiquadFilter *f, double x);
+]]
+
+
+
+The string passed to ffi.cdef is parsed by LuaJIT's built-in C declaration
+parser. It understands most of C89 plus common extensions. After this declaration, the
+C types and functions are available in Lua.
+
+
+ffi.load: Loading a Shared Library
+
+
+-- Load a shared library by name (searches LD_LIBRARY_PATH etc.)
+local dsp = ffi.load("dsp")   -- loads libdsp.so / dsp.dll
+
+-- Or use an absolute path:
+local dsp = ffi.load("/usr/local/lib/libdsp.so")
+
+-- Functions declared in ffi.cdef are now accessible as dsp.funcname
+local filter = ffi.new("BiquadFilter")
+dsp.biquad_set_lowpass(filter, 1000.0, 0.707)
+local y = dsp.biquad_process(filter, 0.5)
+print(y)
+
+
+
+For functions in the main executable or already-loaded libraries (including the C
+standard library), use ffi.C instead of ffi.load:
+
+
+
+ffi.cdef[[ double sin(double x); double cos(double x); ]]
+print(ffi.C.sin(math.pi / 6))   -- 0.5
+
+
+ffi.new: Allocating C Structs
+
+
+ffi.new(ctype) allocates a new C object. The object is managed by
+LuaJIT's garbage collector - it will be freed when the Lua variable goes out of scope.
+
+
+
+-- Allocate a struct (zero-initialised)
+local f = ffi.new("BiquadFilter")
+f.sample_rate = 48000
+
+-- Allocate an array of 512 doubles
+local buf = ffi.new("double[512]")
+
+-- Allocate with initialiser
+local pt = ffi.new("struct { double x, y; }", { x=1.0, y=2.0 })
+print(pt.x, pt.y)   -- 1.0   2.0
+
+
+
+Fields of FFI structs are accessed with dot notation, just like Lua table fields.
+LuaJIT knows the C layout and handles the memory access correctly.
+
+
+Passing Structs by Value and Pointer
+
+
+C functions that take structs by value receive a copy; functions that take pointers
+receive a reference to the original. LuaJIT handles both:
+
+
+
+ffi.cdef[[
+    /* By pointer: modifies the struct in place */
+    void   filter_reset(BiquadFilter *f);
+
+    /* By value: receives a copy (rare for large structs, but valid C) */
+    double filter_process_copy(BiquadFilter f, double x);
+]]
+
+local filt = ffi.new("BiquadFilter")
+filt.sample_rate = 48000
+
+-- Pass by pointer (most common) - changes are visible in 'filt'
+dsp.filter_reset(filt)
+
+-- Pass by value - 'filt' is not modified
+local y = dsp.filter_process_copy(filt, 0.5)
+
+
+
+For arrays, the FFI automatically converts Lua array variables to pointers when a
+C function expects a pointer:
+
+
+
+ffi.cdef[[ void process_block(double *buf, int n); ]]
+local samples = ffi.new("double[256]")
+-- fill samples...
+dsp.process_block(samples, 256)   -- samples passed as double*
+
+
+Why FFI Calls in JIT Code Are Near-Zero Overhead
+
+
+When LuaJIT JIT-compiles a trace that contains a call through the FFI, it emits a
+direct CALL instruction to the C function's address. There is no Lua stack
+manipulation, no type boxing, no lua_CFunction dispatch. The argument
+registers are loaded directly from the Lua values, and the return value goes directly
+to the trace's register file. The overhead compared to calling the function from C is
+one indirect branch at most - and with modern CPU branch prediction, effectively zero
+on a hot trace.
+
+
+
+This is why LuaJIT FFI is used for performance-critical embedded scripting: a Lua loop
+that calls a C DSP function on every sample can run at the same throughput as a C loop
+calling the same function. The JIT eliminates the "scripting overhead" entirely on hot
+paths.
+
+
+
+-- A JIT-compiled loop calling a C function 48000 times (one second of audio)
+-- With LuaJIT FFI this compiles to a native loop - no Lua overhead per sample
+local function process_block(filt, samples, n)
+    for i = 0, n-1 do
+        samples[i] = dsp.biquad_process(filt, samples[i])
+    end
+end
+
+
+When to Choose LuaJIT vs Lua 5.4
+
+
+Choose LuaJIT when:
+
+
+
+You need maximum throughput on hot Lua loops - audio DSP, physics, simulation.
+You want to call C functions from Lua without writing wrapper code (FFI replaces most of Part 4).
+Your target platform is x86-64, x86-32, ARM, or ARM64 on Linux, macOS, or Windows (the platforms LuaJIT supports).
+You are targeting OpenResty/nginx or another framework that already uses LuaJIT.
+
+
+
+Choose standard Lua 5.4 when:
+
+
+
+You need Lua 5.4 language features: to-be-closed variables, integer/float split, the 5.4 GC improvements.
+You target platforms LuaJIT does not support (RISC-V, WASM, exotic embedded targets).
+You need the generational GC to reduce pause times for large heap applications.
+You vendor the Lua source directly and want to track the official Lua repository.
+Your scripts are not performance-critical and the embedding overhead of lua_CFunction wrappers is acceptable.
+
+
+
+The compatibility situation: LuaJIT is officially based on Lua 5.1. The
+maintainer, Mike Pall, has not released a version based on 5.2+ (though LuaJIT 2.x
+includes a small number of 5.2 compatibility extensions). Scripts written for Lua 5.4
+using integer/float distinction, <close> variables, or 5.4-only
+standard library additions will not run on LuaJIT without modification. For a new
+project where you control the scripts, this is a manageable constraint. For a project
+that embeds user-supplied scripts from the wider Lua community, the 5.1 base is a real
+limitation.
+
+
+Summary
+
+
+LuaJIT's tracing JIT compiles hot execution paths to native machine code. The embedding
+C API is source-compatible with Lua 5.1 and functionally identical to the API used
+throughout this series. The FFI extension (ffi.cdef, ffi.load,
+ffi.new) lets Lua code call C functions and manipulate C structs without
+wrapper code, and JIT-compiled FFI calls have near-zero overhead. Choose LuaJIT for
+performance-critical loops and FFI convenience; choose Lua 5.4 for language features,
+platform breadth, and vendorable simplicity.
+
+
+
+The next article applies everything in this series to a concrete DSP use case:
+declaring a full audio node graph in Lua, wiring real biquad and oscillator C structs,
+and hot-reloading the pipeline at runtime.
+
+
+Further Reading
+
+
+LuaJIT - luajit.org
+LuaJIT FFI Library - luajit.org
+FFI API Reference - luajit.org
+FFI Tutorial - luajit.org
+LuaJIT Status and Platform Support - luajit.org
+Lua 5.4 Reference Manual - lua.org
+
+
+See Also
+
+
+Why Lua? The Embedding Case
+Calling C from Lua
+Sandboxing Lua
+Scripting a DSP Pipeline from Lua
+

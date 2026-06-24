@@ -1,0 +1,383 @@
+Go - Part 8: Concurrency Patterns
+2026-06-01
+
+
+Goroutines and channels are the primitives; patterns are how you use them correctly. This
+article covers the most important recurring structures in concurrent Go code: fan-out/fan-in
+pipelines, worker pools, and the sync package for when shared memory is more appropriate
+than message passing. Each pattern is presented with complete, runnable code and an
+explanation of why the pattern exists.
+
+
+What You Will Learn
+
+
+Fan-out/fan-in: distributing work across goroutines and merging results into one channel
+Worker pools: a fixed number of goroutines draining a job channel
+sync.WaitGroup: waiting for a group of goroutines to complete
+sync.Mutex and sync.RWMutex: protecting shared state when channels are not the right fit
+sync/atomic: lock-free integer operations for counters and flags
+Done channels for cooperative cancellation before context existed
+The race detector: how to enable it and what it catches
+
+
+
+Fan-Out / Fan-In
+
+
+Fan-out means distributing work from one goroutine to multiple workers. Fan-in means
+collecting results from multiple goroutines back into one channel. Together they form a
+pipeline that saturates available CPU cores with parallel work.
+
+
+
+package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+// generator produces work items on a channel
+func generator(nums ...int) <-chan int {
+    out := make(chan int)
+    go func() {
+        for _, n := range nums {
+            out <- n
+        }
+        close(out)
+    }()
+    return out
+}
+
+// sq squares each number it receives
+func sq(in <-chan int) <-chan int {
+    out := make(chan int)
+    go func() {
+        for n := range in {
+            out <- n * n
+        }
+        close(out)
+    }()
+    return out
+}
+
+// merge fans in multiple channels to one
+func merge(cs ...<-chan int) <-chan int {
+    var wg sync.WaitGroup
+    merged := make(chan int)
+
+    output := func(c <-chan int) {
+        for v := range c {
+            merged <- v
+        }
+        wg.Done()
+    }
+
+    wg.Add(len(cs))
+    for _, c := range cs {
+        go output(c)
+    }
+
+    go func() {
+        wg.Wait()
+        close(merged)
+    }()
+
+    return merged
+}
+
+func main() {
+    in := generator(2, 3, 4, 5)
+
+    // Fan-out: two sq workers reading from the same channel
+    c1 := sq(in)
+    c2 := sq(in)
+
+    // Fan-in: merge results
+    for v := range merge(c1, c2) {
+        fmt.Println(v)
+    }
+}
+
+
+
+In C, the equivalent would involve a thread pool, a mutex-protected queue, and condition
+variables - probably 100+ lines. In C# you would use Parallel.ForEach or
+PLINQ. Go's version is explicit about the data flow and easy to reason about.
+
+
+Worker Pools
+
+
+A worker pool creates a fixed number of goroutines that each pull from a shared work
+channel. This bounds the concurrency, which is important when each piece of work is I/O-
+heavy (prevents exhausting file descriptors or connections) or CPU-heavy (prevents
+scheduling overhead from too many goroutines).
+
+
+
+func workerPool(numWorkers int, jobs <-chan int, results chan<- int) {
+    var wg sync.WaitGroup
+    for i := 0; i < numWorkers; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            for j := range jobs {
+                // Simulate work
+                results <- j * j
+            }
+        }()
+    }
+    wg.Wait()
+    close(results)
+}
+
+func main() {
+    jobs := make(chan int, 100)
+    results := make(chan int, 100)
+
+    go workerPool(5, jobs, results)
+
+    for i := 0; i < 20; i++ {
+        jobs <- i
+    }
+    close(jobs)
+
+    for r := range results {
+        fmt.Println(r)
+    }
+}
+
+
+
+The pattern: one goroutine sends work, a pool of goroutines processes it, the pool closes
+the results channel when all workers finish. This is the Go equivalent of C#'s
+ThreadPool or the ParallelOptions.MaxDegreeOfParallelism
+setting on Parallel.ForEach.
+
+
+sync.WaitGroup
+
+
+sync.WaitGroup is a counter that lets one goroutine wait for a collection of
+goroutines to finish. Add(n) increments the counter; Done()
+(called deferred inside each worker) decrements it; Wait() blocks until it
+reaches zero.
+
+
+
+var wg sync.WaitGroup
+
+for i := 0; i < 5; i++ {
+    wg.Add(1)
+    go func(n int) {
+        defer wg.Done()
+        fmt.Printf("worker %d done\n", n)
+    }(i)
+}
+
+wg.Wait()
+fmt.Println("all workers done")
+
+
+
+The wg.Add(1) call must happen before the goroutine starts - not inside the
+goroutine itself. If you add inside the goroutine, the goroutine might not start before
+wg.Wait() is called, creating a race. This is a common mistake.
+
+
+
+In C# the equivalent is CountdownEvent or waiting on a list of
+Task objects with Task.WaitAll.
+
+
+sync.Mutex and sync.RWMutex
+
+
+Channels communicate by sending copies of values. Sometimes you genuinely want multiple
+goroutines to share a data structure - a cache, a counter, a registry. For that, use a
+mutex.
+
+
+
+type SafeCounter struct {
+    mu    sync.Mutex
+    count int
+}
+
+func (c *SafeCounter) Inc() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.count++
+}
+
+func (c *SafeCounter) Value() int {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    return c.count
+}
+
+
+
+The defer c.mu.Unlock() immediately after Lock() is idiomatic -
+it guarantees the unlock happens even if the function panics or has multiple return paths.
+Compare to C where you must remember to unlock at every exit point, or C# where you use
+lock (obj) { ... } (which compiles to a try-finally with
+Monitor.Enter/Monitor.Exit).
+
+
+
+sync.RWMutex is a readers-writer lock: multiple goroutines can hold a read
+lock simultaneously, but a write lock is exclusive. Use it when reads are much more
+frequent than writes:
+
+
+
+type Cache struct {
+    mu    sync.RWMutex
+    items map[string]string
+}
+
+func (c *Cache) Get(key string) (string, bool) {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+    v, ok := c.items[key]
+    return v, ok
+}
+
+func (c *Cache) Set(key, value string) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.items[key] = value
+}
+
+
+sync/atomic
+
+
+For simple numeric counters and flags, the sync/atomic package provides
+lock-free operations that the CPU executes atomically:
+
+
+
+import "sync/atomic"
+
+var counter int64
+
+// In goroutines:
+atomic.AddInt64(&counter, 1)
+
+// Read:
+fmt.Println(atomic.LoadInt64(&counter))
+
+
+
+Atomic operations are faster than mutexes for single-variable counters. In C you would use
+__sync_add_and_fetch or _Atomic (C11). In C# you use the
+Interlocked class. All three map to the same underlying hardware CAS/LOCK
+instructions.
+
+
+Done Channels for Cancellation
+
+
+Before the context package existed, goroutine cancellation was signalled with
+a done channel: a channel of type chan struct{} (an empty struct takes zero
+bytes) that is closed when work should stop. Workers use select to check
+whether the done channel has fired:
+
+
+
+func worker(jobs <-chan int, done <-chan struct{}) {
+    for {
+        select {
+        case j, ok := <-jobs:
+            if !ok {
+                return // jobs channel closed
+            }
+            fmt.Println("processing", j)
+        case <-done:
+            fmt.Println("cancelled")
+            return
+        }
+    }
+}
+
+
+
+In modern Go code, use context.Context instead of a raw done channel - it
+provides the same mechanism with timeout and deadline support built in. The done-channel
+pattern is still useful when you want to understand what context does under the hood.
+
+
+Channels vs Mutexes: When to Use Which
+
+
+The Go FAQ says: "Use channels when passing ownership of data; use mutexes when guarding
+internal state." More concretely:
+
+
+
+Use channels for pipelines, work queues, and communicating events between goroutines.
+Use mutexes for a cache, a registry, or any data structure that multiple goroutines need to read and write concurrently.
+Do not use a channel as a mutex (sending and receiving to signal entry and exit). Use the actual mutex.
+Do not use a mutex to build a queue (protected list, condition variable). Use a channel.
+
+
+
+C programmers default to mutexes because that is all pthreads gives you. C# programmers
+default to Task and async/await. Neither is wrong. Go's channel
+model shines when you are building pipelines; mutexes are the right tool when you are
+protecting a shared data structure that is not naturally a queue.
+
+
+The Race Detector
+
+
+Go ships with a built-in race detector that instruments your program to detect concurrent
+reads and writes to the same memory without synchronisation:
+
+
+
+go test -race ./...
+go run -race main.go
+
+
+
+The race detector has a performance overhead (5–10x slower, 5–10x more memory) so it is
+not run in production, but it is essential in your CI pipeline. It catches data races that
+are otherwise extremely difficult to reproduce. There is no equivalent built-in tool in
+either C (though Valgrind/Helgrind exists) or C# (though the .NET analyzer helps
+somewhat).
+
+
+Summary
+
+
+Fan-out distributes a stream of work to N goroutines; fan-in merges N result
+channels into one. Worker pools use a fixed-capacity goroutine group draining a
+shared job channel — bounded concurrency without unbounded resource usage.
+Use sync.Mutex when you have shared state that is cheaper to protect
+with a lock than to route through channels. Use sync/atomic for
+single-variable counters and flags. Run all tests with -race;
+the race detector catches data races that stress tests miss.
+
+
+Further Reading
+
+
+Go Concurrency Patterns: Pipelines and Cancellation
+Introducing the Go Race Detector
+Package sync - pkg.go.dev
+Package sync/atomic - pkg.go.dev
+Go Race Detector - golang.org
+
+
+See Also
+
+
+Goroutines & Channels
+The Context Package
+Testing in Go
+
