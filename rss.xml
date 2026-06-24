@@ -1,0 +1,565 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+<channel>
+  <title>tutorials</title>
+  <link>https://5l0p.github.io/tutorials/</link>
+  <description>Tutorials</description>
+  <item>
+    <title>LLM - Part 15: LangChain &amp; LangGraph Concepts</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-15-langchain-concepts.htm</link>
+    <description>A conceptual tour of chains, graphs, and agent patterns from the LangChain ecosystem - and how they map to what you have already built in Go.</description>
+    <pubDate>2026-06-24</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-15-langchain-concepts.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 14: Putting It Together: A Full Agent</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-14-full-agent.htm</link>
+    <description>Assemble skills, MCP, memory, and RAG into a single configurable Go binary - the reference implementation for this series.</description>
+    <pubDate>2026-06-23</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-14-full-agent.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 13: Local Models with llama.cpp</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-13-local-models.htm</link>
+    <description>Run llama.cpp as a local OpenAI-compatible server, swap the base URL in your Go agent, and understand the trade-offs between local and cloud models.</description>
+    <pubDate>2026-06-22</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-13-local-models.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 12: CAG: Cache-Augmented Generation</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-12-cag.htm</link>
+    <description>How OpenAI prompt caching works, when CAG is better than RAG, and how to structure prompts to maximise cache hit rates.</description>
+    <pubDate>2026-06-21</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-12-cag.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 11: RAG: Retrieval-Augmented Generation</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-11-rag.htm</link>
+    <description>Generate embeddings with OpenAI, implement cosine similarity in Go, build a JSON-backed vector store, and wire retrieval into the agent loop.</description>
+    <pubDate>2026-06-20</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-11-rag.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 10: Adding Memory to Agents</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-10-memory.htm</link>
+    <description>Implement short-term message history, a file-backed long-term key-value store, and a summarisation strategy for context window management.</description>
+    <pubDate>2026-06-19</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-10-memory.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 9: MCP over WebSocket</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-09-mcp-websocket.htm</link>
+    <description>Build an MCP server and client using WebSocket transport for bidirectional streaming, and handle reconnection gracefully.</description>
+    <pubDate>2026-06-18</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-09-mcp-websocket.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 8: MCP over HTTP</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-08-mcp-http.htm</link>
+    <description>Run an MCP server over HTTP with Server-Sent Events, add basic authentication, and understand when HTTP transport fits better than stdio.</description>
+    <pubDate>2026-06-17</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-08-mcp-http.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 7: MCP over stdio</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-07-mcp-stdio.htm</link>
+    <description>Build a Go MCP server using stdio transport, register tools, and connect it to an agent with mcp-go.</description>
+    <pubDate>2026-06-16</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-07-mcp-stdio.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 6: Intro to MCP Servers</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-06-mcp-intro.htm</link>
+    <description>What the Model Context Protocol is, why it exists, and how its three transport types relate to the agent loop you already have.</description>
+    <pubDate>2026-06-15</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-06-mcp-intro.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 5: Skills &amp; Structured Tool Libraries</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-05-skills.htm</link>
+    <description>Organise tools as named structs with a common interface, build a registry for routing, and compose a small standard library of reusable skills.</description>
+    <pubDate>2026-06-14</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-05-skills.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 4: Building a Simple Agent Loop</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-04-agent-loop.htm</link>
+    <description>Implement the think→act→observe cycle as a Go for-loop, with termination conditions, error handling, and a file-system agent example.</description>
+    <pubDate>2026-06-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-04-agent-loop.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 3: Tool Calls (Function Calling)</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-03-tool-calls.htm</link>
+    <description>Define tools as JSON schemas, handle the model&apos;s call requests, and return results to complete the tool-use loop in Go.</description>
+    <pubDate>2026-06-12</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-03-tool-calls.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 2: Chat Completions Deep Dive</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-02-chat-completions.htm</link>
+    <description>Understand roles, temperature, token limits, and how to build a stateful REPL that manages conversation history.</description>
+    <pubDate>2026-06-11</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-02-chat-completions.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>DSP - Part 1: Audio Fundamentals</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-01-audio-fundamentals.htm</link>
+    <description>Sample rate, bit depth, the Nyquist theorem, aliasing, and decibel arithmetic - the vocabulary every audio programmer must know.</description>
+    <pubDate>2026-06-09</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-01-audio-fundamentals.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>RPIPicoDSP - Part 1: The RP2040 &amp; Pico SDK</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-01-rp2040-sdk.htm</link>
+    <description>A tour of the RP2040 chip, the Raspberry Pi Pico board, and the C SDK - from toolchain setup through CMakeLists.txt to a working LED-blink and USB serial hello-world.</description>
+    <pubDate>2026-06-09</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-01-rp2040-sdk.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
+    <category>audio</category>
+    <category>pico</category>
+  </item>
+  <item>
+    <title>Lua - Part 1: Why Lua? The Embedding Case</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-01-why-lua.htm</link>
+    <description>Lua is the dominant embeddable language because it was designed for exactly that purpose - small, fast, and written in portable ANSI C.</description>
+    <pubDate>2026-06-09</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-01-why-lua.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>libpd - Part 1: What Is libpd?</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-01-what-is-libpd.htm</link>
+    <description>An introduction to libpd, the embeddable version of the Pure Data DSP engine, and the C API surface it exposes.</description>
+    <pubDate>2026-06-09</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-01-what-is-libpd.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>Go - Part 1: Why Go? The Language at a Glance</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-01-why-go.htm</link>
+    <description>An overview of Go&apos;s design philosophy, what it deliberately leaves out, and why experienced C and C# developers find it productive.</description>
+    <pubDate>2026-06-09</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-01-why-go.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 1: What Is openFrameworks?</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-01-what-is-of.htm</link>
+    <description>An introduction to openFrameworks: what it is, how it compares to Processing and p5.js, and why C++ is a compelling choice for creative coding.</description>
+    <pubDate>2026-06-09</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-01-what-is-of.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Containers - Part 1: What Is a Container?</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-01-what-is-a-container.htm</link>
+    <description>Containers are ordinary Linux processes with restricted views of the system - built from six kernel primitives, not a single syscall.</description>
+    <pubDate>2026-06-09</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-01-what-is-a-container.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Drums - Part 1: Electronic Drum Synthesis — Architecture and Approach</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/drums-01-architecture.htm</link>
+    <description>How classic electronic drum machines synthesise their sounds from first principles: tonal oscillators with pitch sweeps, filtered noise, transient clicks, and the Prok Drums extend-decay envelope pattern. Building blocks for every voice in the series.</description>
+    <pubDate>2026-06-09</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/drums-01-architecture.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>drums</category>
+  </item>
+  <item>
+    <title>LLM - Part 1: OpenAI API Basics</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-01-openai-api-basics.htm</link>
+    <description>Make your first call to the OpenAI API in Go using only the standard library - no SDK required.</description>
+    <pubDate>2026-06-09</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-01-openai-api-basics.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 11: Putting It All Together</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-11-putting-it-together.htm</link>
+    <description>A complete self-generating Krell-style patch in Pure Data driven by Lua scripts, wiring the Brownian melody generator, Markov chord progression, voice leading, Euclidean drum patterns, and the Monomachine synthesis engines from Series 10 into a single autonomous system.</description>
+    <pubDate>2026-01-21</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-11-putting-it-together.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 10: Euclidean Rhythms</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-10-euclidean-rhythms.htm</link>
+    <description>Bjorklund&apos;s algorithm for distributing k beats across n slots as evenly as possible, the surprising match to world-music rhythmic patterns, generating polyrhythms from coprime period lengths, and integrating Euclidean patterns with the drums-07 sequencer in Lua.</description>
+    <pubDate>2026-01-20</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-10-euclidean-rhythms.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 9: Cellular Automata</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-09-cellular-automata.htm</link>
+    <description>1D elementary cellular automata (Rule 30, Rule 110) as pitch and rhythm generators, reading cell states as notes and rests, and Conway&apos;s Game of Life for evolving harmonic density — all implemented in Lua with output sent to Pure Data.</description>
+    <pubDate>2026-01-19</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-09-cellular-automata.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 8: L-Systems</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-08-l-systems.htm</link>
+    <description>Lindenmayer systems as production grammars for melody generation, mapping symbols to notes and directions, turtle-graphics interpretation of symbol strings, and self-similar musical structure at multiple time scales.</description>
+    <pubDate>2026-01-18</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-08-l-systems.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 7: Voice Leading</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-07-voice-leading.htm</link>
+    <description>Why chord progressions need smooth voice movement, the nearest-neighbour assignment algorithm for three-voice voice leading, detecting and avoiding parallel fifths and octaves, and a complete Lua implementation.</description>
+    <pubDate>2026-01-17</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-07-voice-leading.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 6: Generating Chord Progressions</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-06-chord-progressions.htm</link>
+    <description>A Markov chain over harmonic function (T, S, D) rather than individual chords, mapping functions to chord degree choices, generating 4-bar progressions, and modal interchange for colour without key change.</description>
+    <pubDate>2026-01-16</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-06-chord-progressions.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 5: Harmony Fundamentals</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-05-harmony-fundamentals.htm</link>
+    <description>Why certain intervals sound stable or tense, the overtone series as the physical basis of harmony, triads as stacked scale degrees, and tonic, subdominant, and dominant function — the data structures that chord progression and voice leading articles build on.</description>
+    <pubDate>2026-01-15</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-05-harmony-fundamentals.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 4: Markov Chains for Melody</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-04-markov-chains.htm</link>
+    <description>Encoding musical tendency as a first-order Markov transition matrix over scale degrees, sampling from a probability distribution in Lua, building a rhythm chain, and combining pitch and rhythm into a complete melody generator.</description>
+    <pubDate>2026-01-14</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-04-markov-chains.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 3: Random Walks and Brownian Motion</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-03-random-walks-brownian-motion.htm</link>
+    <description>Why pure random pitch selection is musically useless, how Brownian motion models melodic contour as a walk through pitch space, step size and register boundaries as musical parameters, and fractional Brownian motion with the Hurst exponent for controlling phrase shape.</description>
+    <pubDate>2026-01-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-03-random-walks-brownian-motion.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 2: Pitch as Numbers</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-02-pitch-as-numbers.htm</link>
+    <description>MIDI note numbers as the universal pitch representation, the equal temperament frequency formula, building scale tables in Lua, and the quantise function that maps any integer to the nearest in-scale pitch.</description>
+    <pubDate>2026-01-12</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-02-pitch-as-numbers.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 1: What Is Algorithmic Composition?</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-01-what-is-algorithmic-composition.htm</link>
+    <description>What it means to compose rules rather than notes, the spectrum from stochastic to deterministic, and how algorithmic composition connects to the synthesis engines built in Series 9 and 10.</description>
+    <pubDate>2026-01-11</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-01-what-is-algorithmic-composition.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 5: Machinedrum TRX-CP Clap, TRX-RS Rimshot, TRX-MA Metallic</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-05-md-trx-misc.htm</link>
+    <description>Recreating the Machinedrum TRX-CP clap, TRX-RS rimshot, and TRX-MA metallic percussion machines in Pure Data. The CP&apos;s multi-burst roll with reverb, the RS&apos;s dual resonator model of stick striking drum rim, and the MA&apos;s pitched metallic resonator.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-05-md-trx-misc.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 3: Machinedrum TRX-SD Snare and TRX-XT Hi-Hats</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-03-md-trx-sd.htm</link>
+    <description>Recreating the Machinedrum TRX-SD snare and TRX-HH/TRX-XT hi-hat machines in Pure Data: the TRX-SD&apos;s dual-resonator body with independent noise/snap envelopes, and the TRX-HH metallic oscillator bank with the XT choke mechanism.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-03-md-trx-sd.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 14: Monomachine Percussion Toolbox</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-14-mnm-perc.htm</link>
+    <description>Recreating the Monomachine&apos;s Percussion Toolbox synthesis engine in Pure Data: the MNM&apos;s built-in drum synthesis voices for bass drum, snare, and hi-hat, how they differ from the Machinedrum TRX approach, and integrating drum voices into a melodic synthesiser&apos;s track architecture.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-14-mnm-perc.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 8: Machinedrum PI — Pitched Instruments</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-08-md-pi.htm</link>
+    <description>Recreating the Machinedrum PI (Pitched Instruments) machines in Pure Data: physical modelling approaches for clave (struck metal rod), maracas (particle noise), bongos/congas (membrane resonance model), and the general PI architecture using Karplus-Strong and resonator-bank synthesis.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-08-md-pi.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 11: Monomachine FM+ Extended FM Engine</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-11-mnm-fmplus.htm</link>
+    <description>Recreating the Monomachine FM+ engine in Pure Data: extended FM synthesis beyond 2-operator VO, including feedback operator chains, algorithm selection between parallel and series operator topologies, and the FM+ parameter set for bass, brass, and complex evolving pads.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-11-mnm-fmplus.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 6: Machinedrum EFM — FM Drum Synthesis</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-06-md-efm.htm</link>
+    <description>Recreating the Machinedrum&apos;s EFM (Extended FM) machines in Pure Data: 2-operator FM synthesis applied to bass drum, snare, hi-hat, and cymbal voices. Operator algorithms, index-to-timbre mapping, and how FM produces percussive envelopes naturally through index decay.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-06-md-efm.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 2: Machinedrum TRX-BD Bass Drum</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-02-md-trx-bd.htm</link>
+    <description>Reverse-engineering and recreating the Machinedrum TRX-BD bass drum machine in Pure Data: two exponentially-swept oscillators, a transient oscillator for click, filtered noise burst, waveshaping distortion, and parameter-lock-ready receivers for all eight track parameters.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-02-md-trx-bd.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 15: Machinedrum and Monomachine Effects in Pd</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-15-fx.htm</link>
+    <description>Recreating the effects processing of the Elektron Machinedrum and Monomachine in Pure Data: MD track compression, global delay and reverb, MNM per-voice chorus/flanger/delay/EQ, the MNM&apos;s stereo effects bus, and how to route all voices through a shared effects chain with send/return architecture.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-15-fx.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 4: Machinedrum TRX-CY Cymbal and TRX-CB Cowbell</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-04-md-trx-cy.htm</link>
+    <description>Recreating the Machinedrum TRX-CY cymbal and TRX-CB cowbell in Pure Data: the CY&apos;s dense inharmonic oscillator bank with ring modulation and very long exponential decay, and the CB&apos;s classic two-oscillator resonant bandpass cowbell architecture from the TR-808.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-04-md-trx-cy.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 13: Monomachine DigiPro Engine</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-13-mnm-digipro.htm</link>
+    <description>Recreating the Monomachine DigiPro synthesis engine in Pure Data: phase distortion synthesis (Casio CZ-style), wavetable scanning, and the DigiPro machine variants (DP SIN, DP TRI, DP SAW, DP SQR, DP TBLX). How phase shaping transforms a sine wave into complex timbres.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-13-mnm-digipro.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 12: Monomachine SuperWave Engine</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-12-mnm-superwave.htm</link>
+    <description>Recreating the Monomachine SuperWave engine in Pure Data: multiple detuned oscillators generating a super-saw or super-square sound, detune spread control, mix between centre and edge oscillators, and how to build a dense unison synthesiser voice from [osc~] instances with shared filter and amplitude envelope.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-12-mnm-superwave.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 9: Monomachine SID Engine</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-09-mnm-sid.htm</link>
+    <description>Recreating the Monomachine&apos;s SID synthesis engine in Pure Data: emulating the MOS6581/8580 SID chip from the Commodore 64, including triangle/sawtooth/square/noise waveforms, pulse width modulation, ring modulation, hard sync, and the SID&apos;s characteristic multimode resonant filter.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-09-mnm-sid.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 7: Machinedrum E12 — Vector Emulation Machines</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-07-md-e12.htm</link>
+    <description>Understanding and recreating the Machinedrum E12 machines in Pure Data: how E12 uses a vector/interpolation model between sampled spectral snapshots to emulate classic drum machines, the E12 parameter set, and a Pd wavetable implementation.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-07-md-e12.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 10: Monomachine VO — Virtual Operator FM</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-10-mnm-vo.htm</link>
+    <description>Recreating the Monomachine VO (Virtual Operator) FM synthesis engine in Pure Data: 2-operator FM with carrier/modulator ratio, feedback FM, ADSR index envelopes, the four VO machine variants (VO SIN, VO TRP, VO EA, VO EB), and musical parameter mapping for bass, lead, and keyboard sounds.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-10-mnm-vo.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 1: Machinedrum and Monomachine Architecture</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-01-overview.htm</link>
+    <description>An engineering overview of the Elektron Machinedrum and Monomachine synthesisers: their machine-type architectures, synthesis families (TRX, EFM, E12, PI; GND, SFX, VO, DIGI), how parameter-per-step locks work, and the approach for recreating each machine type as a Pd patch or external.</description>
+    <pubDate>2026-01-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-01-overview.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+</channel>
+</rss>

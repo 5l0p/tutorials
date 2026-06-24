@@ -1,0 +1,5 @@
+# This directory is a Syncthing folder marker.
+# Do not delete.
+
+folderID: oqbur-ujpsa
+created: 2026-06-11T02:54:34+01:00
