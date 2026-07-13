@@ -189,6 +189,6 @@ See Also
 
 Assembling the Drum Machine - the Lua + Pd pattern system this series extends
 Monomachine VO - the melodic FM engine driven by the melody generator in Part 11
-Lua in an Audio App - how Lua scripts drive Pd via libpd message passing
+Scripting a DSP Pipeline from Lua - how Lua scripts drive Pd via libpd message passing
 Part 2: Pitch as Numbers - MIDI encoding and scale quantisation
 

@@ -269,6 +269,15 @@ element that most closely matches the original's character. All eight parameters
 exposed through $0- receivers for per-step p-lock control from a sequencer.
 
 
+Further Reading
+
+
+Sound on Sound, Synth Secrets - the bass-drum instalments cover exactly this swept-sine-plus-transient chain
+Miller Puckette, The Theory and Technique of Electronic Music - the DSP behind swept sines and waveshaping
+Roland TR-808 - Wikipedia - the analog kick circuit the TRX family models
+Pure Data documentation - reference for [osc~], [vline~], and the other objects used
+
+
 See Also
 
 

@@ -9,6 +9,17 @@ configurations of the Yamaha DX100 or TX81Z. FM+ is the Monomachine's go-to engi
 for brass sounds, complex pads, and evolving harmonic textures.
 
 
+What You Will Learn
+
+
+How FM+ extends the 2-operator VO engine with a third operator, feedback, and algorithm selection
+The three operator topologies - series (cascade), parallel, and hybrid - and how each shapes the spectrum
+Why per-operator index envelopes (one fast, one slow) are the signature of FM brass and string sounds
+How carrier self-feedback adds sawtooth-like harmonic richness without touching the modulator chain
+How the DETUNE parameter beats operators against each other for chorus-like motion
+Parameter recipes for FM brass, hollow bass, evolving pads, marimba, and metallic leads
+
+
 FM+ Architecture
 
 
@@ -186,6 +197,15 @@ textures; parallel produces additive FM sideband clusters; hybrid combines both.
 Per-operator envelopes enable the characteristic FM brass sound (fast M1 for bright
 attack, slow M2 for sustained shimmer). Carrier feedback adds harmonic richness to the
 output without involving the modulator chain.
+
+
+Further Reading
+
+
+Frequency modulation synthesis - Wikipedia - multi-operator algorithms and feedback
+Julius O. Smith III, online DSP books (CCRMA) - cascade versus parallel FM topologies
+Miller Puckette, The Theory and Technique of Electronic Music - building FM operator chains in Pd
+Sound on Sound, Synth Secrets - FM brass and evolving-pad design
 
 
 See Also

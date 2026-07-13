@@ -10,6 +10,17 @@ The VO variants (VO SIN, VO TRP, VO EA, VO EB) provide different waveform combin
 for the carrier and modulator operators.
 
 
+What You Will Learn
+
+
+How the VO engine implements 2-operator FM for melodic sounds (bass, lead, bell, organ), not drums
+Why the modulation-index ADSR is the primary expressive control, and how its attack and decay shape the timbre
+How the four VO variants (SIN, TRP, EA, EB) change the carrier and modulator waveforms
+How DX7-style feedback FM evolves the modulator from subtle warmth through square-like to noise
+Implementing feedback in Pd with a one-sample [delread~]/[delwrite~] loop
+Parameter presets for electric piano, bell, bass, organ, pad, and lead
+
+
 VO Engine Parameters
 
 
@@ -192,6 +203,15 @@ provide sine/sine, triangle-pulse/sine, sawtooth/sine, and square/sine combinati
 The index ADSR is the primary expressive control — high-attack index creates bright
 entry, fast decay from high index creates a plucky transient. Feedback adds harmonic
 richness, evolving from subtle warmth (fb=1) through square-like (fb=5) to noise (fb=7).
+
+
+Further Reading
+
+
+Frequency modulation synthesis - Wikipedia - 2-operator FM, ratios, and feedback
+Julius O. Smith III, online DSP books (CCRMA) - FM spectra and Bessel functions
+Miller Puckette, The Theory and Technique of Electronic Music - the FM chapter with Pd patches
+Sound on Sound, Synth Secrets - FM sound design for melodic voices
 
 
 See Also

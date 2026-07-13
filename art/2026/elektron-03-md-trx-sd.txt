@@ -9,6 +9,17 @@ same oscillator bank — only their default decay times differ, and triggering a
 while a TRX-XT is open chokes the open hat tail. This article recreates both in Pd.
 
 
+What You Will Learn
+
+
+How the TRX-SD builds a snare body from two inharmonically-tuned sine oscillators at a 1:1.52 ratio
+Why the snare needs two independent noise paths - a fast, bright "snap" and a slower "body" noise - with separate filters and decays
+How the TRX-HH/TRX-XT six-oscillator metallic bank plus a highpass filter produces a hi-hat
+How the TONE parameter crossfades the oscillator bank from bright to dark
+How the choke mechanism lets a closed hi-hat cut off an open one
+Wiring every parameter to a p-lockable [receive] so the sequencer can lock it per step
+
+
 TRX-SD Parameters
 
 
@@ -269,6 +280,15 @@ noise paths — a fast snappy highpass-filtered snap, and a slower lowpass body 
 The TRX-HH/XT uses a six-oscillator inharmonic metallic bank with a highpass and noise
 blend. The TRX-HH chokes the TRX-XT by ramping its amplitude envelope to zero on
 trigger. All parameters are p-lock ready via $0- receivers.
+
+
+Further Reading
+
+
+Sound on Sound, Synth Secrets - snare and hi-hat synthesis from noise and tuned resonators
+Miller Puckette, The Theory and Technique of Electronic Music - noise, filtering, and enveloping in Pd
+Julius O. Smith III, online DSP books (CCRMA) - bandpass filtering and the metallic-oscillator model
+Pure Data documentation - [bp~], [hip~], and [clip~] object reference
 
 
 See Also

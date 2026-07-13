@@ -411,6 +411,15 @@ simpledrums/drumachine.pd — a working 16-step kick/snare/hat in minimal
 Pd — serves as the reference starting point and sanity check throughout the build.
 
 
+Further Reading
+
+
+Miller Puckette, The Theory and Technique of Electronic Music - sequencing and message scheduling in Pd
+Pure Data documentation - [metro], [tabread], and subpatch/abstraction reference
+Roland TR-808 - Wikipedia - the 16-step sequencer model this machine follows
+Sound on Sound, Synth Secrets - the full series on the voices being sequenced
+
+
 See Also
 
 

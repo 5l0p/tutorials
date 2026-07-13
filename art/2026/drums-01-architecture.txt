@@ -244,6 +244,15 @@ values sent to an otherwise fixed Pd signal graph. Parts 2–5 implement one voi
 each; Part 6 adds effects; Part 7 assembles everything into a playable machine.
 
 
+Further Reading
+
+
+Sound on Sound, Synth Secrets - the definitive practical series on synthesising each drum voice from scratch
+Miller Puckette, The Theory and Technique of Electronic Music - oscillators, noise, filtering, and envelopes in Pd
+Roland TR-808 - Wikipedia - the archetypal fully-synthesised drum machine
+Pure Data documentation - reference for [vline~], [osc~], [noise~], and the $0 namespacing used here
+
+
 See Also
 
 

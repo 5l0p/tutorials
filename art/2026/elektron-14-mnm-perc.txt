@@ -11,6 +11,16 @@ live programming rather than deep sound design — but they produce a distinctiv
 drum character.
 
 
+What You Will Learn
+
+
+How the Monomachine's Percussion Toolbox voices differ from the Machinedrum's TRX machines - fewer oscillators, fewer parameters
+The PERC BD, SD, and HH architectures and their stripped-down Pd implementations
+Why running drum voices inside a standard MNM track lets them share the filter, amplifier, and FX bus
+How that sharing enables filter sweeps on drums (for example an acid hi-hat) that a dedicated drum machine cannot
+How p-locks turn these voices into melodic kicks and dynamic open/closed hi-hats from the same sequencer
+
+
 Percussion Toolbox Voices
 
 
@@ -192,6 +202,15 @@ filter, amplifier, and effects bus, enabling filter automation and FX routing th
 would be impossible on a dedicated drum machine. All parameters are p-lockable per step,
 enabling melodic kick patterns, dynamic open/closed hi-hat control, and per-step
 timbre variation from the same MNM sequencer used for melodic voices.
+
+
+Further Reading
+
+
+Sound on Sound, Synth Secrets - fast, playable drum-voice synthesis
+Miller Puckette, The Theory and Technique of Electronic Music - enveloped oscillators and noise in Pd
+Roland TR-808 - Wikipedia - the classic reference for synthesised drum voices
+Pure Data documentation - object reference for the voice implementations
 
 
 See Also

@@ -408,6 +408,15 @@ for a single snappy hit, 16 rolls for a full hand-clap fan. The preset system lo
 all 20+ parameters in one Lua table iteration.
 
 
+Further Reading
+
+
+Sound on Sound, Synth Secrets - the clap instalment on burst rolls and pseudo-reverb
+Miller Puckette, The Theory and Technique of Electronic Music - enveloped noise and reverberation in Pd
+Roland TR-808 - Wikipedia - the multi-pulse clap circuit this voice models
+Pure Data documentation - [metro], [vline~], and [rev3~] reference
+
+
 See Also
 
 

@@ -635,11 +635,20 @@ of the HTTP conversation — number of calls, message roles, tool IDs — rather
 natural-language content.
 </p>
 
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://pkg.go.dev/testing">Go testing package</a> - table-driven tests, subtests, and the -update golden-file idiom</li>
+<li><a href="https://pkg.go.dev/net/http/httptest">Go net/http/httptest</a> - the in-process stub server used throughout</li>
+<li><a href="https://github.com/dnaeon/go-vcr">go-vcr</a> - a maintained record/replay ("cassette") library for the pattern shown here</li>
+<li><a href="https://platform.openai.com/docs/api-reference/chat">OpenAI Chat Completions API reference</a> - the request/response shapes being stubbed</li>
+</ul>
+
 <h3>See Also</h3>
 
 <ul>
 <li><a href="llm-04-agent-loop.htm">Building a Simple Agent Loop</a> - the loop this article tests</li>
-<li><a href="llm-05-skills-registry.htm">Skills &amp; Structured Tool Libraries</a> - the registry tested in isolation above</li>
+<li><a href="llm-05-skills.htm">Skills &amp; Structured Tool Libraries</a> - the registry tested in isolation above</li>
 <li><a href="llm-14-full-agent.htm">Putting It Together: A Full Agent</a> - integration point for all skills and tools</li>
 </ul>
 

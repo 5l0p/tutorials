@@ -356,6 +356,15 @@ else. Write a FindXxx.cmake module when a dependency has no CMake package
 config. Record upstream source, version, and licence for every vendored file.
 
 
+Further Reading
+
+
+Pro Git: Git Submodules - the reference for pinning a dependency by commit
+pkg-config - how libraries advertise their compiler and linker flags
+stb single-file public-domain libraries - the canonical single-header pattern
+CMake find_package documentation - module vs config mode and imported targets
+
+
 See Also
 
 

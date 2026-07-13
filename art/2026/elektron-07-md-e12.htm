@@ -85,6 +85,17 @@ sample, while remaining more controllable than pure synthesis. This article expl
 the E12 model and implements an approximation in Pd using wavetables.
 </p>
 
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What "vector synthesis applied to stored waveforms" means, and why E12 machines are neither pure synthesis nor plain sample playback</li>
+<li>How bilinear interpolation between four spectral snapshots (A, B, C, D) produces timbres present in no single sample</li>
+<li>How the TUNE B and S/H parameters act as the X/Y vector position over those four corner waveforms</li>
+<li>Implementing the model in Pd with four <code>[tabread4~]</code> oscillators sharing one <code>[phasor~]</code></li>
+<li>Two ways to populate the wavetables: Fourier synthesis from known spectra, or FFT analysis of original recordings</li>
+<li>What the START and LOOP parameters do to a wavetable-based (rather than sample-based) voice</li>
+</ul>
+
 <h3>What the E12 Machines Are</h3>
 
 <p>
@@ -270,12 +281,21 @@ analysis of original recordings, or from Fourier synthesis based on known spectr
 characteristics of the target machines.
 </p>
 
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/E-mu_SP-1200">E-mu SP-1200 - Wikipedia</a> - one of the 12-bit machines the E12 emulates</li>
+<li><a href="https://en.wikipedia.org/wiki/Wavetable_synthesis">Wavetable synthesis - Wikipedia</a> - the stored-waveform model underneath vector interpolation</li>
+<li><a href="http://msp.ucsd.edu/techniques.htm">Miller Puckette, The Theory and Technique of Electronic Music</a> - wavetable oscillators and interpolation in Pd</li>
+<li><a href="https://ccrma.stanford.edu/~jos/">Julius O. Smith III, online DSP books (CCRMA)</a> - table lookup and interpolation error</li>
+</ul>
+
 <h3>See Also</h3>
 
 <ul>
 <li><a href="elektron-06-md-efm.htm">Machinedrum EFM Machines</a> - FM synthesis as an alternative to wavetable emulation</li>
 <li><a href="elektron-08-md-pi.htm">Machinedrum PI Machines</a> - physically modelled pitched percussion</li>
-<li><a href="dsp-10-wavetable-oscillators.htm">Wavetable Oscillators</a> - the [tabread4~] oscillator technique used here</li>
+<li><a href="dsp-15-wavetable.htm">Wavetable Oscillators</a> - the [tabread4~] oscillator technique used here</li>
 </ul>
 
 <!-- article end -->

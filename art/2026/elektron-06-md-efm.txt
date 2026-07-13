@@ -233,6 +233,15 @@ a denser cymbal spectrum. All implementations use [osc~] with signal-rate
 frequency modulation and [vline~] index envelopes.
 
 
+Further Reading
+
+
+Frequency modulation synthesis - Wikipedia - sidebands, C:M ratios, and Bessel amplitudes
+Julius O. Smith III, online DSP books (CCRMA) - Chowning FM and its spectra
+Miller Puckette, The Theory and Technique of Electronic Music - the FM chapter, worked in Pd
+Sound on Sound, Synth Secrets - FM percussion in practice
+
+
 See Also
 
 

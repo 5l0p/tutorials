@@ -376,6 +376,15 @@ new message. X controls brightness (BaseFrequency offset); Y controls openness
 (DcyHi + DcyNoise).
 
 
+Further Reading
+
+
+Sound on Sound, Synth Secrets - the cymbal/metallic instalments explain the inharmonic oscillator bank
+Miller Puckette, The Theory and Technique of Electronic Music - inharmonic spectra and highpass shaping
+Julius O. Smith III, online DSP books (CCRMA) - square-wave spectra and filter design
+Roland TR-808 - Wikipedia - the six-oscillator hi-hat circuit this voice descends from
+
+
 See Also
 
 

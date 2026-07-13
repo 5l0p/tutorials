@@ -9,6 +9,17 @@ instrument model. Understanding the physical acoustics of each instrument is the
 key to recreating the PI machines accurately in Pd.
 
 
+What You Will Learn
+
+
+Why each PI machine is tuned to a specific physical-instrument model rather than a general drum voice
+How the CLAVE model uses a damped resonator bank at free-free cylindrical-beam mode ratios
+How the MARACA model builds a bead-shaker sound from highpass-filtered noise and an optional bead-delay
+How the bongo/conga models use circular-membrane (Bessel) mode ratios with independently decaying partials
+How the TIMB model adds a fast, high-frequency shell-ring on top of the membrane modes
+Why getting each instrument's inharmonic modal ratios right is what makes it recognisable
+
+
 PI Machine Roster
 
 
@@ -224,10 +235,19 @@ that define its acoustic identity, and these must be correct for the instrument 
 recognisable.
 
 
+Further Reading
+
+
+Physical modelling synthesis - Wikipedia - the family of models the PI machines belong to
+Karplus-Strong string synthesis - Wikipedia - a struck-resonator model closely related to these voices
+Julius O. Smith III, Physical Audio Signal Processing - modal synthesis and circular-membrane (Bessel) modes
+Miller Puckette, The Theory and Technique of Electronic Music - resonators and damped oscillator banks in Pd
+
+
 See Also
 
 
-Monomachine GND Machines - basic oscillator-based synthesis in the MNM
+Monomachine SID Engine - the first Monomachine engine, oscillator-based synthesis
 TRX-MA Metallic Percussion - related resonator bank approach for metallic sounds
-Physical Modelling Synthesis - Karplus-Strong and waveguide approaches for membrane models
+Biquad Filters - resonant filters for building the modal/resonator banks these models use
 

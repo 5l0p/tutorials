@@ -277,10 +277,19 @@ with phase-reset messages, and build the filter as four cascaded [lop~]
 with mild feedback for resonance.
 
 
+Further Reading
+
+
+MOS Technology 6581 (SID) - Wikipedia - the chip's oscillators, filter, and quirks
+SID - C64-Wiki - register-level detail on waveforms, ring mod, and sync
+Miller Puckette, The Theory and Technique of Electronic Music - phasor-based waveform construction
+Julius O. Smith III, online DSP books (CCRMA) - oscillator and filter theory behind the emulation
+
+
 See Also
 
 
 Monomachine VO Engine - 2-op FM, the MNM's next synthesis engine
 Machinedrum and Monomachine Architecture - the overall engine list and p-lock system
-Filters in C - the theory behind the SID 4-pole filter implementation
+Biquad Filters - the theory behind the SID 4-pole filter implementation
 

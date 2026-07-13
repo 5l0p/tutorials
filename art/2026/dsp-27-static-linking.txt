@@ -336,6 +336,15 @@ for command-line tools but not for plugin formats. Test on a clean machine befor
 distribution.
 
 
+Further Reading
+
+
+musl libc - the libc that makes portable fully-static Linux binaries practical
+GNU ld manual - -Bstatic/-Bdynamic and the rest of the linker's behaviour
+Ulrich Drepper, How to Write Shared Libraries - the definitive account of dynamic linking on Linux
+UPX - the Ultimate Packer for eXecutables - the compressor used here, with its caveats
+
+
 See Also
 
 

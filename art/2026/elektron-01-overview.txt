@@ -15,7 +15,7 @@ What You Will Learn
 
 What "machine type" means on each instrument and why it matters for synthesis
 The four Machinedrum machine families: TRX, EFM, E12, PI
-The four Monomachine synthesis engines: GND, SFX, VO, DIGI
+The Monomachine synthesis engines: SID, FM (VO and FM+), SuperWave, DigiPro, and the Percussion toolbox
 How parameter-per-step locks work and what they imply for synthesis design
 The common architecture shared by all Pd recreations in this series
 What "recreating as a Pd external" means vs a vanilla Pd patch
@@ -36,10 +36,10 @@ Four synthesis families are available:
 
 
 FamilyNameArchitectureArticles
-TRXTurbo Resonant eXtendedAnalog-modeled subtractive synthesisParts 2–6
-EFMExtended FMMulti-operator FM synthesisPart 7
-E12Emulation 12Vector/PCM emulation of classic machinesPart 8
-PIPitched InstrumentsPhysical modelling / resonant synthesisPart 9
+TRXTurbo Resonant eXtendedAnalog-modeled subtractive synthesisParts 2–5
+EFMExtended FMMulti-operator FM synthesisPart 6
+E12Emulation 12Vector/PCM emulation of classic machinesPart 7
+PIPitched InstrumentsPhysical modelling / resonant synthesisPart 8
 
 
 
@@ -155,13 +155,12 @@ Series Outline
 
 
 Part 2: Machinedrum TRX-BD — bass drum synthesis
-Part 3: Machinedrum TRX-SD — snare drum synthesis
-Part 4: Machinedrum TRX-HH and TRX-XT — hi-hats
-Part 5: Machinedrum TRX-CY and TRX-CB — cymbal and cowbell
-Part 6: Machinedrum TRX-CP, TRX-RS, TRX-MA — clap, rimshot, metallic
-Part 7: Machinedrum EFM — FM synthesis drum machines
-Part 8: Machinedrum E12 — vector emulation machines
-Part 9: Machinedrum PI — pitched instruments
+Part 3: Machinedrum TRX-SD and TRX-HH/TRX-XT — snare and hi-hats
+Part 4: Machinedrum TRX-CY and TRX-CB — cymbal and cowbell
+Part 5: Machinedrum TRX-CP, TRX-RS, TRX-MA — clap, rimshot, metallic
+Part 6: Machinedrum EFM — FM synthesis drum machines
+Part 7: Machinedrum E12 — vector emulation machines
+Part 8: Machinedrum PI — pitched instruments
 Part 9: Monomachine SID — MOS6581/8580 SID chip emulation
 Part 10: Monomachine VO — Virtual Operator 2-op FM
 Part 11: Monomachine FM+ — extended 3-operator FM
@@ -169,6 +168,29 @@ Part 12: Monomachine SuperWave — detuned multi-oscillator unison
 Part 13: Monomachine DigiPro — phase distortion and wavetable oscillators
 Part 14: Monomachine Percussion Toolbox — built-in drum voices
 Part 15: Effects — MD and MNM effects chains in Pd
+
+
+Summary
+
+
+The Machinedrum organises drum synthesis into four machine families — TRX
+(analog-modeled subtractive), EFM (multi-operator FM), E12 (vector/PCM emulation),
+and PI (physical modelling) — while the Monomachine offers a SID-chip emulation, two
+FM engines (VO and FM+), a detuned-unison SuperWave engine, a phase-distortion and
+wavetable DigiPro engine, and a built-in Percussion toolbox. Every machine type in this
+series maps onto one common Pd voice template: message-rate, p-lockable parameter
+receivers feeding a machine-specific synthesis section, an optional shared filter (on the
+Monomachine), and a [vline~] amplitude envelope. Once you have that template,
+each of the following articles is really just the synthesis section that plugs into it.
+
+
+Further Reading
+
+
+Miller Puckette, The Theory and Technique of Electronic Music - the DSP foundations behind every Pd patch in this series
+Pure Data documentation - object reference for the objects used throughout
+Sound on Sound, Synth Secrets - a long-running practical series on subtractive, FM, and percussion synthesis
+Elektron - official site and downloadable Machinedrum/Monomachine user manuals
 
 
 See Also

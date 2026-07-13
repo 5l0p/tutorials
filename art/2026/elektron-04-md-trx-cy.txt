@@ -10,6 +10,17 @@ a gated amplitude envelope. Both are illuminating targets for Pd recreation beca
 they expose how a small number of techniques produce very recognisable sounds.
 
 
+What You Will Learn
+
+
+How a dense inharmonic oscillator bank plus ring modulation (the METAL parameter) approximates a cymbal's spectrum
+Why a cymbal uses dual-band decay envelopes, and how TONE balances the two bands
+How the TR-808 cowbell architecture - two square oscillators through a resonant bandpass - is reproduced as the TRX-CB
+Why the resonant bandpass filter, not the oscillators, is the cowbell's sonic identity
+How the BEAT parameter's inharmonic frequency ratio produces the cowbell's metallic shimmer
+Mapping the Machinedrum resonance control onto Pd's [bp~] Q argument
+
+
 TRX-CY: Cymbal Synthesis
 
 TRX-CY Parameters
@@ -252,6 +263,15 @@ a frequency sweep on attack. The TRX-CB follows the TR-808 cowbell architecture:
 square-wave oscillators at an inharmonic interval, summed and run through a resonant
 bandpass filter. The bandpass filter is the key identity element — it rings the selected
 frequency band, producing the characteristic metallic cowbell ping.
+
+
+Further Reading
+
+
+Roland TR-808 - Wikipedia - the cowbell circuit the TRX-CB reproduces
+Sound on Sound, Synth Secrets - synthesising cymbals and metallic percussion
+Miller Puckette, The Theory and Technique of Electronic Music - ring modulation and inharmonic spectra
+Julius O. Smith III, online DSP books (CCRMA) - resonant bandpass design
 
 
 See Also

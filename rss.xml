@@ -2009,7 +2009,7 @@
   <item>
     <title>Elektron Synthesis - Part 1: Machinedrum and Monomachine Architecture</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-01-overview.htm</link>
-    <description>An engineering overview of the Elektron Machinedrum and Monomachine synthesisers: their machine-type architectures, synthesis families (TRX, EFM, E12, PI; GND, SFX, VO, DIGI), how parameter-per-step locks work, and the approach for recreating each machine type as a Pd patch or external.</description>
+    <description>An engineering overview of the Elektron Machinedrum and Monomachine synthesisers: their machine-type architectures, synthesis families (TRX, EFM, E12, PI; SID, VO, FM+, SuperWave, DigiPro), how parameter-per-step locks work, and the approach for recreating each machine type as a Pd patch or external.</description>
     <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-01-overview.htm</guid>
     <category>c</category>

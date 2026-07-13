@@ -84,6 +84,17 @@ instrument model. Understanding the physical acoustics of each instrument is the
 key to recreating the PI machines accurately in Pd.
 </p>
 
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why each PI machine is tuned to a specific physical-instrument model rather than a general drum voice</li>
+<li>How the CLAVE model uses a damped resonator bank at free-free cylindrical-beam mode ratios</li>
+<li>How the MARACA model builds a bead-shaker sound from highpass-filtered noise and an optional bead-delay</li>
+<li>How the bongo/conga models use circular-membrane (Bessel) mode ratios with independently decaying partials</li>
+<li>How the TIMB model adds a fast, high-frequency shell-ring on top of the membrane modes</li>
+<li>Why getting each instrument's inharmonic modal ratios right is what makes it recognisable</li>
+</ul>
+
 <h3>PI Machine Roster</h3>
 
 <table border="1" cellpadding="4" cellspacing="0">
@@ -299,12 +310,21 @@ that define its acoustic identity, and these must be correct for the instrument 
 recognisable.
 </p>
 
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Physical_modelling_synthesis">Physical modelling synthesis - Wikipedia</a> - the family of models the PI machines belong to</li>
+<li><a href="https://en.wikipedia.org/wiki/Karplus%E2%80%93Strong_string_synthesis">Karplus-Strong string synthesis - Wikipedia</a> - a struck-resonator model closely related to these voices</li>
+<li><a href="https://ccrma.stanford.edu/~jos/pasp/">Julius O. Smith III, Physical Audio Signal Processing</a> - modal synthesis and circular-membrane (Bessel) modes</li>
+<li><a href="http://msp.ucsd.edu/techniques.htm">Miller Puckette, The Theory and Technique of Electronic Music</a> - resonators and damped oscillator banks in Pd</li>
+</ul>
+
 <h3>See Also</h3>
 
 <ul>
-<li><a href="elektron-09-mnm-gnd.htm">Monomachine GND Machines</a> - basic oscillator-based synthesis in the MNM</li>
+<li><a href="elektron-09-mnm-sid.htm">Monomachine SID Engine</a> - the first Monomachine engine, oscillator-based synthesis</li>
 <li><a href="elektron-05-md-trx-misc.htm">TRX-MA Metallic Percussion</a> - related resonator bank approach for metallic sounds</li>
-<li><a href="dsp-17-physical-modelling.htm">Physical Modelling Synthesis</a> - Karplus-Strong and waveguide approaches for membrane models</li>
+<li><a href="dsp-05-biquad.htm">Biquad Filters</a> - resonant filters for building the modal/resonator banks these models use</li>
 </ul>
 
 <!-- article end -->

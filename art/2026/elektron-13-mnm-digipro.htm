@@ -85,6 +85,17 @@ produces complex, harmonically rich timbres from a single oscillator cycle witho
 aliasing artifacts that would occur from hard-clipping the waveform directly.
 </p>
 
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>What phase distortion synthesis is, and why it adds harmonics without the aliasing of hard-clipping</li>
+<li>How the Casio CZ piecewise-linear distortion function reshapes the phase ramp before lookup</li>
+<li>How the distortion amount D sweeps the spectrum from a pure sine to near-square</li>
+<li>How CZ-style "resonance" adds a sub-cycle phase reset for formant-like spectra</li>
+<li>How the DP TBLX variant scans and interpolates between stored wavetables instead</li>
+<li>The five DigiPro variants (DP SIN, TRI, SAW, SQR, TBLX) and their characters</li>
+</ul>
+
 <h3>DigiPro Machine Variants</h3>
 
 <table border="1" cellpadding="4" cellspacing="0">
@@ -277,12 +288,21 @@ with wavetable scanning — smoothly interpolating between stored waveform table
 TABLE parameter. All variants share the MNM's 2-pole multimode filter and amplitude ADSR.
 </p>
 
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Phase_distortion_synthesis">Phase distortion synthesis - Wikipedia</a> - the technique behind the DP machines</li>
+<li><a href="https://en.wikipedia.org/wiki/Casio_CZ_synthesizers">Casio CZ synthesizers - Wikipedia</a> - the synths whose distortion model this reproduces</li>
+<li><a href="http://msp.ucsd.edu/techniques.htm">Miller Puckette, The Theory and Technique of Electronic Music</a> - waveshaping and phase manipulation in Pd</li>
+<li><a href="https://en.wikipedia.org/wiki/Wavetable_synthesis">Wavetable synthesis - Wikipedia</a> - the scanning model used by DP TBLX</li>
+</ul>
+
 <h3>See Also</h3>
 
 <ul>
 <li><a href="elektron-12-mnm-superwave.htm">Monomachine SuperWave Engine</a> - detuned unison oscillators as an alternative approach</li>
 <li><a href="elektron-14-mnm-perc.htm">Monomachine Percussion Toolbox</a> - built-in drum voices using DigiPro-related techniques</li>
-<li><a href="dsp-10-wavetable-oscillators.htm">Wavetable Oscillators</a> - [tabread4~] interpolated wavetable scanning technique</li>
+<li><a href="dsp-15-wavetable.htm">Wavetable Oscillators</a> - [tabread4~] interpolated wavetable scanning technique</li>
 </ul>
 
 <!-- article end -->

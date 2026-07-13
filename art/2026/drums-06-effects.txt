@@ -342,6 +342,15 @@ dry/wet blend for seamless bypass. Control from Lua by sending to $0-eff-
 namespaced receivers.
 
 
+Further Reading
+
+
+Airwindows - Chris Johnson's open-source (MIT) DSP plugins wrapped by these externals
+airwindows/airwindows on GitHub - the plugin source behind mackity, totape, dubplate, and the rest
+Miller Puckette, The Theory and Technique of Electronic Music - saturation, EQ, and chorus/delay theory
+Pure Data documentation - loading externals with [declare] and search paths
+
+
 See Also
 
 

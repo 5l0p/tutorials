@@ -424,6 +424,15 @@ $0- receivers. X maps to pitch, Y maps to decay — the two axes that most
 characterise a kick drum's identity.
 
 
+Further Reading
+
+
+Sound on Sound, Synth Secrets - the bass-drum instalments cover the pitch-sweep-plus-body approach used here
+Miller Puckette, The Theory and Technique of Electronic Music - swept sines, waveshaping, and enveloping
+Roland TR-808 - Wikipedia - the bridged-T oscillator kick this voice models
+Pure Data documentation - [osc~], [vline~], and [clip~] reference
+
+
 See Also
 
 

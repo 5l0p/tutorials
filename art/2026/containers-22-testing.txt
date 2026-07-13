@@ -555,6 +555,15 @@ membership and resource limits. Wrap the mini runtime in a RuntimeHarness
 so each test is a one-liner.
 
 
+Further Reading
+
+
+Go testing package - t.Cleanup, t.Skip, t.TempDir, and subtests
+namespaces(7) - the /proc/self/ns interface the tests assert on
+cgroups(7) - the /sys/fs/cgroup interface being verified
+GitHub Actions documentation - running privileged integration tests in CI
+
+
 See Also
 
 

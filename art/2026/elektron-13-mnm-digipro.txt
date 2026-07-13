@@ -10,6 +10,17 @@ produces complex, harmonically rich timbres from a single oscillator cycle witho
 aliasing artifacts that would occur from hard-clipping the waveform directly.
 
 
+What You Will Learn
+
+
+What phase distortion synthesis is, and why it adds harmonics without the aliasing of hard-clipping
+How the Casio CZ piecewise-linear distortion function reshapes the phase ramp before lookup
+How the distortion amount D sweeps the spectrum from a pure sine to near-square
+How CZ-style "resonance" adds a sub-cycle phase reset for formant-like spectra
+How the DP TBLX variant scans and interpolates between stored wavetables instead
+The five DigiPro variants (DP SIN, TRI, SAW, SQR, TBLX) and their characters
+
+
 DigiPro Machine Variants
 
 
@@ -177,6 +188,15 @@ content from pure sine (D=0) to square-wave-rich (D=1). The resonance parameter 
 sub-cycle reset for formant-like spectra. The DP TBLX variant replaces phase distortion
 with wavetable scanning — smoothly interpolating between stored waveform tables via the
 TABLE parameter. All variants share the MNM's 2-pole multimode filter and amplitude ADSR.
+
+
+Further Reading
+
+
+Phase distortion synthesis - Wikipedia - the technique behind the DP machines
+Casio CZ synthesizers - Wikipedia - the synths whose distortion model this reproduces
+Miller Puckette, The Theory and Technique of Electronic Music - waveshaping and phase manipulation in Pd
+Wavetable synthesis - Wikipedia - the scanning model used by DP TBLX
 
 
 See Also

@@ -9,6 +9,17 @@ overall mix. Understanding how the effects work helps you replicate the Elektron
 per-voice FX sends, and the global effects bus shared across all tracks.
 
 
+What You Will Learn
+
+
+The Machinedrum's effects architecture: per-track sends into a global stereo delay and a plate reverb
+How to build a stereo delay with highpass/lowpass filtering in the feedback path, including ping-pong routing
+The Monomachine's richer chain: per-voice EQ and distortion plus a modulated delay, chorus/flanger, and reverb
+How a single parametric peaking EQ maps to a [biquad~] via the Audio EQ Cookbook formulae
+How a modulated delay line becomes chorus at low feedback and a flanger at high feedback
+The send/return signal routing that ties every voice to a shared effects bus
+
+
 Machinedrum Effects Architecture
 
 
@@ -277,10 +288,19 @@ effects bus. In Pd, implement with [delread~]/[delwrite~]
 for delays, [rev3~] for reverb, and [biquad~] for parametric EQ.
 
 
+Further Reading
+
+
+Robert Bristow-Johnson, Audio EQ Cookbook - the peaking-EQ biquad coefficients used here
+Miller Puckette, The Theory and Technique of Electronic Music - delay lines, reverberation, and modulated delays
+Julius O. Smith III, Physical Audio Signal Processing - reverberator and delay-network design
+Pure Data documentation - [delread~], [delwrite~], [biquad~], and [rev3~]
+
+
 See Also
 
 
 Machinedrum and Monomachine Architecture - the overall signal flow context
 Per-Channel Effects with Airwindows - alternative approach using airwindows externals
-Send and Receive in libpd - the send/receive pattern for routing in Pd
+Sending Messages into libpd - the send/receive pattern for routing in Pd
 

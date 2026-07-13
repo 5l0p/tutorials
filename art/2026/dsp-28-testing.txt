@@ -417,6 +417,15 @@ run them all from a make test target. Define RUNNING_UNIT_TESTS
 to suppress device-opening code so tests run in CI without a sound card.
 
 
+Further Reading
+
+
+Unity test framework (ThrowTheSwitch) - the single-header C test framework used here
+ThrowTheSwitch: Unity - assertion reference and getting-started guide
+SciPy signal processing reference - generating the golden impulse responses to assert against
+GitHub Actions documentation - running the test binary in CI
+
+
 See Also
 
 

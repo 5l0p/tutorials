@@ -10,6 +10,17 @@ engine implements it digitally with N oscillators pitched at calculated detune o
 This article builds a complete SuperWave implementation in Pd.
 
 
+What You Will Learn
+
+
+How stacking 2-7 detuned oscillators produces the JP-8000-style "super saw" sound
+How to convert a detune spread in cents into per-oscillator frequency multipliers
+Why the centre oscillator is weighted louder than the edges, and how MIX morphs that distribution
+Why randomising each oscillator's initial phase removes the comb-filtered attack
+Building saw, square, and triangle SuperWave variants from [phasor~]
+Implementing the Monomachine's shared 2-pole state-variable filter with [vcf~]
+
+
 SuperWave Parameters
 
 
@@ -209,6 +220,15 @@ controls the chorus width; the MIX parameter controls centre/edge amplitude bala
 Seven oscillators at 10 cents spread with JP-8000-style amplitude distribution produces
 the canonical super saw sound. Narrower detune (1–3 cents) produces subtle ensemble
 thickness; wider detune (20+ cents) produces obvious vibrato/chorus character.
+
+
+Further Reading
+
+
+Roland JP-8000 - Wikipedia - the synth that popularised the super-saw
+Miller Puckette, The Theory and Technique of Electronic Music - detuned-oscillator ensembles and phase
+Julius O. Smith III, online DSP books (CCRMA) - bandlimited sawtooths and the state-variable filter
+Pure Data documentation - [phasor~], [wrap~], and [vcf~] reference
 
 
 See Also

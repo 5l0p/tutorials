@@ -365,6 +365,15 @@ parallel. These patterns scale from a five-file synthesiser to a hundred-file DS
 framework without requiring a build system generator.
 
 
+Further Reading
+
+
+GNU Make Manual - the complete reference for variables, pattern rules, and automatic variables
+Peter Miller, Recursive Make Considered Harmful - the classic argument for a single non-recursive Makefile
+GCC Preprocessor Options - exactly what -MMD and -MP generate
+POSIX make specification (The Open Group) - the portable subset every make implements
+
+
 See Also
 
 

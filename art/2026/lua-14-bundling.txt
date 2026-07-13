@@ -459,6 +459,15 @@ luaL_loadbuffer for fully self-contained deployments. Record upstream
 source, version, and licence for every vendored module.
 
 
+Further Reading
+
+
+Lua 5.4 Reference Manual: Modules (package.path/cpath) - how require resolves modules
+Programming in Lua - the "Modules and Packages" chapters, online
+LuaRocks - the --tree flag and offline install workflow
+Penlight - one of the libraries vendored in the worked example
+
+
 See Also
 
 

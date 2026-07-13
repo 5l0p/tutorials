@@ -84,6 +84,17 @@ overall mix. Understanding how the effects work helps you replicate the Elektron
 per-voice FX sends, and the global effects bus shared across all tracks.
 </p>
 
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>The Machinedrum's effects architecture: per-track sends into a global stereo delay and a plate reverb</li>
+<li>How to build a stereo delay with highpass/lowpass filtering in the feedback path, including ping-pong routing</li>
+<li>The Monomachine's richer chain: per-voice EQ and distortion plus a modulated delay, chorus/flanger, and reverb</li>
+<li>How a single parametric peaking EQ maps to a <code>[biquad~]</code> via the Audio EQ Cookbook formulae</li>
+<li>How a modulated delay line becomes chorus at low feedback and a flanger at high feedback</li>
+<li>The send/return signal routing that ties every voice to a shared effects bus</li>
+</ul>
+
 <h3>Machinedrum Effects Architecture</h3>
 
 <p>
@@ -352,12 +363,21 @@ effects bus. In Pd, implement with <code>[delread~]</code>/<code>[delwrite~]</co
 for delays, <code>[rev3~]</code> for reverb, and <code>[biquad~]</code> for parametric EQ.
 </p>
 
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://webaudio.github.io/Audio-EQ-Cookbook/audio-eq-cookbook.html">Robert Bristow-Johnson, Audio EQ Cookbook</a> - the peaking-EQ biquad coefficients used here</li>
+<li><a href="http://msp.ucsd.edu/techniques.htm">Miller Puckette, The Theory and Technique of Electronic Music</a> - delay lines, reverberation, and modulated delays</li>
+<li><a href="https://ccrma.stanford.edu/~jos/pasp/">Julius O. Smith III, Physical Audio Signal Processing</a> - reverberator and delay-network design</li>
+<li><a href="https://puredata.info/docs">Pure Data documentation</a> - [delread~], [delwrite~], [biquad~], and [rev3~]</li>
+</ul>
+
 <h3>See Also</h3>
 
 <ul>
 <li><a href="elektron-01-overview.htm">Machinedrum and Monomachine Architecture</a> - the overall signal flow context</li>
 <li><a href="drums-06-effects.htm">Per-Channel Effects with Airwindows</a> - alternative approach using airwindows externals</li>
-<li><a href="libpd-08-send-receive.htm">Send and Receive in libpd</a> - the send/receive pattern for routing in Pd</li>
+<li><a href="libpd-05-send-messages.htm">Sending Messages into libpd</a> - the send/receive pattern for routing in Pd</li>
 </ul>
 
 <!-- article end -->

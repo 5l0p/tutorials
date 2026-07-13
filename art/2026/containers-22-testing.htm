@@ -630,6 +630,15 @@ membership and resource limits. Wrap the mini runtime in a <code>RuntimeHarness<
 so each test is a one-liner.
 </p>
 
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://pkg.go.dev/testing">Go testing package</a> - t.Cleanup, t.Skip, t.TempDir, and subtests</li>
+<li><a href="https://man7.org/linux/man-pages/man7/namespaces.7.html">namespaces(7)</a> - the /proc/self/ns interface the tests assert on</li>
+<li><a href="https://man7.org/linux/man-pages/man7/cgroups.7.html">cgroups(7)</a> - the /sys/fs/cgroup interface being verified</li>
+<li><a href="https://docs.github.com/en/actions">GitHub Actions documentation</a> - running privileged integration tests in CI</li>
+</ul>
+
 <h3>See Also</h3>
 
 <ul>

@@ -10,6 +10,17 @@ sample, while remaining more controllable than pure synthesis. This article expl
 the E12 model and implements an approximation in Pd using wavetables.
 
 
+What You Will Learn
+
+
+What "vector synthesis applied to stored waveforms" means, and why E12 machines are neither pure synthesis nor plain sample playback
+How bilinear interpolation between four spectral snapshots (A, B, C, D) produces timbres present in no single sample
+How the TUNE B and S/H parameters act as the X/Y vector position over those four corner waveforms
+Implementing the model in Pd with four [tabread4~] oscillators sharing one [phasor~]
+Two ways to populate the wavetables: Fourier synthesis from known spectra, or FFT analysis of original recordings
+What the START and LOOP parameters do to a wavetable-based (rather than sample-based) voice
+
+
 What the E12 Machines Are
 
 
@@ -193,6 +204,15 @@ message-rate mix coefficients derived from the two vector control parameters. Th
 wavetable content determines which instrument is emulated — populate from Fourier
 analysis of original recordings, or from Fourier synthesis based on known spectral
 characteristics of the target machines.
+
+
+Further Reading
+
+
+E-mu SP-1200 - Wikipedia - one of the 12-bit machines the E12 emulates
+Wavetable synthesis - Wikipedia - the stored-waveform model underneath vector interpolation
+Miller Puckette, The Theory and Technique of Electronic Music - wavetable oscillators and interpolation in Pd
+Julius O. Smith III, online DSP books (CCRMA) - table lookup and interpolation error
 
 
 See Also

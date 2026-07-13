@@ -482,6 +482,15 @@ series apply directly. For hardware-dependent tests, redirect Unity output to UA
 read it from a host machine with a serial terminal or an automated test script.
 
 
+Further Reading
+
+
+Unity test framework (ThrowTheSwitch) - the C test framework and its UnityOutputChar hook
+Raspberry Pi Pico C/C++ SDK documentation - the SDK headers the stubs shadow
+OpenOCD - programming and resetting the board over SWD for on-target tests
+James Grenning, Test-Driven Development for Embedded C - the standard text on host-testing embedded code
+
+
 See Also
 
 

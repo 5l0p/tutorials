@@ -477,6 +477,15 @@ logic tests anywhere; run rendering tests in CI with xvfb-run to provide
 a virtual display without a physical GPU.
 
 
+Further Reading
+
+
+Catch2 - the C++ test framework, with its tutorial and reference docs
+openFrameworks documentation - ofFbo, ofPixels, and ofAppNoWindow reference
+xvfb-run(1) - running the GL render tests headlessly in CI
+GitHub Actions documentation - the CI jobs that build and run these tests
+
+
 See Also
 
 

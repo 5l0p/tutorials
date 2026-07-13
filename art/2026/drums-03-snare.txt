@@ -335,6 +335,15 @@ Y maps to noise decay (tight→sizzling). The same extend-decay envelope pattern
 Part 1 drives both the sine amplitude and noise paths independently.
 
 
+Further Reading
+
+
+Sound on Sound, Synth Secrets - synthesising snares from tuned bodies and filtered noise
+Miller Puckette, The Theory and Technique of Electronic Music - noise sources and bandpass shaping in Pd
+Julius O. Smith III, online DSP books (CCRMA) - filter theory behind the dual-filter noise path
+Pure Data documentation - [bp~], [hip~], and delay-line reference
+
+
 See Also
 
 

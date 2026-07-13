@@ -10,6 +10,16 @@ modes of a drum rim being struck. The TRX-MA is a pitched metallic resonator use
 for timbales, agogos, and other metallic pitched percussion.
 
 
+What You Will Learn
+
+
+How a metro-driven burst roll into a single bandpass-filtered noise source, plus a built-in reverb, makes the TRX-CP clap
+How the TRX-RS models a rimshot as two independent resonators - drum body and metal rim - plus a snap click
+How the TRX-MA maps its METAL parameter to partial spacing, sweeping from harmonic (bell) to inharmonic (metallic)
+Why the specific inharmonic modal ratios are what make each percussion instrument recognisable
+Building all three voices from [vline~] envelopes and p-lockable receivers
+
+
 TRX-CP: Clap
 
 TRX-CP Parameters
@@ -248,6 +258,15 @@ resonant modes of a struck rim — one low resonator (drum body) and one high re
 (metal rim), with independent decays and a snap click. The TRX-MA is a parametric
 metallic resonator where the METAL parameter controls partial spacing from harmonic
 (bell) to inharmonic (metallic cymbal). All three expose p-lock-compatible receivers.
+
+
+Further Reading
+
+
+Sound on Sound, Synth Secrets - claps, rimshots, and tuned metallic percussion
+Miller Puckette, The Theory and Technique of Electronic Music - modal synthesis and enveloped noise
+Julius O. Smith III, online DSP books (CCRMA) - resonators and inharmonic partial ratios
+Pure Data documentation - [metro], [delay], and [vline~] timing objects
 
 
 See Also

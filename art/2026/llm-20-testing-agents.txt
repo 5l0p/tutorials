@@ -560,6 +560,15 @@ of the HTTP conversation — number of calls, message roles, tool IDs — rather
 natural-language content.
 
 
+Further Reading
+
+
+Go testing package - table-driven tests, subtests, and the -update golden-file idiom
+Go net/http/httptest - the in-process stub server used throughout
+go-vcr - a maintained record/replay ("cassette") library for the pattern shown here
+OpenAI Chat Completions API reference - the request/response shapes being stubbed
+
+
 See Also
 
 
