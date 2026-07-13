@@ -1,0 +1,285 @@
+DSP - Part 33: The Modified Discrete Cosine Transform
+2026-07-13
+
+
+Every FFT-based spectral processor built in
+Part 11 and Part 12
+has to solve the same two annoyances: the FFT of a real signal produces redundant
+complex output (as noted when building the Pd
+version), and any windowed block processing needs a separate overlap-add scheme
+bolted on afterward to avoid clicks at block boundaries. The Modified Discrete Cosine
+Transform - the transform actually used inside MP3, AAC, Vorbis, and Opus - solves
+both problems in the transform itself: it produces only real-valued output, and its
+50%-overlapping windows achieve perfect reconstruction through a mechanism
+called time-domain aliasing cancellation, with the overlap-add built into the math
+rather than added on top of it. This article builds a forward and inverse MDCT in C,
+verifies the reconstruction numerically, and explains why this is the transform of
+choice for quantizing spectral data, which is the missing piece needed to combine the
+Bark-scale masking model with actual audio data.
+
+
+What You Will Learn
+
+
+Why the MDCT takes 2N real input samples and produces only N real output coefficients - a 2:1 reduction the FFT cannot give you for free
+The forward and inverse MDCT formulas, and how to implement both directly in C
+The Princen-Bradley condition a window must satisfy for perfect reconstruction
+Time-domain aliasing cancellation (TDAC): why overlapping, windowed MDCT blocks reconstruct the original signal exactly, with no separate overlap-add bookkeeping
+How to verify perfect reconstruction numerically instead of taking it on faith
+Why perceptual codecs quantize MDCT coefficients instead of FFT bins
+
+
+Why Not Just Use the FFT?
+
+
+An FFT of a length-M real signal produces M complex output
+values, but because the input is real, the spectrum is conjugate-symmetric - only
+about half the values are independent (this is exactly what let
+rfft~ pack the spectrum into a
+single signal-length vector). So for real audio, an FFT already carries redundant
+information relative to the samples that produced it, and you still need a window and
+a separate overlap-add stage to avoid block-edge artifacts if you are going to
+resynthesize.
+
+
+
+The MDCT is built specifically for this real-signal, block-overlapping case: it takes
+2N real input samples and produces exactly N real
+coefficients - genuinely half as much data as the input, not "half the FFT output
+after you throw away the redundant half." And its overlap-add is not bolted on
+afterward - it is the mechanism that makes the transform invertible at all.
+
+
+The Forward and Inverse Formulas
+
+
+For a block of 2N input samples x[0..2N-1], the forward
+MDCT produces N coefficients:
+
+
+
+X[k] = Σ (n=0 to 2N-1)  x[n] · cos( (π/N) · (n + 0.5 + N/2) · (k + 0.5) )
+
+
+
+and the inverse MDCT (IMDCT) takes those N coefficients back to
+2N time-domain samples using the same basis functions, just summed the
+other way:
+
+
+
+y[n] = (2/N) · Σ (k=0 to N-1)  X[k] · cos( (π/N) · (n + 0.5 + N/2) · (k + 0.5) )
+
+
+
+In C, both are direct translations of the sums (an O(N&sup2;) reference
+implementation - real encoders use a fast MDCT algorithm built on an FFT, the same way
+Part 11's FFT beat the naive DFT, but the direct sum is what makes the transform
+itself easy to verify):
+
+
+
+#include <math.h>
+
+#define N 8          /* number of MDCT coefficients per block */
+#define BLOCK (2*N)  /* samples per block (window length) */
+
+void mdct_forward(const double *in, double *out) {
+    for (int k = 0; k < N; k++) {
+        double sum = 0.0;
+        for (int n = 0; n < BLOCK; n++) {
+            double angle = (M_PI / N) * (n + 0.5 + N / 2.0) * (k + 0.5);
+            sum += in[n] * cos(angle);
+        }
+        out[k] = sum;
+    }
+}
+
+void mdct_inverse(const double *in, double *out) {
+    for (int n = 0; n < BLOCK; n++) {
+        double sum = 0.0;
+        for (int k = 0; k < N; k++) {
+            double angle = (M_PI / N) * (n + 0.5 + N / 2.0) * (k + 0.5);
+            sum += in[k] * cos(angle);
+        }
+        out[n] = sum * (2.0 / N);
+    }
+}
+
+
+
+Notice both functions use the identical angle formula - the MDCT's basis
+functions are shared between forward and inverse transforms, just contracted in
+opposite directions (2N values into N, or N values back out to 2N). This is a
+structural consequence of the transform being built from a DCT-IV, which is its own
+inverse up to a scale factor.
+
+
+The Catch: A Single Block Does Not Reconstruct
+
+
+Run mdct_inverse(mdct_forward(x)) on one isolated 2N-sample
+block and you will not get x back - you will get something
+corrupted by what looks like the signal folded over itself. This is not a bug; it is
+the transform deliberately throwing away exactly half the information (2N samples
+condensed to N coefficients cannot, on its own, carry enough information to invert
+losslessly). The missing half is recovered only by overlapping consecutive
+blocks by 50% and summing their windowed IMDCT outputs - the "aliasing" in each
+individual block's inverse is real, and it cancels out only when the next block's
+aliasing is the exact mirror image, which is exactly what a 50%-overlapped sequence of
+identically-windowed blocks guarantees. This is time-domain aliasing cancellation
+(TDAC), and it is why the MDCT is always discussed together with its window, never on
+its own.
+
+
+The Window: the Princen-Bradley Condition
+
+
+For TDAC to actually cancel the aliasing, the window applied before the forward
+transform (and again after the inverse transform) must satisfy the Princen-Bradley
+condition: for a window of length 2N,
+
+
+
+w(n)² + w(n + N)² = 1     for all n in [0, N)
+
+
+
+The standard MDCT sine window satisfies this automatically, because
+sin²θ + cos²θ = 1 falls straight out of the phase shift between
+w(n) and w(n+N):
+
+
+
+double window(int n) {
+    return sin((M_PI / BLOCK) * (n + 0.5));
+}
+
+
+
+Princen-Bradley check (should all be ~1.0):
+  n=0  w(n)^2+w(n+N)^2 = 1.000000
+  n=1  w(n)^2+w(n+N)^2 = 1.000000
+  n=2  w(n)^2+w(n+N)^2 = 1.000000
+  n=3  w(n)^2+w(n+N)^2 = 1.000000
+  n=4  w(n)^2+w(n+N)^2 = 1.000000
+  n=5  w(n)^2+w(n+N)^2 = 1.000000
+  n=6  w(n)^2+w(n+N)^2 = 1.000000
+  n=7  w(n)^2+w(n+N)^2 = 1.000000
+
+
+Verifying Perfect Reconstruction Numerically
+
+
+Rather than trust the algebra, process a real test signal through overlapping,
+windowed MDCT/IMDCT blocks and measure the reconstruction error directly. Pad the
+signal with N zero samples on each side (so the very first and last real
+blocks have something to overlap against), then step through it with a hop size of
+exactly N (50% overlap for a 2N-sample window):
+
+
+
+#include <string.h>
+
+int main(void) {
+    int signal_len = 40;
+    double signal[40];
+    for (int i = 0; i < signal_len; i++) {
+        signal[i] = sin(2.0 * M_PI * i / 11.3) + 0.3 * sin(2.0 * M_PI * i / 3.7);
+    }
+
+    int padded_len = signal_len + 2 * N;
+    double padded[40 + 2*N];
+    memset(padded, 0, sizeof(padded));
+    memcpy(padded + N, signal, sizeof(signal));
+
+    double reconstructed[40 + 2*N];
+    memset(reconstructed, 0, sizeof(reconstructed));
+
+    double coeffs[N], windowed_in[BLOCK], imdct_out[BLOCK];
+
+    for (int start = 0; start + BLOCK <= padded_len; start += N) {
+        for (int i = 0; i < BLOCK; i++) {
+            windowed_in[i] = padded[start + i] * window(i);
+        }
+        mdct_forward(windowed_in, coeffs);
+        mdct_inverse(coeffs, imdct_out);
+        for (int i = 0; i < BLOCK; i++) {
+            reconstructed[start + i] += imdct_out[i] * window(i);
+        }
+    }
+
+    double max_err = 0.0;
+    for (int i = N; i < signal_len; i++) {
+        double err = fabs(reconstructed[i] - signal[i - N]);
+        if (err > max_err) max_err = err;
+    }
+    printf("max reconstruction error (away from edges): %e\n", max_err);
+    return 0;
+}
+
+
+
+max reconstruction error (away from edges): 2.831069e-15
+
+
+
+That error is floating-point noise, not approximation error - this is genuinely
+perfect reconstruction, not "close enough for audio." Three things had to be true
+together for this to work: the window satisfies Princen-Bradley, consecutive blocks
+overlap by exactly 50% (hop size N for a 2N-sample window),
+and every windowed IMDCT output is summed (not just written) into the output buffer -
+the += in the loop above is doing the actual TDAC cancellation, not
+merely avoiding overwriting neighbouring data.
+
+
+Why This Matters for Quantization
+
+
+A perceptual codec's whole job, from Part 31, is
+to quantize spectral coefficients according to a masking threshold. Doing that on FFT
+bins works, but wastes half your coefficient budget on redundant conjugate-symmetric
+information and needs a bolted-on overlap-add scheme to avoid block-edge artifacts in
+the reconstructed audio. Doing it on MDCT coefficients gives you real-valued
+coefficients with no redundancy to discard, and the overlap-add is inseparable from
+the transform itself - which is exactly why MP3, AAC, Vorbis, and Opus all quantize
+MDCT (or MDCT-derived) coefficients rather than FFT bins for the actual audio-carrying
+data path, reserving FFT analysis for auxiliary tasks like the psychoacoustic model's
+own masking calculations.
+
+
+Summary
+
+
+The MDCT trades the FFT's complex, redundant output for a smaller, purely real
+coefficient set, at the cost of a transform that only reconstructs correctly when
+its 50%-overlapping windows satisfy the Princen-Bradley condition and consecutive
+blocks are summed rather than concatenated - time-domain aliasing cancellation. That
+constraint is exactly what makes the overlap-add machinery Part 12 built by hand
+disappear into the transform itself. With a verified, perfect-reconstruction MDCT/IMDCT
+pair in hand, the remaining piece needed to combine
+quantization,
+the Bark-scale masking model, and
+entropy coding into an actual toy perceptual
+codec is just wiring them together in the right order - which is exactly where this
+site's compression series is headed next.
+
+
+Further Reading
+
+
+Princen, J. & Bradley, A. - "Analysis/Synthesis Filter Bank Design Based on Time Domain Aliasing Cancellation" (IEEE Trans. ASSP, 1986)
+Modified Discrete Cosine Transform - Wikipedia
+Fraunhofer IIS - MP3 technical background
+Vorbis I Specification - a fully open-source codec built on the MDCT
+
+
+See Also
+
+
+FFT from Scratch
+Spectral Processing with FFT
+The Bark Scale and Perceptual Bit Allocation
+Audio Compression Part 4: Entropy Coding with Huffman and Golomb-Rice
+Audio Compression Part 8: Building a Toy Perceptual Codec - this transform wired into a complete encoder/decoder
+

@@ -1,0 +1,280 @@
+Audio Compression - Part 5: Lossless Predictive Coding
+2026-07-13
+
+
+Part 2 built lossless delta coding and explained that
+it needed an entropy coder to actually save space; Part 4
+built that entropy coder (Golomb-Rice) and showed it working on a hand-picked residual
+sequence. This article puts the two pieces together into something that is not a toy
+anymore: a real block-based lossless codec that picks the best of several linear
+predictors per block, Rice-codes the resulting residuals, and measures an actual
+compression ratio - round-tripped bit-for-bit back to the original samples. This is,
+architecturally, exactly what FLAC and Shorten are: a predictor followed by an
+entropy coder, with no lossy step anywhere in the chain.
+
+
+What You Will Learn
+
+
+FLAC's fixed predictor set (orders 0-3) and the polynomial extrapolation each one performs
+How to pick the best predictor per block by estimating each candidate's Rice-coded bit cost before committing to one
+How to combine per-block predictor selection with per-block Rice parameter estimation into a single encoder
+How to decode this stream back to the original samples exactly, with zero loss
+How to measure a real compression ratio, and what determines whether it is good
+Where fixed predictors stop being enough, and why FLAC's higher compression levels use adaptive LPC instead
+
+
+Fixed Predictors: Polynomial Extrapolation
+
+
+Part 2's predictor was "the next sample equals the
+last one" - a order-1 (constant) predictor. FLAC and Shorten generalize this to a
+small family of fixed polynomial predictors, each one order higher than the last,
+extrapolating from more history:
+
+
+
+order 0:  predict(n) = 0
+order 1:  predict(n) = x[n-1]
+order 2:  predict(n) = 2*x[n-1] - x[n-2]
+order 3:  predict(n) = 3*x[n-1] - 3*x[n-2] + x[n-3]
+
+
+
+Order 0 is "no prediction at all" (useful for silence or noise-like data, where any
+prediction would just add noise of its own). Order 1 is Part 2's delta coding. Order 2
+assumes the signal's local slope continues unchanged - it linearly extrapolates the
+trend between the last two samples. Order 3 assumes local curvature continues too -
+it is the unique polynomial of degree 2 that passes through the last three samples,
+projected one step further. None of these coefficients are estimated from the data;
+they come from the finite-difference coefficients of increasing polynomial degree,
+which is exactly why they need no side information beyond a 2-bit order field per
+block - both encoder and decoder already know all four formulas.
+
+
+
+#include <stdint.h>
+
+int32_t predict(int order, const int16_t *history, int i) {
+    switch (order) {
+        case 0: return 0;
+        case 1: return history[i-1];
+        case 2: return 2*(int32_t)history[i-1] - history[i-2];
+        case 3: return 3*(int32_t)history[i-1] - 3*(int32_t)history[i-2] + history[i-3];
+    }
+    return 0;
+}
+
+
+
+history here is the array of already-decoded samples, indexed the
+same way on both sides - on the encoder it happens to equal the original signal
+(since this is lossless, encoder and decoder always agree exactly), and on the
+decoder it is whatever has been reconstructed so far.
+
+
+Choosing the Best Predictor Per Block
+
+
+No single fixed predictor wins on every signal - a smoothly bowed string tone favours
+a high order (its waveform really does look locally like a low-degree polynomial), a
+percussive transient favours a low order (there is no smooth trend to extrapolate).
+The standard approach is to try every candidate on each block and keep whichever one
+minimizes the actual estimated coded size, not just the raw residual magnitude
+- because the entropy coder's cost is not linear in the residual, the predictor that
+minimizes total absolute residual is not always the one that minimizes bits after
+Rice coding.
+
+
+
+#include <math.h>
+
+int rice_cost_bits(uint32_t value, int k) {
+    return (int)(value >> k) + 1 + k;   /* unary quotient + terminator + k-bit remainder */
+}
+
+int best_rice_k(const int32_t *residuals, int n) {
+    double mean_abs = 0.0;
+    for (int i = 0; i < n; i++) mean_abs += zigzag_encode(residuals[i]);
+    mean_abs /= n;
+    if (mean_abs < 1.0) return 0;
+    int k = (int)ceil(log2(mean_abs));
+    return k < 0 ? 0 : k;
+}
+
+
+
+For each block, compute residuals under all four predictor orders, pick the best Rice
+k for each candidate's residual set, estimate the total bit cost each
+combination would produce, and keep the cheapest:
+
+
+
+#define BLOCK_SIZE 64
+
+/* Inside the per-block loop: block_start, block_len already known. */
+int best_order = 0;
+long best_cost = -1;
+int32_t residuals[BLOCK_SIZE], best_residuals[BLOCK_SIZE];
+int best_k = 0;
+
+for (int order = 0; order <= 3; order++) {
+    if (block_start < order) continue;  /* not enough history yet for this order */
+
+    for (int i = 0; i < block_len; i++) {
+        int idx = block_start + i;
+        residuals[i] = (int32_t)signal[idx] - predict(order, signal, idx);
+    }
+    int k = best_rice_k(residuals, block_len);
+
+    long cost = 7;  /* 2-bit order field + 5-bit k field */
+    for (int i = 0; i < block_len; i++) {
+        cost += rice_cost_bits(zigzag_encode(residuals[i]), k);
+    }
+
+    if (best_cost < 0 || cost < best_cost) {
+        best_cost = cost; best_order = order; best_k = k;
+        for (int i = 0; i < block_len; i++) best_residuals[i] = residuals[i];
+    }
+}
+
+
+
+The if (block_start < order) continue; guard skips any predictor order
+that would need to read before the very start of the signal - only relevant for the
+first block or two, since every later block has plenty of real decoded history from
+earlier blocks to predict from.
+
+
+The Full Encoder
+
+
+Wiring this into a complete encoder: for every block, write the chosen order (2 bits)
+and Rice parameter (5 bits), then Rice-code every residual under that choice:
+
+
+
+for (int block_start = 0; block_start < n; block_start += BLOCK_SIZE) {
+    int block_len = BLOCK_SIZE;
+    if (block_start + block_len > n) block_len = n - block_start;
+
+    /* ... predictor/k selection from above, filling best_order,
+       best_k, best_residuals ... */
+
+    bitwriter_put(&bw, (uint32_t)best_order, 2);
+    bitwriter_put(&bw, (uint32_t)best_k, 5);
+    for (int i = 0; i < block_len; i++) {
+        rice_encode(&bw, zigzag_encode(best_residuals[i]), best_k);
+    }
+}
+
+
+The Decoder
+
+
+The decoder reverses this exactly, block by block, reconstructing samples in order so
+that later predictions (which read from decoded, not from the original
+signal the decoder never sees) always have the history they need:
+
+
+
+for (int block_start = 0; block_start < n; block_start += BLOCK_SIZE) {
+    int block_len = BLOCK_SIZE;
+    if (block_start + block_len > n) block_len = n - block_start;
+
+    int order = (int)bitreader_get(&br, 2);
+    int k     = (int)bitreader_get(&br, 5);
+
+    for (int i = 0; i < block_len; i++) {
+        int idx = block_start + i;
+        int32_t residual = zigzag_decode(rice_decode(&br, k));
+        int32_t pred = predict(order, decoded, idx);
+        decoded[idx] = (int16_t)(pred + residual);
+    }
+}
+
+
+Measuring It For Real
+
+
+Run the full encoder/decoder pair on a 512-sample synthetic signal (three summed sine
+components, deliberately busy - a genuinely quiet or simple signal would compress far
+better and would not demonstrate anything useful about the predictor-selection logic)
+in blocks of 64 samples:
+
+
+
+samples=512  fixed=8192 bits (1024 bytes)  encoded=6934 bits (867 bytes)
+compression ratio: 1.18:1
+predictor order usage: order0=1 order1=4 order2=3 order3=0
+round-trip mismatches: 0
+
+
+
+Zero mismatches confirms this is genuinely lossless - every sample decodes back to
+its exact original 16-bit value, not an approximation. The 1.18:1 ratio is modest
+because the test signal was deliberately adversarial: three sine waves summed
+together and running near full scale continuously give the predictors very little
+genuine redundancy to exploit; real recorded audio (with quiet passages, silence
+between notes, and far more structure than three superimposed pure tones) is exactly
+why FLAC routinely reaches 1.5:1 to 2.5:1 on real music - the codec is identical, the
+input's actual redundancy is what changes. Notice too which predictor order won each
+block: order 1 dominates here, with order 2 picked when the local trend happened to
+help, and order 0 only when nothing else did better - the per-block selection is
+doing real work, not just defaulting to the highest order available.
+
+
+Where Fixed Predictors Stop Being Enough
+
+
+The four fixed predictors above assume the signal locally resembles one specific
+low-degree polynomial. Real audio's actual local structure is usually more particular
+than that - a note with a strong resonance behaves like a damped sinusoid, not a
+polynomial extrapolation of any fixed degree. FLAC's higher compression settings
+switch to adaptive LPC (Linear Predictive Coding): instead of four fixed
+formulas, the encoder computes a set of predictor coefficients from the actual
+block of data (typically via the Levinson-Durbin recursion, solving for the
+coefficients that minimize this specific block's residual energy) and transmits those
+coefficients alongside the residuals. This costs more side information per block than
+a 2-bit order field, but the predictor itself can be dramatically more accurate,
+because it is fitted to the signal rather than chosen from four generic shapes. That
+adaptive-coefficient idea - fit a predictor to the actual data, then code the leftover
+residual - reappears in the next article's speech codec, where it is not used for
+losslessness but to strip out everything the vocal tract's own resonances make
+predictable before spending any bits at all.
+
+
+Summary
+
+
+A real lossless audio codec is nothing more than the predictor from
+Part 2 and the entropy coder from
+Part 4, wired together with one addition:
+choosing, per block, which of several fixed predictors actually minimizes the coded
+size on that specific block's data, rather than committing to one predictor for the
+whole file. The round-trip is exactly lossless because every step - prediction,
+zigzag mapping, Rice coding - is exactly invertible, with no quantization anywhere in
+the chain. The measured compression ratio depends entirely on how much real redundancy
+the input signal has to exploit, which is why the same codec gets very different
+ratios on a synthetic worst case versus real recorded audio. Fixed predictors are a
+deliberately simple starting point; adaptive LPC, which fits its coefficients to the
+actual block instead of choosing from four generic shapes, is both FLAC's answer for
+going further and the same core idea the next article's speech codec builds on.
+
+
+Further Reading
+
+
+FLAC Format Overview
+RFC 9639 - Free Lossless Audio Codec (FLAC)
+Robinson, T. - "SHORTEN: Simple Lossless and Near-Lossless Waveform Compression"
+Linear Prediction (LPC) - Julius O. Smith III
+
+
+See Also
+
+
+Audio Compression Part 2: Differential PCM
+Audio Compression Part 4: Entropy Coding with Huffman and Golomb-Rice
+Audio Compression Part 7: Vector Quantization and CELP
+

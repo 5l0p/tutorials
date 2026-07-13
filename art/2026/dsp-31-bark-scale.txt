@@ -1,0 +1,268 @@
+DSP - Part 31: The Bark Scale and Perceptual Bit Allocation
+2026-07-13
+
+
+Part 30 established that quantization
+trades bits for accuracy, uniformly, across the whole signal. Perceptual audio codecs
+(MP3, AAC, Opus's higher layers) do something smarter: they spend bits where the ear
+can actually tell the difference, and starve frequencies the ear cannot resolve
+anyway. This requires a model of human hearing's frequency resolution, and that model
+is the Bark scale - a frequency axis built not from physics but from the anatomy of
+the cochlea. This article builds that model in C on top of the FFT from
+Part 11, and shows how it turns into a per-band bit
+allocation.
+
+
+What You Will Learn
+
+
+What a critical band is, physiologically, and why hearing does not resolve frequency linearly
+The Bark scale formula and how to convert an FFT bin to a Bark band in C
+The absolute threshold of hearing (ATH) and why it is not flat across frequency
+Simultaneous masking: why a loud tone raises the effective hearing threshold of nearby frequencies
+How to combine ATH and a masking model into a per-band masking threshold
+How a perceptual codec turns a masking threshold into a bit (or quantization step) allocation per FFT bin
+
+
+Critical Bands
+
+
+The cochlea does not measure frequency with uniform resolution. Along the basilar
+membrane, each point resonates most strongly to a particular frequency, and the
+membrane's mechanics mean that resolution is much finer at low frequencies than high
+ones - two tones 50 Hz apart at 200 Hz are easily distinguished, while two tones 50 Hz
+apart at 8000 Hz are not distinguishable at all. A critical band is, roughly,
+the band of frequencies around a given center frequency that the ear cannot resolve
+any finer than as a single unit - two simultaneous tones within one critical band
+interact strongly (they can mask each other, or produce beating); tones in different
+critical bands are heard largely independently.
+
+
+
+The Bark scale (named for Heinrich Barkhausen) divides the audible range into 24
+critical bands, spaced so that each Bark unit corresponds to one critical bandwidth,
+regardless of where in the audible range you are. This is the frequency-domain
+analogue of the decibel: a scale built to match a nonlinear perceptual quantity, not
+to make the physics look tidy.
+
+
+Converting Frequency to Bark
+
+
+The commonly used closed-form approximation (Traunmüller / Zwicker) is:
+
+
+
+Bark(f) = 13 * atan(0.00076 * f) + 3.5 * atan((f / 7500)^2)
+
+
+
+#include <math.h>
+
+double hz_to_bark(double f_hz) {
+    return 13.0 * atan(0.00076 * f_hz)
+         + 3.5  * atan((f_hz / 7500.0) * (f_hz / 7500.0));
+}
+
+
+
+Given an FFT of size N at sample rate fs, bin k
+corresponds to frequency k * fs / N (from
+Part 11). Mapping every bin to its Bark band lets you
+group FFT output by perceptual band instead of by raw linear frequency:
+
+
+
+#define FFT_SIZE     1024
+#define SAMPLE_RATE  44100
+#define NUM_BARK_BANDS 24
+
+/* Returns, for each FFT bin (0 .. FFT_SIZE/2), which Bark band (0..23) it falls in. */
+void build_bin_to_bark_table(int *bin_to_bark, int fft_size, int sample_rate) {
+    for (int k = 0; k <= fft_size / 2; k++) {
+        double freq = (double)k * sample_rate / fft_size;
+        double bark = hz_to_bark(freq);
+        int band = (int)bark;
+        if (band >= NUM_BARK_BANDS) band = NUM_BARK_BANDS - 1;
+        bin_to_bark[k] = band;
+    }
+}
+
+
+
+Notice how many linear-frequency bins collapse into each Bark band. At 44.1 kHz with
+a 1024-point FFT, the bin spacing is about 43 Hz. Below 500 Hz, where a critical band
+can be under 100 Hz wide, a Bark band covers only 2-3 bins. Above 10 kHz, where a
+critical band can be over 2000 Hz wide, a single Bark band can cover 40+ bins. This
+lopsidedness is exactly the point: it mirrors how coarsely the ear actually resolves
+high frequencies.
+
+
+The Absolute Threshold of Hearing
+
+
+Even in total silence, the ear does not hear equally well at every frequency - it is
+most sensitive around 2-5 kHz (where consonant sounds and the ear canal's own
+resonance sit) and dramatically less sensitive at the extremes of the audible range.
+The absolute threshold of hearing (ATH) is the sound pressure level, per frequency,
+below which an average listener hears nothing at all. A widely used closed-form
+approximation (Terhardt) in dB SPL, for frequency f in kHz:
+
+
+
+/* f_khz: frequency in kHz. Returns the absolute threshold in dB SPL. */
+double absolute_threshold_db(double f_khz) {
+    return 3.64 * pow(f_khz, -0.8)
+         - 6.5  * exp(-0.6 * (f_khz - 3.3) * (f_khz - 3.3))
+         + 0.001 * pow(f_khz, 4.0);
+}
+
+
+
+Any quantization noise that ends up below this curve, at its frequency, is
+inaudible regardless of how "large" it is numerically - which is the first free lunch
+a perceptual codec exploits: there is no need to represent a bin at all if the noise
+introduced by discarding it stays under this curve.
+
+
+Simultaneous Masking
+
+
+The ATH is a fixed, signal-independent floor. Simultaneous masking raises that floor
+dynamically: a loud tone (or noise-like component) at one frequency temporarily raises
+the effective hearing threshold for nearby frequencies, in the same time window. This
+is the mechanism a hiss under a loud guitar chord disappears, but the same hiss is
+obvious in a quiet passage. The masking effect is strongest at the masker's own
+frequency and falls off in both directions on the Bark scale, asymmetrically -
+masking spreads further toward higher frequencies than lower ones. A simplified
+spreading function (in dB, as a function of distance in Bark units dz
+from the masker) that captures this asymmetry:
+
+
+
+/* dz: distance from masker in Bark units (can be negative). */
+double masking_spread_db(double dz) {
+    if (dz >= 0.0) {
+        return -27.0 * dz;               /* rolls off ~27 dB/Bark upward */
+    } else {
+        return (-27.0 + 0.37 * fmax(0.0, -20.0 - 0.0)) * (-dz);
+        /* simplified: real spreading functions use a steeper, level-dependent
+           downward slope; see Further Reading for the full Schroeder/ISO models. */
+    }
+}
+
+
+
+Real codecs (the ISO 11172-3 psychoacoustic model used in MP3, for instance) use a
+considerably more careful spreading function, tonality-dependent masking offsets, and
+separate treatment of tonal versus noise-like maskers. The simplified version above is
+enough to demonstrate the shape of the technique - do not ship it as a real
+psychoacoustic model. See Further Reading for the full specification.
+
+
+Combining Into a Masking Threshold, Per Band
+
+
+For each Bark band, sum the energy of its bins to get a masker level, spread that
+masker's influence into neighbouring bands using the spreading function, and take the
+maximum of that spread masking curve and the absolute threshold. The result is a
+per-band "anything below this level is inaudible" threshold:
+
+
+
+void compute_masking_threshold(const double *band_energy_db,
+                               const double *band_center_hz,
+                               double *masking_threshold_db,
+                               int num_bands) {
+    for (int b = 0; b < num_bands; b++) {
+        double ath = absolute_threshold_db(band_center_hz[b] / 1000.0);
+        double max_masked = ath;
+
+        for (int m = 0; m < num_bands; m++) {
+            if (m == b) continue;
+            double dz = (double)(b - m);  /* approx: 1 band ~= 1 Bark unit */
+            double spread = masking_spread_db(dz);
+            double masked_level = band_energy_db[m] + spread;
+            if (masked_level > max_masked) max_masked = masked_level;
+        }
+
+        masking_threshold_db[b] = max_masked;
+    }
+}
+
+
+From Masking Threshold to Bit Allocation
+
+
+This is the payoff: once you know the masking threshold per band, you know exactly
+how much quantization noise you can introduce in that band before it becomes audible.
+Recall from Part 30 that a b-bit
+quantizer has noise power around Δ²/12, and each bit roughly halves the
+step size (and so quarters the noise power, a ~6 dB drop). So allocating bits per band
+becomes: start every band at the coarsest (fewest-bit) quantizer whose resulting noise
+still stays under that band's masking threshold, and only spend extra bits where the
+threshold is strict.
+
+
+
+/* Given a band's signal energy and masking threshold (both in dB),
+   returns the minimum number of bits needed so quantization noise
+   stays at or below the masking threshold. */
+int bits_needed_for_band(double signal_energy_db, double masking_threshold_db) {
+    double headroom_db = signal_energy_db - masking_threshold_db;
+    if (headroom_db <= 0.0) return 0;  /* fully masked: allocate no bits at all */
+
+    /* Each bit buys ~6.02 dB of SQNR (Part 30). */
+    int bits = (int)ceil(headroom_db / 6.02);
+    if (bits > 16) bits = 16;
+    return bits;
+}
+
+
+
+A band that is fully masked gets zero bits - its bins are simply not
+transmitted, and the decoder fills them with silence or noise, because any noise
+introduced there is provably inaudible under the model. A band sitting well above its
+masking threshold gets proportionally more bits. This is the core loop inside every
+MP3/AAC-style encoder's "bit allocation" stage: run the psychoacoustic model once per
+frame, get a masking threshold per band, then spend a fixed total bit budget across
+bands in proportion to how far each band's energy sits above its own threshold.
+
+
+Summary
+
+
+The Bark scale reframes frequency around what the cochlea can actually resolve,
+compressing physically wide, high-frequency bands into the same perceptual unit as
+physically narrow, low-frequency ones. Combined with the absolute threshold of hearing
+and a simultaneous masking model, it produces a per-band "how much noise can I get
+away with here" threshold. Perceptual codecs use exactly that threshold, together with
+the SQNR-per-bit relationship from quantization theory, to decide how many bits (or
+how coarse a quantization step) to spend on each region of the spectrum - concentrating
+bits where the ear is sensitive and discarding data the ear was never going to notice
+missing. This is the conceptual core that separates a perceptual codec like MP3 from
+the purely waveform-based codecs (mu-law, DPCM, ADPCM) covered earlier in this site's
+compression series - those spend bits uniformly, or based only on amplitude; a
+perceptual codec spends them based on a model of hearing itself.
+
+
+Further Reading
+
+
+ISO/IEC 11172-3 (MPEG-1 Audio) - Annex D: Psychoacoustic Model
+Bark Frequency Scale - Julius O. Smith III
+Bark Scale - Wikipedia
+Absolute Threshold of Hearing - Wikipedia
+Psychoacoustics: Facts and Models - Zwicker & Fastl
+
+
+See Also
+
+
+Quantization, Noise, and Dither
+FFT from Scratch
+Spectral Processing with FFT
+Audio Compression Part 1: mu-law and A-law Companding
+The Modified Discrete Cosine Transform - the transform this masking model actually gets applied to in a real codec
+Audio Compression Part 8: Building a Toy Perceptual Codec - this masking model driving a real bit allocation
+

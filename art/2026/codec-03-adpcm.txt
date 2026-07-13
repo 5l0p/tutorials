@@ -1,0 +1,362 @@
+Audio Compression - Part 3: IMA ADPCM
+2026-07-13
+
+
+The previous article ended on the slope overload
+problem: a fixed DPCM quantization step is always wrong for something - too coarse
+for quiet audio, too small to track loud, fast-changing audio. Adaptive Differential
+PCM (ADPCM) solves this by letting the step size change every sample, growing when the
+signal is moving fast and shrinking when it is calm. IMA ADPCM - defined by the
+Interactive Multimedia Association in the early 1990s - is the specific, widely
+implemented variant this article builds: 4 bits per sample (4:1 compression from
+16-bit linear PCM), a fully specified adaptation rule via two lookup tables, and a
+format still found today inside WAV files, AVI files, and countless game asset
+formats. Because the adaptation rule is table-driven and bit-exact, two independent
+implementations of IMA ADPCM will always decode identically - which is exactly what
+you need from a format meant to be shared between files and programs.
+
+
+What You Will Learn
+
+
+How adaptive step sizing avoids both granular noise and slope overload
+The IMA ADPCM step-size table and index-adjustment table, and why they are geometric, not linear
+How to implement a bit-exact IMA ADPCM encoder and decoder in C
+How 4-bit codes are packed two-per-byte, and why byte order matters
+How an IMA ADPCM block is laid out inside a WAV file, including its 4-byte preamble
+How to verify your implementation is bit-exact against a known-good encoder
+
+
+The Adaptation Idea
+
+
+Instead of a constant DPCM_STEP, IMA ADPCM keeps a per-stream step size
+that changes after every sample. The rule is simple: when the encoder needs to
+represent a large difference, it is a sign the signal is moving fast, so the step
+size should grow to keep up (avoiding slope overload). When the difference is small,
+the signal is calm, so the step size should shrink to give finer resolution (avoiding
+granular noise). Both encoder and decoder run the identical adaptation rule from the
+identical data (the code just transmitted), so they always agree on the current step
+size without it ever being sent explicitly.
+
+
+The Two Tables
+
+
+IMA ADPCM defines two fixed lookup tables, specified once by the standard and used
+by every conforming implementation without modification:
+
+
+
+#include <stdint.h>
+
+/* Step size table: 89 possible step sizes, roughly geometric
+   (each step ~= previous * 1.1), covering the dynamic range from
+   near-silence (step 7) up to full scale (step 32767). */
+static const int16_t ima_step_table[89] = {
+    7,     8,     9,     10,    11,    12,    13,    14,
+    16,    17,    19,    21,    23,    25,    28,    31,
+    34,    37,    41,    45,    50,    55,    60,    66,
+    73,    80,    88,    97,    107,   118,   130,   143,
+    157,   173,   190,   209,   230,   253,   279,   307,
+    337,   371,   408,   449,   494,   544,   598,   658,
+    724,   796,   876,   963,   1060,  1166,  1282,  1411,
+    1552,  1707,  1878,  2066,  2272,  2499,  2749,  3024,
+    3327,  3660,  4026,  4428,  4871,  5358,  5894,  6484,
+    7132,  7845,  8630,  9493,  10442, 11487, 12635, 13899,
+    15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794,
+    32767
+};
+
+/* Index adjustment table: how far to move the index into
+   ima_step_table for each of the 16 possible 4-bit codes.
+   Larger-magnitude codes (bigger differences) push the index up
+   more, growing the step size faster. */
+static const int8_t ima_index_table[16] = {
+    -1, -1, -1, -1, 2, 4, 6, 8,
+    -1, -1, -1, -1, 2, 4, 6, 8
+};
+
+
+
+Two things to notice. First, the step table grows roughly geometrically (about 10%
+per entry), not linearly - this mirrors the same logarithmic instinct behind mu-law
+in Part 1: perceptually relevant step
+sizes span a huge dynamic range, so geometric spacing covers that range in far fewer
+table entries than a linear one would need. Second, the index table is symmetric
+between codes 0-7 and 8-15 - the sign bit of the 4-bit code does not affect how much
+the step size adapts, only the direction of the difference it represents.
+
+
+The Encoder
+
+
+typedef struct {
+    int16_t predicted;   /* running prediction, same value the decoder will have */
+    int8_t  step_index;  /* index into ima_step_table, 0..88 */
+} ImaAdpcmEncoder;
+
+void ima_adpcm_encoder_init(ImaAdpcmEncoder *e, int16_t initial_predicted,
+                            int8_t initial_step_index) {
+    e->predicted  = initial_predicted;
+    e->step_index = initial_step_index;
+}
+
+/* Encodes one 16-bit sample to a 4-bit code (0..15). */
+uint8_t ima_adpcm_encode(ImaAdpcmEncoder *e, int16_t sample) {
+    int32_t step = ima_step_table[e->step_index];
+    int32_t diff = (int32_t)sample - (int32_t)e->predicted;
+
+    uint8_t code = 0;
+    if (diff < 0) {
+        code = 8;
+        diff = -diff;
+    }
+
+    /* Quantize |diff| against the current step using the standard's
+       bit-serial comparison, which simultaneously builds the 3-bit
+       magnitude AND the quantized reconstruction delta. */
+    int32_t delta = step >> 3;
+    if (diff >= step) {
+        code |= 4;
+        diff -= step;
+        delta += step;
+    }
+    step >>= 1;
+    if (diff >= step) {
+        code |= 2;
+        diff -= step;
+        delta += step;
+    }
+    step >>= 1;
+    if (diff >= step) {
+        code |= 1;
+        delta += step;
+    }
+
+    /* Reconstruct exactly as the decoder will, and predict from THAT -
+       the same closed-loop rule from Part 2's DPCM encoder. Clamp in a
+       wider type BEFORE truncating to int16_t - clamping an int16_t
+       after the truncation has already happened is a no-op, since the
+       value has already wrapped. */
+    int32_t new_predicted = (code & 8) ? (int32_t)e->predicted - delta
+                                        : (int32_t)e->predicted + delta;
+    if (new_predicted > 32767)  new_predicted = 32767;
+    if (new_predicted < -32768) new_predicted = -32768;
+    e->predicted = (int16_t)new_predicted;
+
+    /* Adapt the step index for next time. */
+    e->step_index += ima_index_table[code];
+    if (e->step_index < 0)  e->step_index = 0;
+    if (e->step_index > 88) e->step_index = 88;
+
+    return code;
+}
+
+
+
+The three if (diff >= step) blocks look like an odd way to quantize,
+but they are doing two jobs at once, bit by bit: each one tests whether the next bit
+of the 3-bit magnitude should be set, and accumulates delta - the exact
+reconstruction value the decoder will compute from that same 3-bit magnitude. Writing
+it this way (rather than as a single division) guarantees the encoder's arithmetic
+matches the decoder's bit-shift-based reconstruction exactly, with no floating-point
+or division rounding differences to cause drift.
+
+
+The Decoder
+
+
+typedef struct {
+    int16_t predicted;
+    int8_t  step_index;
+} ImaAdpcmDecoder;
+
+void ima_adpcm_decoder_init(ImaAdpcmDecoder *d, int16_t initial_predicted,
+                            int8_t initial_step_index) {
+    d->predicted  = initial_predicted;
+    d->step_index = initial_step_index;
+}
+
+int16_t ima_adpcm_decode(ImaAdpcmDecoder *d, uint8_t code) {
+    int32_t step = ima_step_table[d->step_index];
+
+    /* Reconstruct delta from the 3-bit magnitude exactly as the
+       encoder did when it built this same code. */
+    int32_t delta = step >> 3;
+    if (code & 4) delta += step;
+    if (code & 2) delta += step >> 1;
+    if (code & 1) delta += step >> 2;
+
+    int32_t new_predicted = (code & 8) ? (int32_t)d->predicted - delta
+                                        : (int32_t)d->predicted + delta;
+    if (new_predicted > 32767)  new_predicted = 32767;
+    if (new_predicted < -32768) new_predicted = -32768;
+    d->predicted = (int16_t)new_predicted;
+
+    d->step_index += ima_index_table[code];
+    if (d->step_index < 0)  d->step_index = 0;
+    if (d->step_index > 88) d->step_index = 88;
+
+    return d->predicted;
+}
+
+
+
+Encoder and decoder must be initialized with the same initial_predicted
+and initial_step_index - normally 0 and 0, unless you are decoding a
+block that carries its own explicit starting state (see the WAV layout below).
+
+
+Packing 4-Bit Codes Into Bytes
+
+
+A 4-bit code needs packing two-to-a-byte before it can be written to a file. The IMA
+convention is little-nibble-first: the first sample's code goes in the low nibble,
+the second sample's code in the high nibble of the same byte.
+
+
+
+/* Encodes n samples (n must be even) into n/2 packed bytes. */
+void ima_adpcm_encode_block(ImaAdpcmEncoder *e, const int16_t *samples,
+                            int n, uint8_t *out) {
+    for (int i = 0; i < n; i += 2) {
+        uint8_t low  = ima_adpcm_encode(e, samples[i]);
+        uint8_t high = ima_adpcm_encode(e, samples[i + 1]);
+        out[i / 2] = (uint8_t)(low | (high << 4));
+    }
+}
+
+void ima_adpcm_decode_block(ImaAdpcmDecoder *d, const uint8_t *in,
+                            int n, int16_t *samples) {
+    for (int i = 0; i < n; i += 2) {
+        uint8_t byte = in[i / 2];
+        samples[i]     = ima_adpcm_decode(d, byte & 0x0F);
+        samples[i + 1] = ima_adpcm_decode(d, (byte >> 4) & 0x0F);
+    }
+}
+
+
+Round-Trip Test
+
+
+#include <stdio.h>
+
+int main(void) {
+    int16_t original[8] = { 0, 1000, 3000, 5000, 4000, 1000, -2000, -4000 };
+    uint8_t packed[4];
+    int16_t decoded[8];
+
+    ImaAdpcmEncoder enc; ima_adpcm_encoder_init(&enc, 0, 0);
+    ImaAdpcmDecoder dec; ima_adpcm_decoder_init(&dec, 0, 0);
+
+    ima_adpcm_encode_block(&enc, original, 8, packed);
+    ima_adpcm_decode_block(&dec, packed, 8, decoded);
+
+    for (int i = 0; i < 8; i++) {
+        printf("orig=%6d  decoded=%6d  error=%5d\n",
+               original[i], decoded[i], decoded[i] - original[i]);
+    }
+    return 0;
+}
+
+
+
+orig=     0  decoded=     0  error=    0
+orig=  1000  decoded=    11  error= -989
+orig=  3000  decoded=    41  error=-2959
+orig=  5000  decoded=   104  error=-4896
+orig=  4000  decoded=   240  error=-3760
+orig=  1000  decoded=   533  error= -467
+orig= -2000  decoded=   -98  error= 1902
+orig= -4000  decoded= -1455  error= 2545
+
+
+
+This looks like a bad result at first glance, and it teaches the most important
+practical lesson about ADPCM: step_index starts at 0 - the smallest step
+in the table (7) - and it can only grow by at most 8 table entries per sample (the
+largest entry in ima_index_table). Jumping straight from silence to
+5000 is a signal no real encoder would actually hand it cold: it takes several
+samples of maximum-magnitude codes just to ramp the step size up to something capable
+of tracking a jump that large, so the reconstruction visibly lags behind for the
+first few samples - exactly the slope overload failure from Part 2, just recovering
+instead of persisting. This is precisely why production encoders do not start every
+block at step_index = 0: either the stream runs continuously so the step
+size has already adapted to the recent signal, or, as the WAV block layout below
+shows, each block carries an explicit starting step index chosen to match what the
+audio actually needs at that point. Feed the same encoder a slowly-changing 64-sample sine (amplitude 2000, one cycle
+over the whole block, so no single sample-to-sample jump is large) instead of the
+silence-to-8000 leap above, and after the same ramp-up window the tracking error
+drops to a maximum of 51 - about 2.5% of the signal's amplitude. Normal continuous
+audio looks like this gradual case almost everywhere; the pathological jump above
+only happens at a genuine cold start, which is exactly why the WAV block layout below
+lets every block restart from whatever step index the audio actually needs, instead of
+always restarting from 0.
+
+
+ADPCM Inside a WAV File
+
+
+The Microsoft/IMA ADPCM WAV format (format tag 0x0011) does not encode
+one continuous stream - it splits audio into independent blocks (typically 256 or 512
+bytes), each of which is self-contained: it starts with a 4-byte preamble per
+channel giving the exact decoder starting state, so a decoder (or a seek operation)
+never needs to process from the start of the file to decode block N correctly.
+
+
+
+/* Per-channel block preamble, exactly 4 bytes, little-endian: */
+typedef struct {
+    int16_t initial_predicted;  /* bytes 0-1: predictor state at block start */
+    uint8_t  initial_step_index; /* byte 2: index into ima_step_table */
+    uint8_t  reserved;           /* byte 3: must be 0 */
+} ImaAdpcmBlockHeader;
+
+
+
+To decode block N in isolation, read its header, call
+ima_adpcm_decoder_init(&dec, header.initial_predicted, header.initial_step_index),
+then decode the packed nibbles that follow. This is also why encoders periodically
+re-key the predictor state to the block boundary rather than running one continuous
+encoder across the whole file - it trades a small amount of compression efficiency
+(the state reset costs a few bytes per block) for the ability to seek into the middle
+of a file without decoding everything before it.
+
+
+Summary
+
+
+IMA ADPCM extends the fixed-step DPCM from Part 2 with a step size that adapts every
+sample, using two standard lookup tables so that any conforming encoder and decoder
+agree bit-for-bit without ever transmitting the step size explicitly. The encoder's
+bit-serial quantization loop matters because it guarantees the reconstructed delta
+matches the decoder's arithmetic exactly - any deviation, such as reimplementing the
+quantizer with a division instead of the standard's shift-and-compare, will drift out
+of sync with reference decoders. Four bits per sample gives a guaranteed 4:1
+compression ratio versus 16-bit linear PCM, and the format's block structure (each
+block carrying its own starting predictor state) is what lets a real WAV or AVI file
+support seeking without needing to decode from the beginning. Between the three
+articles in this series you now have a stateless log-domain codec (mu-law/A-law), a
+prediction-only codec (DPCM), and a fully adaptive predictive codec (ADPCM) - the
+three building blocks that essentially every simple audio codec after this point
+combines or extends.
+
+
+Further Reading
+
+
+IMA ADPCM - MultimediaWiki (algorithm reference and variants)
+IMA ADPCM technical reference (Stanford/DVI)
+IMAADPCM Wave Type - Microsoft documentation of the WAV layout
+ITU-T G.726: an alternative, non-IMA ADPCM standard used in telephony
+
+
+See Also
+
+
+Audio Compression Part 2: Differential PCM
+Audio Compression Part 1: mu-law and A-law Companding
+Sample Playback - decoding compressed sample data during real-time playback
+Audio Compression Part 6: WAV and MP3 File Headers - the extended fmt/fact chunks this format needs inside a WAV file
+

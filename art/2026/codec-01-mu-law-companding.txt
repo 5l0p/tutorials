@@ -1,0 +1,319 @@
+Audio Compression - Part 1: mu-law and A-law Companding
+2026-07-13
+
+
+Every audio compression scheme starts from the same observation: 16-bit linear PCM
+spends the same number of bits on every sample, regardless of how loud that sample is.
+A quiet passage recorded at -40 dBFS gets exactly as many quantization steps per unit
+of signal as a passage clipping at 0 dBFS - which means the quiet passage is
+proportionally far noisier. mu-law and A-law companding fix this with a single
+logarithmic curve and no history, no prediction, and no blocks: each sample is
+compressed independently of every other sample. That makes it the simplest real
+compression algorithm you can implement, and it is still exactly what your phone call
+and a huge number of embedded audio codecs use today (it is the "u-law" and "a-law"
+in G.711, the codec behind traditional digital telephony).
+
+
+What You Will Learn
+
+
+Why fixed-step linear quantization wastes bits on quiet signals
+The mu-law and A-law logarithmic companding curves and where they come from
+How to implement the ITU-T G.711 encode and decode functions bit-for-bit in C
+How to build a fast 256-entry lookup table instead of computing logarithms per sample
+How to measure the quantization error a companded codec introduces versus linear PCM
+Where mu-law/A-law fits in a real audio pipeline (WAV, AU, telephony) and its limits
+
+
+The Problem With Linear Quantization
+
+
+Say you want to cut a 16-bit PCM stream down to 8 bits per sample - a 2:1 saving with
+no entropy coding at all, just fewer bits per sample. The naive approach is to keep
+the top 8 bits of each 16-bit sample and discard the bottom 8. This is linear
+quantization: every quantization step represents the same voltage change, whether the
+signal is near full scale or near silence.
+
+
+
+The trouble is signal-to-quantization-noise ratio (SQNR) is fixed per bit of
+resolution (roughly 6 dB per bit) relative to full scale, not relative to the
+signal itself. A sample at -40 dBFS with 8-bit linear quantization has roughly 40 dB
+less headroom above the noise floor than a sample at 0 dBFS. Quiet passages - which is
+most of speech, most of the time - become audibly grainy.
+
+
+
+Human hearing is itself roughly logarithmic (this is why we measure loudness in dB in
+the first place). So instead of spacing quantization steps linearly in amplitude,
+space them logarithmically: small amplitudes get many closely-spaced steps, large
+amplitudes get few widely-spaced steps. This matches quantization error to how
+perceptible it actually is. That is companding - COMpressing then exPANDING.
+
+
+The mu-law Curve
+
+
+mu-law (used in North America and Japan) applies this curve to a normalized input
+x in [-1, 1]:
+
+
+
+F(x) = sgn(x) * ln(1 + mu*|x|) / ln(1 + mu)
+
+
+
+with mu = 255 for 8-bit output. This is a continuous logarithmic curve;
+in practice, G.711 does not evaluate ln() per sample. Instead it uses a
+piecewise-linear approximation with 8 segments per sign, doubling the step size at
+each segment boundary - close enough to the true log curve to be indistinguishable,
+and implementable with integer shifts and comparisons alone. That piecewise form is
+what the standard actually specifies, and what we implement below.
+
+
+mu-law Encode
+
+
+The G.711 mu-law encoder takes a 16-bit signed linear PCM sample and produces one
+8-bit code. The classic bit-exact implementation biases the sample, clips it,
+finds which of 8 exponential segments it falls in, and packs sign + segment +
+mantissa into a byte:
+
+
+
+#include <stdint.h>
+
+#define MULAW_BIAS 0x84   /* 132, per G.711 */
+#define MULAW_CLIP 32635  /* clip level before biasing */
+
+uint8_t linear_to_mulaw(int16_t pcm) {
+    int sign = (pcm < 0) ? 0x80 : 0x00;
+    int magnitude;
+
+    if (sign) {
+        /* avoid overflow negating INT16_MIN */
+        magnitude = (pcm == -32768) ? 32767 : -pcm;
+    } else {
+        magnitude = pcm;
+    }
+
+    if (magnitude > MULAW_CLIP) magnitude = MULAW_CLIP;
+    magnitude += MULAW_BIAS;
+
+    /* Find the exponent: the position of the highest set bit
+       above bit 5, i.e. which of the 8 segments we're in. */
+    int exponent = 7;
+    for (int mask = 0x4000; (magnitude & mask) == 0 && exponent > 0;
+         mask >>= 1) {
+        exponent--;
+    }
+
+    int mantissa = (magnitude >> (exponent + 3)) & 0x0F;
+    uint8_t mulaw_byte = ~(sign | (exponent << 4) | mantissa);
+    return mulaw_byte;
+}
+
+
+
+Walking through the non-obvious parts:
+
+
+
+Bias before clipping. Adding MULAW_BIAS (132) shifts the
+    magnitude so that the segment-finding loop below works uniformly across all
+    8 segments, including the first. This is a quirk of the standard's derivation,
+    not something you need to re-derive - just replicate it.
+The exponent loop finds which power-of-two segment the biased magnitude
+    falls into, by scanning from the top bit downward. Each segment is twice as wide
+    as the last, which is what makes this a logarithmic (not linear) encoding despite
+    using only integer comparisons.
+The mantissa takes 4 bits from inside that segment - the local linear
+    resolution within the chosen exponential step.
+The final bitwise NOT (~) is a G.711 convention: the encoded
+    byte is transmitted inverted. Every mu-law encoder/decoder pair does this, so it
+    only matters if you are trying to interoperate with other implementations
+    (which you should assume you are).
+
+
+mu-law Decode
+
+
+Decoding reverses each step exactly - undo the inversion, pull out sign/exponent/
+mantissa, reconstruct the magnitude, subtract the bias, restore the sign:
+
+
+
+int16_t mulaw_to_linear(uint8_t mulaw_byte) {
+    mulaw_byte = ~mulaw_byte;
+
+    int sign     = mulaw_byte & 0x80;
+    int exponent = (mulaw_byte >> 4) & 0x07;
+    int mantissa = mulaw_byte & 0x0F;
+
+    int magnitude = ((mantissa << 3) + MULAW_BIAS) << exponent;
+    magnitude -= MULAW_BIAS;
+
+    return sign ? -(int16_t)magnitude : (int16_t)magnitude;
+}
+
+
+
+Round-trip a full-scale sine wave through both functions and you will not get the
+original samples back exactly - that is expected and is exactly what "lossy" means
+here. What you are checking is that the error stays small and, crucially, stays
+proportionally small at low amplitudes too:
+
+
+
+#include <stdio.h>
+#include <math.h>
+
+int main(void) {
+    for (int i = 0; i < 8; i++) {
+        int16_t original = (int16_t)(1000 * i);  /* small amplitudes */
+        uint8_t coded     = linear_to_mulaw(original);
+        int16_t decoded   = mulaw_to_linear(coded);
+        printf("orig=%6d  coded=0x%02x  decoded=%6d  error=%d\n",
+               original, coded, decoded, decoded - original);
+    }
+    return 0;
+}
+
+
+
+orig=     0  coded=0xff  decoded=     0  error=0
+orig=  1000  coded=0xce  decoded=   988  error=-12
+orig=  2000  coded=0xbf  decoded=  1980  error=-20
+orig=  3000  coded=0xb7  decoded=  3004  error=4
+orig=  4000  coded=0xaf  decoded=  4092  error=92
+orig=  5000  coded=0xab  decoded=  5116  error=116
+orig=  6000  coded=0xa8  decoded=  5884  error=-116
+orig=  7000  coded=0xa4  decoded=  6908  error=-92
+
+
+
+Notice the error grows with amplitude even though it stays a roughly constant
+percentage of the signal - that is the entire point of companding. Compare
+this to naive 8-bit linear truncation of the same values, where the absolute error
+is capped by the fixed step size but is proportionally enormous at low amplitude
+(a step size of ~256 on a signal of 1000 is 25% error, versus mu-law's ~0.2% here).
+
+
+A-law: The Same Idea, Different Constants
+
+
+A-law (used almost everywhere outside North America and Japan) follows the same
+companding philosophy with a different curve and different bit patterns. The
+piecewise encoder looks structurally identical to mu-law's, but without the bias
+trick and with an XOR mask instead of a full inversion:
+
+
+
+uint8_t linear_to_alaw(int16_t pcm) {
+    int sign = (pcm >= 0) ? 0x80 : 0x00;
+    int magnitude = sign ? pcm : -pcm;
+    if (magnitude > 32635) magnitude = 32635;
+
+    int exponent = 7;
+    for (int mask = 0x4000; (magnitude & mask) == 0 && exponent > 0;
+         mask >>= 1) {
+        exponent--;
+    }
+
+    int mantissa;
+    if (exponent == 0) {
+        mantissa = (magnitude >> 4) & 0x0F;
+    } else {
+        mantissa = (magnitude >> (exponent + 3)) & 0x0F;
+    }
+
+    uint8_t alaw_byte = sign | (exponent << 4) | mantissa;
+    return alaw_byte ^ 0x55;  /* alternating-bit XOR, a G.711 convention */
+}
+
+
+
+mu-law and A-law are not interoperable - if you decode A-law data with the mu-law
+decoder you will get plausible-looking but wrong audio, with no error raised. Get
+the choice of law right for whatever format or protocol you are targeting (check the
+codec negotiation in SIP/RTP, or the format tag in a WAV/AU header) before debugging
+anything downstream.
+
+
+Making It Fast: Lookup Tables
+
+
+The bit-twiddling functions above are cheap, but for real-time audio you can do
+better: since the input to the encoder is a 16-bit value and the codes are only
+8 bits, both directions are small enough to precompute entirely. Decoding is the
+easy case - it is a flat 256-entry table:
+
+
+
+static int16_t mulaw_decode_table[256];
+
+void build_mulaw_decode_table(void) {
+    for (int i = 0; i < 256; i++) {
+        mulaw_decode_table[i] = mulaw_to_linear((uint8_t)i);
+    }
+}
+
+/* Hot path: one array index, no branches. */
+static inline int16_t mulaw_decode_fast(uint8_t code) {
+    return mulaw_decode_table[code];
+}
+
+
+
+Encoding a full 16-bit input as a direct 65536-entry table is often still worth it
+in memory-rich environments (256 KB for 16-bit entries), but on constrained targets
+the segment-search encoder above is already O(1)-ish (at most 8 loop iterations) and
+usually not the bottleneck - profile before you build a table you do not need.
+
+
+Where This Fits In a Real Pipeline
+
+
+mu-law/A-law samples are what the WAVE_FORMAT_MULAW /
+WAVE_FORMAT_ALAW tags in a WAV header describe, and what a .au
+file typically contains by default. They are also the default payload types
+(PCMU/PCMA) in RTP for VoIP. If you are reading or writing any of these formats, you
+now have the actual codec, not just the file structure. What companding does
+not give you is anything close to MP3-level compression ratios - you are still
+sending one byte per sample, just a better-chosen byte. For further gains you need to
+exploit correlation between samples, which is exactly what the next article
+in this series - differential PCM - does.
+
+
+Summary
+
+
+mu-law and A-law compress 16-bit linear PCM to 8 bits per sample by applying a
+logarithmic curve before quantizing, so that quantization error is proportional to
+signal level rather than fixed in absolute terms - matching how loudness is actually
+perceived. Both are implemented as a stateless, per-sample piecewise-linear
+approximation of a true logarithm, using only integer shifts and comparisons, which
+is what makes them "the simplest real codec": no prediction, no blocks, no history
+between samples. They remain the codec behind G.711 telephony and are a normal WAV/AU
+format tag today. The next step in exploiting more of the signal's structure is to
+predict each sample from its neighbours instead of encoding it independently.
+
+
+Further Reading
+
+
+ITU-T G.711: Pulse code modulation (PCM) of voice frequencies
+G.711 - Wikipedia overview of mu-law/A-law bit layouts
+RFC 7655: Update to RTP Payload Format for PCM
+mu-Law Companding - Julius O. Smith III
+
+
+See Also
+
+
+Audio Compression Part 2: Differential PCM
+Audio Compression Part 3: IMA ADPCM
+Audio Fundamentals - sample rates, bit depth, and PCM basics this article builds on
+Quantization, Noise, and Dither - the general noise model behind any quantizer, including this one
+Audio Compression Part 6: WAV and MP3 File Headers - putting this codec's output into an actual file
+

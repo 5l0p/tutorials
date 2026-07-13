@@ -5,142 +5,158 @@
   <link>https://5l0p.github.io/tutorials/</link>
   <description>Tutorials</description>
   <item>
-    <title>LLM - Part 15: LangChain &amp; LangGraph Concepts</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-15-langchain-concepts.htm</link>
-    <description>A conceptual tour of chains, graphs, and agent patterns from the LangChain ecosystem - and how they map to what you have already built in Go.</description>
-    <pubDate>2026-06-24</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-15-langchain-concepts.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>DSP - Part 33: The Modified Discrete Cosine Transform</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-33-mdct.htm</link>
+    <description>Why perceptual codecs use the MDCT instead of the FFT - real-valued output, better energy compaction, and perfect reconstruction from 50%-overlapping windows via time-domain aliasing cancellation - implemented and numerically verified in C.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-33-mdct.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
   </item>
   <item>
-    <title>LLM - Part 14: Putting It Together: A Full Agent</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-14-full-agent.htm</link>
-    <description>Assemble skills, MCP, memory, and RAG into a single configurable Go binary - the reference implementation for this series.</description>
-    <pubDate>2026-06-23</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-14-full-agent.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>DSP - Part 31: The Bark Scale and Perceptual Bit Allocation</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-31-bark-scale.htm</link>
+    <description>The Bark critical-band scale, the absolute threshold of hearing, simultaneous masking, and how a perceptual audio codec uses all three to decide how many bits to spend on each FFT bin - implemented in C on top of the FFT from Part 11.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-31-bark-scale.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
   </item>
   <item>
-    <title>LLM - Part 13: Local Models with llama.cpp</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-13-local-models.htm</link>
-    <description>Run llama.cpp as a local OpenAI-compatible server, swap the base URL in your Go agent, and understand the trade-offs between local and cloud models.</description>
-    <pubDate>2026-06-22</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-13-local-models.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>DSP - Part 30: Quantization, Noise, and Dither</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-30-quantization-dither.htm</link>
+    <description>The quantization error model, the SQNR formula derived from first principles, why quantization without dither correlates error with the signal, and how triangular dither and noise shaping fix it - implemented in C.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-30-quantization-dither.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
   </item>
   <item>
-    <title>LLM - Part 12: CAG: Cache-Augmented Generation</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-12-cag.htm</link>
-    <description>How OpenAI prompt caching works, when CAG is better than RAG, and how to structure prompts to maximise cache hit rates.</description>
-    <pubDate>2026-06-21</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-12-cag.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>Audio Compression - Part 1: mu-law and A-law Companding</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/codec-01-mu-law-companding.htm</link>
+    <description>Implementing G.711 mu-law and A-law companding in C: why linear PCM wastes bits on quiet signals, the logarithmic law, lookup-table encode/decode, and measuring the quantization error you traded away.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/codec-01-mu-law-companding.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>codec</category>
+    <category>compression</category>
   </item>
   <item>
-    <title>LLM - Part 11: RAG: Retrieval-Augmented Generation</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-11-rag.htm</link>
-    <description>Generate embeddings with OpenAI, implement cosine similarity in Go, build a JSON-backed vector store, and wire retrieval into the agent loop.</description>
-    <pubDate>2026-06-20</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-11-rag.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>Audio Compression - Part 2: Differential PCM</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/codec-02-dpcm.htm</link>
+    <description>Implementing lossless and lossy DPCM in C: exploiting sample-to-sample correlation with delta encoding, building a fixed quantizer, and understanding the error-accumulation problem that motivates adaptive step sizes.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/codec-02-dpcm.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>codec</category>
+    <category>compression</category>
   </item>
   <item>
-    <title>LLM - Part 10: Adding Memory to Agents</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-10-memory.htm</link>
-    <description>Implement short-term message history, a file-backed long-term key-value store, and a summarisation strategy for context window management.</description>
-    <pubDate>2026-06-19</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-10-memory.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>Audio Compression - Part 3: IMA ADPCM</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/codec-03-adpcm.htm</link>
+    <description>Implementing the IMA ADPCM standard in C: adaptive step-size quantization, the official step and index tables, a bit-exact encoder/decoder pair, nibble packing, and how ADPCM data is laid out inside a WAV file.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/codec-03-adpcm.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>codec</category>
+    <category>compression</category>
   </item>
   <item>
-    <title>LLM - Part 9: MCP over WebSocket</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-09-mcp-websocket.htm</link>
-    <description>Build an MCP server and client using WebSocket transport for bidirectional streaming, and handle reconnection gracefully.</description>
-    <pubDate>2026-06-18</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-09-mcp-websocket.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>DSP - Part 32: FFT in Pure Data</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-32-fft-in-puredata.htm</link>
+    <description>How Pure Data exposes the FFT through rfft~, fft~, cartopol~ and block~, why the block size inside a subpatch determines your FFT size, and how to build a working windowed overlap-add spectral gate patch.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-32-fft-in-puredata.htm</guid>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>puredata</category>
   </item>
   <item>
-    <title>LLM - Part 8: MCP over HTTP</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-08-mcp-http.htm</link>
-    <description>Run an MCP server over HTTP with Server-Sent Events, add basic authentication, and understand when HTTP transport fits better than stdio.</description>
-    <pubDate>2026-06-17</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-08-mcp-http.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>Audio Compression - Part 8: Building a Toy Perceptual Codec</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/codec-08-toy-perceptual-codec.htm</link>
+    <description>Wiring the MDCT, Bark-scale masking, quantization bit allocation, and Rice entropy coding into one working perceptual encoder/decoder in C - a series retrospective across mu-law, DPCM/ADPCM, Huffman/Rice, lossless prediction, CELP, and the psychoacoustic DSP articles.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/codec-08-toy-perceptual-codec.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>codec</category>
+    <category>compression</category>
   </item>
   <item>
-    <title>LLM - Part 7: MCP over stdio</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-07-mcp-stdio.htm</link>
-    <description>Build a Go MCP server using stdio transport, register tools, and connect it to an agent with mcp-go.</description>
-    <pubDate>2026-06-16</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-07-mcp-stdio.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>Audio Compression - Part 7: Vector Quantization and CELP</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/codec-07-celp.htm</link>
+    <description>Vector quantization fundamentals (codebooks, nearest-neighbor search, the LBG algorithm) and Code-Excited Linear Prediction: LPC analysis via Levinson-Durbin, the source-filter model of speech, and analysis-by-synthesis codebook search - implemented and measured in C.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/codec-07-celp.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>codec</category>
+    <category>compression</category>
   </item>
   <item>
-    <title>LLM - Part 6: Intro to MCP Servers</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-06-mcp-intro.htm</link>
-    <description>What the Model Context Protocol is, why it exists, and how its three transport types relate to the agent loop you already have.</description>
-    <pubDate>2026-06-15</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-06-mcp-intro.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>Audio Compression - Part 5: Lossless Predictive Coding</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/codec-05-lossless-predictive-coding.htm</link>
+    <description>Combining DPCM-style fixed linear predictors with Golomb-Rice entropy coding into a real, measured lossless audio codec in C - the same architecture FLAC and Shorten are built on.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/codec-05-lossless-predictive-coding.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>codec</category>
+    <category>compression</category>
   </item>
   <item>
-    <title>LLM - Part 5: Skills &amp; Structured Tool Libraries</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-05-skills.htm</link>
-    <description>Organise tools as named structs with a common interface, build a registry for routing, and compose a small standard library of reusable skills.</description>
-    <pubDate>2026-06-14</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-05-skills.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>Audio Compression - Part 4: Entropy Coding with Huffman and Golomb-Rice</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/codec-04-entropy-coding.htm</link>
+    <description>Implementing Huffman coding and Golomb-Rice coding in C - the entropy coding stage that turns lossless DPCM&apos;s residuals from Part 2 into an actual compression ratio, plus a bit-level reader/writer to pack variable-length codes into bytes.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/codec-04-entropy-coding.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>codec</category>
+    <category>compression</category>
   </item>
   <item>
-    <title>LLM - Part 4: Building a Simple Agent Loop</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-04-agent-loop.htm</link>
-    <description>Implement the think→act→observe cycle as a Go for-loop, with termination conditions, error handling, and a file-system agent example.</description>
-    <pubDate>2026-06-13</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-04-agent-loop.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>Audio Compression - Part 6: WAV and MP3 File Headers</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/codec-06-wav-mp3-headers.htm</link>
+    <description>The RIFF/WAV chunk structure (including the extended fmt chunk non-PCM formats like mu-law and ADPCM require) and the MP3 frame header&apos;s bit layout, bitrate/sample-rate tables, and frame-length formula - parsed and written in C.</description>
+    <pubDate>2026-07-13</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/codec-06-wav-mp3-headers.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>codec</category>
+    <category>compression</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 2: Pitch as Numbers</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-02-pitch-as-numbers.htm</link>
+    <description>MIDI note numbers as the universal pitch representation, the equal temperament frequency formula, building scale tables in Lua, and the quantise function that maps any integer to the nearest in-scale pitch.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-02-pitch-as-numbers.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
   </item>
   <item>
     <title>LLM - Part 3: Tool Calls (Function Calling)</title>
     <link>https://5l0p.github.io/tutorials/art/2026/llm-03-tool-calls.htm</link>
     <description>Define tools as JSON schemas, handle the model&apos;s call requests, and return results to complete the tool-use loop in Go.</description>
-    <pubDate>2026-06-12</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/llm-03-tool-calls.htm</guid>
     <category>go</category>
     <category>llm</category>
@@ -148,90 +164,156 @@
     <category>agents</category>
   </item>
   <item>
-    <title>LLM - Part 2: Chat Completions Deep Dive</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-02-chat-completions.htm</link>
-    <description>Understand roles, temperature, token limits, and how to build a stateful REPL that manages conversation history.</description>
-    <pubDate>2026-06-11</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-02-chat-completions.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>openFrameworks - Part 3: The ofApp Lifecycle</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-03-lifecycle.htm</link>
+    <description>A detailed look at setup(), update(), draw(), and exit() - how the openFrameworks event loop works, how to use delta time, and how the OpenGL context interacts with the lifecycle.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-03-lifecycle.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Containers - Part 5: UTS &amp; IPC Namespaces</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-05-uts-ipc.htm</link>
+    <description>How UTS namespaces isolate hostnames and how IPC namespaces separate System V shared memory, semaphores, and POSIX message queues.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-05-uts-ipc.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
   </item>
   <item>
     <title>DSP - Part 1: Audio Fundamentals</title>
     <link>https://5l0p.github.io/tutorials/art/2026/dsp-01-audio-fundamentals.htm</link>
     <description>Sample rate, bit depth, the Nyquist theorem, aliasing, and decibel arithmetic - the vocabulary every audio programmer must know.</description>
-    <pubDate>2026-06-09</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/dsp-01-audio-fundamentals.htm</guid>
     <category>c</category>
     <category>dsp</category>
     <category>audio</category>
   </item>
   <item>
-    <title>RPIPicoDSP - Part 1: The RP2040 &amp; Pico SDK</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/pico-01-rp2040-sdk.htm</link>
-    <description>A tour of the RP2040 chip, the Raspberry Pi Pico board, and the C SDK - from toolchain setup through CMakeLists.txt to a working LED-blink and USB serial hello-world.</description>
-    <pubDate>2026-06-09</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/pico-01-rp2040-sdk.htm</guid>
+    <title>Lua - Part 4: Calling C from Lua</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-04-calling-c-from-lua.htm</link>
+    <description>Expose C functions to Lua scripts using lua_CFunction, build a module table with luaL_Reg, and signal errors with luaL_error - complete C math module example.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-04-calling-c-from-lua.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>DSP - Part 22: Writing a VST3 Plugin</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-22-vst3-plugin.htm</link>
+    <description>VST3 plugin architecture without CMake magic: IComponent/IAudioProcessor split, IPluginFactory, process() and ProcessData, a stereo gain plugin with one parameter, IEditController, and building with gcc.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-22-vst3-plugin.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>libpd - Part 8: MIDI with libpd</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-08-midi.htm</link>
+    <description>How to send MIDI events into Pd and receive MIDI output from Pd using libpd&apos;s MIDI API and hook callbacks.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-08-midi.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>libpd - Part 5: Sending Messages to Pd</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-05-send-messages.htm</link>
+    <description>How to send bangs, floats, symbols, lists, and typed messages from C into a running Pd patch using the libpd messaging API.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-05-send-messages.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>BSD Jails: Isolation Without Linux</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-21-bsd-jails.htm</link>
+    <description>How FreeBSD jails work under the hood, how they compare to Linux namespaces and cgroups, and what container developers can learn from the BSD approach to OS-level isolation.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-21-bsd-jails.htm</guid>
+    <category>containers</category>
+    <category>bsd</category>
+    <category>freebsd</category>
+    <category>jails</category>
+    <category>security</category>
+    <category>isolation</category>
+  </item>
+  <item>
+    <title>DSP - Part 26: Vendoring C and C++ Dependencies</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-26-vendoring-cpp.htm</link>
+    <description>Three patterns for taking ownership of a dependency: git submodules (libsndfile, RtAudio), source-copy with a third_party/ tree, and single-file amalgamations (the stb pattern). Covers pkg-config, writing a FindXxx.cmake shim, and when to vendor vs link dynamically.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-26-vendoring-cpp.htm</guid>
+    <category>c</category>
+    <category>cpp</category>
+    <category>make</category>
+    <category>dependencies</category>
+    <category>vendoring</category>
+  </item>
+  <item>
+    <title>RPIPicoDSP - Part 3: Audio Input on the Pico</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-03-audio-input.htm</link>
+    <description>ADC DMA capture, I2S microphone input via PIO with the INMP441 and SPH0645, PDM microphones, and a complete example that reads a mic, computes peak level, and blinks an LED.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-03-audio-input.htm</guid>
     <category>c</category>
     <category>embedded</category>
     <category>audio</category>
     <category>pico</category>
   </item>
   <item>
-    <title>Lua - Part 1: Why Lua? The Embedding Case</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/lua-01-why-lua.htm</link>
-    <description>Lua is the dominant embeddable language because it was designed for exactly that purpose - small, fast, and written in portable ANSI C.</description>
-    <pubDate>2026-06-09</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/lua-01-why-lua.htm</guid>
+    <title>Drums - Part 6: Per-Channel Effects with Airwindows Pd Externals</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/drums-06-effects.htm</link>
+    <description>Using the airwindows Pd externals as per-channel inserts on drum voices: mackity~ for input stage colour, totape9~ for tape saturation, dubplate2~ for vinyl EQ, zacidlowpass~ for resonant filtering, and chorusensemble~ for pitch widening. Building an effects chain in Pd with normalised 0–1 parameters.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/drums-06-effects.htm</guid>
     <category>c</category>
-    <category>lua</category>
-    <category>scripting</category>
-  </item>
-  <item>
-    <title>libpd - Part 1: What Is libpd?</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/libpd-01-what-is-libpd.htm</link>
-    <description>An introduction to libpd, the embeddable version of the Pure Data DSP engine, and the C API surface it exposes.</description>
-    <pubDate>2026-06-09</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-01-what-is-libpd.htm</guid>
-    <category>c</category>
-    <category>audio</category>
     <category>puredata</category>
+    <category>audio</category>
+    <category>effects</category>
+    <category>drums</category>
   </item>
   <item>
-    <title>Go - Part 1: Why Go? The Language at a Glance</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/go-01-why-go.htm</link>
-    <description>An overview of Go&apos;s design philosophy, what it deliberately leaves out, and why experienced C and C# developers find it productive.</description>
-    <pubDate>2026-06-09</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/go-01-why-go.htm</guid>
+    <title>Go - Part 4: Interfaces &amp; Structural Typing</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-04-interfaces.htm</link>
+    <description>Go&apos;s implicit interface satisfaction, the io.Reader pattern, type assertions, and type switches explained for C and C# developers.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-04-interfaces.htm</guid>
     <category>go</category>
   </item>
   <item>
-    <title>openFrameworks - Part 1: What Is openFrameworks?</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/of-01-what-is-of.htm</link>
-    <description>An introduction to openFrameworks: what it is, how it compares to Processing and p5.js, and why C++ is a compelling choice for creative coding.</description>
-    <pubDate>2026-06-09</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/of-01-what-is-of.htm</guid>
-    <category>cpp</category>
-    <category>openframeworks</category>
-    <category>graphics</category>
+    <title>Go - Part 3: Structs &amp; Methods</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-03-structs-methods.htm</link>
+    <description>How Go uses structs and methods as its primary abstraction mechanism, with embedding as composition instead of inheritance.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-03-structs-methods.htm</guid>
+    <category>go</category>
   </item>
   <item>
-    <title>Containers - Part 1: What Is a Container?</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/containers-01-what-is-a-container.htm</link>
-    <description>Containers are ordinary Linux processes with restricted views of the system - built from six kernel primitives, not a single syscall.</description>
-    <pubDate>2026-06-09</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/containers-01-what-is-a-container.htm</guid>
-    <category>linux</category>
-    <category>containers</category>
+    <title>Elektron Synthesis - Part 5: Machinedrum TRX-CP Clap, TRX-RS Rimshot, TRX-MA Metallic</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-05-md-trx-misc.htm</link>
+    <description>Recreating the Machinedrum TRX-CP clap, TRX-RS rimshot, and TRX-MA metallic percussion machines in Pure Data. The CP&apos;s multi-burst roll with reverb, the RS&apos;s dual resonator model of stick striking drum rim, and the MA&apos;s pitched metallic resonator.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-05-md-trx-misc.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
   </item>
   <item>
-    <title>Drums - Part 1: Electronic Drum Synthesis — Architecture and Approach</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/drums-01-architecture.htm</link>
-    <description>How classic electronic drum machines synthesise their sounds from first principles: tonal oscillators with pitch sweeps, filtered noise, transient clicks, and the Prok Drums extend-decay envelope pattern. Building blocks for every voice in the series.</description>
-    <pubDate>2026-06-09</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/drums-01-architecture.htm</guid>
+    <title>Drums - Part 5: Clap Synthesis in Pure Data</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/drums-05-clap.htm</link>
+    <description>Building a parametric clap in Pure Data: three parallel noise sources (white, SID, pink), a pre-attack roll cluster via metro, dual MAIN/VERB envelope paths, shelf EQ, and a Freeverb reverb tail. Patch switching with a Lua preset system.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/drums-05-clap.htm</guid>
     <category>c</category>
     <category>puredata</category>
     <category>audio</category>
@@ -239,45 +321,64 @@
     <category>drums</category>
   </item>
   <item>
-    <title>LLM - Part 1: OpenAI API Basics</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/llm-01-openai-api-basics.htm</link>
-    <description>Make your first call to the OpenAI API in Go using only the standard library - no SDK required.</description>
-    <pubDate>2026-06-09</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/llm-01-openai-api-basics.htm</guid>
-    <category>go</category>
-    <category>llm</category>
-    <category>llama.cpp</category>
-    <category>agents</category>
+    <title>openFrameworks - Part 13: Addons - Structure &amp; Best Practices</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-13-addons.htm</link>
+    <description>How openFrameworks addons are structured, how to write your own addon from scratch, and when to reach for one versus rolling your own code.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-13-addons.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
   </item>
   <item>
-    <title>Algorithmic Composition - Part 11: Putting It All Together</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/algo-11-putting-it-together.htm</link>
-    <description>A complete self-generating Krell-style patch in Pure Data driven by Lua scripts, wiring the Brownian melody generator, Markov chord progression, voice leading, Euclidean drum patterns, and the Monomachine synthesis engines from Series 10 into a single autonomous system.</description>
-    <pubDate>2026-01-21</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/algo-11-putting-it-together.htm</guid>
-    <category>lua</category>
-    <category>puredata</category>
+    <title>RPIPicoDSP - Part 1: The RP2040 &amp; Pico SDK</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-01-rp2040-sdk.htm</link>
+    <description>A tour of the RP2040 chip, the Raspberry Pi Pico board, and the C SDK - from toolchain setup through CMakeLists.txt to a working LED-blink and USB serial hello-world.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-01-rp2040-sdk.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
     <category>audio</category>
-    <category>music-theory</category>
-    <category>generative</category>
+    <category>pico</category>
   </item>
   <item>
-    <title>Algorithmic Composition - Part 10: Euclidean Rhythms</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/algo-10-euclidean-rhythms.htm</link>
-    <description>Bjorklund&apos;s algorithm for distributing k beats across n slots as evenly as possible, the surprising match to world-music rhythmic patterns, generating polyrhythms from coprime period lengths, and integrating Euclidean patterns with the drums-07 sequencer in Lua.</description>
-    <pubDate>2026-01-20</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/algo-10-euclidean-rhythms.htm</guid>
-    <category>lua</category>
+    <title>openFrameworks - Part 26: Testing oF Code</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-26-testing.htm</link>
+    <description>Separating testable logic from oF lifecycle code, unit testing with Catch2, compiling the logic layer as a static library with its own Makefile, headless rendering to an offscreen FBO for pixel-level regression tests, and running tests in CI without a display server (Xvfb).</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-26-testing.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>testing</category>
+    <category>catch2</category>
+    <category>ci</category>
+  </item>
+  <item>
+    <title>Drums - Part 2: Kick Drum Synthesis in Pure Data</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/drums-02-kick.htm</link>
+    <description>Building a deep, punchy, programmable kick drum in Pure Data: two sine oscillators with pitch envelopes, triangle/pulse oscillators with phase modulation, filtered noise burst, transient click, soft-clip distortion, and a final extend-decay output envelope.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/drums-02-kick.htm</guid>
+    <category>c</category>
     <category>puredata</category>
     <category>audio</category>
-    <category>music-theory</category>
-    <category>generative</category>
+    <category>synthesis</category>
+    <category>drums</category>
+  </item>
+  <item>
+    <title>Containers - Part 18: seccomp - Syscall Filtering</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-18-seccomp.htm</link>
+    <description>seccomp BPF filters intercept syscalls before they reach the kernel - learn to write a whitelist policy in C with libseccomp, apply it with prctl, and replicate Docker&apos;s default filter in Go.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-18-seccomp.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
   </item>
   <item>
     <title>Algorithmic Composition - Part 9: Cellular Automata</title>
     <link>https://5l0p.github.io/tutorials/art/2026/algo-09-cellular-automata.htm</link>
     <description>1D elementary cellular automata (Rule 30, Rule 110) as pitch and rhythm generators, reading cell states as notes and rests, and Conway&apos;s Game of Life for evolving harmonic density — all implemented in Lua with output sent to Pure Data.</description>
-    <pubDate>2026-01-19</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/algo-09-cellular-automata.htm</guid>
     <category>lua</category>
     <category>puredata</category>
@@ -286,35 +387,354 @@
     <category>generative</category>
   </item>
   <item>
-    <title>Algorithmic Composition - Part 8: L-Systems</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/algo-08-l-systems.htm</link>
-    <description>Lindenmayer systems as production grammars for melody generation, mapping symbols to notes and directions, turtle-graphics interpretation of symbol strings, and self-similar musical structure at multiple time scales.</description>
-    <pubDate>2026-01-18</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/algo-08-l-systems.htm</guid>
-    <category>lua</category>
-    <category>puredata</category>
+    <title>DSP - Part 4: Anti-Aliasing Oscillators: PolyBLEP</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-04-polyblep.htm</link>
+    <description>Why naive waveforms alias, how the BLEP correction works, and implementing the PolyBLEP function for band-limited sawtooth and square waves in C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-04-polyblep.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
     <category>audio</category>
-    <category>music-theory</category>
-    <category>generative</category>
   </item>
   <item>
-    <title>Algorithmic Composition - Part 7: Voice Leading</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/algo-07-voice-leading.htm</link>
-    <description>Why chord progressions need smooth voice movement, the nearest-neighbour assignment algorithm for three-voice voice leading, detecting and avoiding parallel fifths and octaves, and a complete Lua implementation.</description>
-    <pubDate>2026-01-17</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/algo-07-voice-leading.htm</guid>
-    <category>lua</category>
+    <title>Elektron Synthesis - Part 3: Machinedrum TRX-SD Snare and TRX-XT Hi-Hats</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-03-md-trx-sd.htm</link>
+    <description>Recreating the Machinedrum TRX-SD snare and TRX-HH/TRX-XT hi-hat machines in Pure Data: the TRX-SD&apos;s dual-resonator body with independent noise/snap envelopes, and the TRX-HH metallic oscillator bank with the XT choke mechanism.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-03-md-trx-sd.htm</guid>
+    <category>c</category>
     <category>puredata</category>
     <category>audio</category>
-    <category>music-theory</category>
-    <category>generative</category>
+    <category>synthesis</category>
+    <category>elektron</category>
   </item>
   <item>
-    <title>Algorithmic Composition - Part 6: Generating Chord Progressions</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/algo-06-chord-progressions.htm</link>
-    <description>A Markov chain over harmonic function (T, S, D) rather than individual chords, mapping functions to chord degree choices, generating 4-bar progressions, and modal interchange for colour without key change.</description>
-    <pubDate>2026-01-16</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/algo-06-chord-progressions.htm</guid>
+    <title>DSP - Part 11: FFT from Scratch</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-11-fft.htm</link>
+    <description>The DFT definition, Cooley-Tukey radix-2 FFT algorithm, bit-reversal permutation, butterfly operations, and windowing functions - all implemented in C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-11-fft.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>DSP - Part 27: Static Linking and Distribution</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-27-static-linking.htm</link>
+    <description>Producing a self-contained binary: -static on Linux, otool/install_name_tool on macOS, DLL bundling on Windows. ldd/otool -L/dumpbin to audit runtime deps. Stripping debug info, UPX compression, and a checklist for shipping an offline-distributable C/C++ binary.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-27-static-linking.htm</guid>
+    <category>c</category>
+    <category>cpp</category>
+    <category>distribution</category>
+    <category>static-linking</category>
+    <category>make</category>
+  </item>
+  <item>
+    <title>LLM - Part 10: Adding Memory to Agents</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-10-memory.htm</link>
+    <description>Implement short-term message history, a file-backed long-term key-value store, and a summarisation strategy for context window management.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-10-memory.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Go - Part 8: Concurrency Patterns</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-08-concurrency-patterns.htm</link>
+    <description>Practical Go concurrency patterns: fan-out/fan-in, worker pools, WaitGroup, Mutex, and when to use channels versus shared memory.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-08-concurrency-patterns.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>Containers - Part 20: The OCI Runtime Spec &amp; runc</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-20-oci-runc.htm</link>
+    <description>The Open Container Initiative specifies exactly what a container runtime must do - understand config.json, the container lifecycle, how runc implements it, and where your mini-runtime fits in the OCI world.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-20-oci-runc.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>DSP - Part 13: Denormal Numbers and the 1000x Slowdown</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-13-denormals.htm</link>
+    <description>What IEEE 754 subnormal numbers are, why they cause catastrophic slowdowns in real-time DSP, and how to eliminate them with CPU flags and guard techniques.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-13-denormals.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>libpd - Part 2: Building libpd from Source</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-02-building.htm</link>
+    <description>How to clone, configure, and build libpd as a static or shared library and integrate it into a CMake project.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-02-building.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>LLM - Part 14: Putting It Together: A Full Agent</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-14-full-agent.htm</link>
+    <description>Assemble skills, MCP, memory, and RAG into a single configurable Go binary - the reference implementation for this series.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-14-full-agent.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Containers - Part 8: OverlayFS &amp; Image Layers</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-08-overlayfs.htm</link>
+    <description>How OverlayFS stacks read-only lower layers with a writable upper layer, and how Docker&apos;s image layers map directly to this kernel filesystem.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-08-overlayfs.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Containers - Part 2: Linux Namespaces Overview</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-02-namespaces-overview.htm</link>
+    <description>The eight Linux namespace types, how the kernel represents them, and how to inspect them from the command line and from C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-02-namespaces-overview.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Containers - Part 19b: Mini Container Runtime in Go - Part 2</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-19b-mini-runtime-part2.htm</link>
+    <description>Complete the mini container runtime with networking, cgroups v2, capability dropping, and a seccomp filter, then run a real process inside the finished container.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-19b-mini-runtime-part2.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 14: Monomachine Percussion Toolbox</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-14-mnm-perc.htm</link>
+    <description>Recreating the Monomachine&apos;s Percussion Toolbox synthesis engine in Pure Data: the MNM&apos;s built-in drum synthesis voices for bass drum, snare, and hi-hat, how they differ from the Machinedrum TRX approach, and integrating drum voices into a melodic synthesiser&apos;s track architecture.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-14-mnm-perc.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>LLM - Part 6: Intro to MCP Servers</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-06-mcp-intro.htm</link>
+    <description>What the Model Context Protocol is, why it exists, and how its three transport types relate to the agent loop you already have.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-06-mcp-intro.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Go - Part 11: Modules &amp; Dependencies</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-11-modules.htm</link>
+    <description>How Go modules work: go.mod, go.sum, go get, semantic versioning, major version paths, and the replace directive.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-11-modules.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>Pico — Part 8: USB MIDI with TinyUSB</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-08-usb-midi.htm</link>
+    <description>Presenting the Pico as a USB MIDI class device using TinyUSB — tusb_config.h, reading MIDI packets, sending note events to the host, and the 4-byte USB MIDI packet format.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-08-usb-midi.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
+    <category>audio</category>
+    <category>pico</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 23: Framebuffers &amp; Post-Processing</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-23-framebuffers.htm</link>
+    <description>FBO render-to-texture with raw OpenGL and ofFbo, ping-pong buffers for feedback and iterative effects, full-screen quad post-processing shaders, and feedback loops for generative visuals.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-23-framebuffers.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 8: Machinedrum PI — Pitched Instruments</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-08-md-pi.htm</link>
+    <description>Recreating the Machinedrum PI (Pitched Instruments) machines in Pure Data: physical modelling approaches for clave (struck metal rod), maracas (particle noise), bongos/congas (membrane resonance model), and the general PI architecture using Karplus-Strong and resonator-bank synthesis.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-08-md-pi.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>RPIPicoDSP - Part 4: The Audio Render Loop on Bare Metal</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-04-render-loop.htm</link>
+    <description>DMA interrupt-driven audio, dedicating core 1 to the real-time audio path, avoiding malloc in the ISR, and a complete dual-core setup with USB serial on core 0 and DMA audio on core 1.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-04-render-loop.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
+    <category>audio</category>
+    <category>pico</category>
+  </item>
+  <item>
+    <title>LLM - Part 12: CAG: Cache-Augmented Generation</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-12-cag.htm</link>
+    <description>How OpenAI prompt caching works, when CAG is better than RAG, and how to structure prompts to maximise cache hit rates.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-12-cag.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Lua - Part 9: Sandboxing Lua</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-09-sandboxing.htm</link>
+    <description>Restrict Lua to a safe subset: selectively open standard libraries, remove dangerous globals, use _ENV as a sandbox, add a CPU instruction limit via debug hook.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-09-sandboxing.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>LLM - Part 7: MCP over stdio</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-07-mcp-stdio.htm</link>
+    <description>Build a Go MCP server using stdio transport, register tools, and connect it to an agent with mcp-go.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-07-mcp-stdio.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Elektron Synthesis - Part 11: Monomachine FM+ Extended FM Engine</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/elektron-11-mnm-fmplus.htm</link>
+    <description>Recreating the Monomachine FM+ engine in Pure Data: extended FM synthesis beyond 2-operator VO, including feedback operator chains, algorithm selection between parallel and series operator topologies, and the FM+ parameter set for bass, brass, and complex evolving pads.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-11-mnm-fmplus.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>elektron</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 22: OpenGL Core Profile</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-22-opengl-core.htm</link>
+    <description>Requesting a core profile in openFrameworks, understanding VAOs and VBOs, writing a complete programmable pipeline from scratch - uploading geometry to the GPU and drawing it without oF&apos;s fixed-function abstractions.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-22-opengl-core.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 8: ofxGui: Built-in UI Controls</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-08-ofxgui.htm</link>
+    <description>Using the ofxGui addon to add sliders, toggles, buttons, and colour pickers to your sketch - with ofParameter bindings, ofParameterGroup, and saving/loading presets.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-08-ofxgui.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>DSP - Part 29: Cross-Platform VST3 Builds</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-29-vst3-crossplatform.htm</link>
+    <description>One CMakeLists.txt that builds the VST3 plugin from Part 22 on Linux (gcc), macOS (clang, universal binary), and Windows (MSVC and MinGW). GitHub Actions CI matrix. macOS code-signing for local development. Installers: .deb on Linux, .pkg on macOS, NSIS on Windows.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-29-vst3-crossplatform.htm</guid>
+    <category>c</category>
+    <category>cpp</category>
+    <category>vst3</category>
+    <category>cmake</category>
+    <category>cross-platform</category>
+    <category>audio-plugins</category>
+  </item>
+  <item>
+    <title>Lua - Part 1: Why Lua? The Embedding Case</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-01-why-lua.htm</link>
+    <description>Lua is the dominant embeddable language because it was designed for exactly that purpose - small, fast, and written in portable ANSI C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-01-why-lua.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>DSP - Part 2: The Audio Callback Model</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-02-audio-callback.htm</link>
+    <description>How real-time audio processing works through callbacks, why the audio thread has strict rules, and how ring buffers bridge real-time and non-real-time code.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-02-audio-callback.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>RPIPicoDSP - Part 2: Audio Output on the Pico</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-02-audio-output.htm</link>
+    <description>Three audio output paths - PWM, I2S via PIO, and the I2S interleaved frame format - with a complete DMA-double-buffered I2S example that outputs a 440 Hz sine wave.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-02-audio-output.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
+    <category>audio</category>
+    <category>pico</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 16: Linux Builds</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-16-linux-builds.htm</link>
+    <description>The Makefile-based oF workflow on Linux - debug and release builds, ALSA vs JACK audio, resolving library dependencies, packaging a release binary, and cross-compiling for ARM.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-16-linux-builds.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Lua - Part 10: LuaJIT</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-10-luajit.htm</link>
+    <description>LuaJIT&apos;s tracing JIT, the FFI for zero-overhead C calls, struct passing, ffi.new, and the practical trade-offs of LuaJIT versus standard Lua 5.4.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-10-luajit.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>libpd - Part 3: Initialising libpd &amp; Loading a Patch</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-03-init-patch.htm</link>
+    <description>How to initialise the libpd engine, open a Pd patch, send initial messages, and manage multiple instances.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-03-init-patch.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 3: Random Walks and Brownian Motion</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-03-random-walks-brownian-motion.htm</link>
+    <description>Why pure random pitch selection is musically useless, how Brownian motion models melodic contour as a walk through pitch space, step size and register boundaries as musical parameters, and fractional Brownian motion with the Hurst exponent for controlling phrase shape.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-03-random-walks-brownian-motion.htm</guid>
     <category>lua</category>
     <category>puredata</category>
     <category>audio</category>
@@ -325,7 +745,7 @@
     <title>Algorithmic Composition - Part 5: Harmony Fundamentals</title>
     <link>https://5l0p.github.io/tutorials/art/2026/algo-05-harmony-fundamentals.htm</link>
     <description>Why certain intervals sound stable or tense, the overtone series as the physical basis of harmony, triads as stacked scale degrees, and tonic, subdominant, and dominant function — the data structures that chord progression and voice leading articles build on.</description>
-    <pubDate>2026-01-15</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/algo-05-harmony-fundamentals.htm</guid>
     <category>lua</category>
     <category>puredata</category>
@@ -334,118 +754,19 @@
     <category>generative</category>
   </item>
   <item>
-    <title>Algorithmic Composition - Part 4: Markov Chains for Melody</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/algo-04-markov-chains.htm</link>
-    <description>Encoding musical tendency as a first-order Markov transition matrix over scale degrees, sampling from a probability distribution in Lua, building a rhythm chain, and combining pitch and rhythm into a complete melody generator.</description>
-    <pubDate>2026-01-14</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/algo-04-markov-chains.htm</guid>
-    <category>lua</category>
-    <category>puredata</category>
-    <category>audio</category>
-    <category>music-theory</category>
-    <category>generative</category>
-  </item>
-  <item>
-    <title>Algorithmic Composition - Part 3: Random Walks and Brownian Motion</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/algo-03-random-walks-brownian-motion.htm</link>
-    <description>Why pure random pitch selection is musically useless, how Brownian motion models melodic contour as a walk through pitch space, step size and register boundaries as musical parameters, and fractional Brownian motion with the Hurst exponent for controlling phrase shape.</description>
-    <pubDate>2026-01-13</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/algo-03-random-walks-brownian-motion.htm</guid>
-    <category>lua</category>
-    <category>puredata</category>
-    <category>audio</category>
-    <category>music-theory</category>
-    <category>generative</category>
-  </item>
-  <item>
-    <title>Algorithmic Composition - Part 2: Pitch as Numbers</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/algo-02-pitch-as-numbers.htm</link>
-    <description>MIDI note numbers as the universal pitch representation, the equal temperament frequency formula, building scale tables in Lua, and the quantise function that maps any integer to the nearest in-scale pitch.</description>
-    <pubDate>2026-01-12</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/algo-02-pitch-as-numbers.htm</guid>
-    <category>lua</category>
-    <category>puredata</category>
-    <category>audio</category>
-    <category>music-theory</category>
-    <category>generative</category>
-  </item>
-  <item>
-    <title>Algorithmic Composition - Part 1: What Is Algorithmic Composition?</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/algo-01-what-is-algorithmic-composition.htm</link>
-    <description>What it means to compose rules rather than notes, the spectrum from stochastic to deterministic, and how algorithmic composition connects to the synthesis engines built in Series 9 and 10.</description>
-    <pubDate>2026-01-11</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/algo-01-what-is-algorithmic-composition.htm</guid>
-    <category>lua</category>
-    <category>puredata</category>
-    <category>audio</category>
-    <category>music-theory</category>
-    <category>generative</category>
-  </item>
-  <item>
-    <title>Elektron Synthesis - Part 5: Machinedrum TRX-CP Clap, TRX-RS Rimshot, TRX-MA Metallic</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/elektron-05-md-trx-misc.htm</link>
-    <description>Recreating the Machinedrum TRX-CP clap, TRX-RS rimshot, and TRX-MA metallic percussion machines in Pure Data. The CP&apos;s multi-burst roll with reverb, the RS&apos;s dual resonator model of stick striking drum rim, and the MA&apos;s pitched metallic resonator.</description>
-    <pubDate>2026-01-01</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-05-md-trx-misc.htm</guid>
-    <category>c</category>
-    <category>puredata</category>
-    <category>audio</category>
-    <category>synthesis</category>
-    <category>elektron</category>
-  </item>
-  <item>
-    <title>Elektron Synthesis - Part 3: Machinedrum TRX-SD Snare and TRX-XT Hi-Hats</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/elektron-03-md-trx-sd.htm</link>
-    <description>Recreating the Machinedrum TRX-SD snare and TRX-HH/TRX-XT hi-hat machines in Pure Data: the TRX-SD&apos;s dual-resonator body with independent noise/snap envelopes, and the TRX-HH metallic oscillator bank with the XT choke mechanism.</description>
-    <pubDate>2026-01-01</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-03-md-trx-sd.htm</guid>
-    <category>c</category>
-    <category>puredata</category>
-    <category>audio</category>
-    <category>synthesis</category>
-    <category>elektron</category>
-  </item>
-  <item>
-    <title>Elektron Synthesis - Part 14: Monomachine Percussion Toolbox</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/elektron-14-mnm-perc.htm</link>
-    <description>Recreating the Monomachine&apos;s Percussion Toolbox synthesis engine in Pure Data: the MNM&apos;s built-in drum synthesis voices for bass drum, snare, and hi-hat, how they differ from the Machinedrum TRX approach, and integrating drum voices into a melodic synthesiser&apos;s track architecture.</description>
-    <pubDate>2026-01-01</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-14-mnm-perc.htm</guid>
-    <category>c</category>
-    <category>puredata</category>
-    <category>audio</category>
-    <category>synthesis</category>
-    <category>elektron</category>
-  </item>
-  <item>
-    <title>Elektron Synthesis - Part 8: Machinedrum PI — Pitched Instruments</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/elektron-08-md-pi.htm</link>
-    <description>Recreating the Machinedrum PI (Pitched Instruments) machines in Pure Data: physical modelling approaches for clave (struck metal rod), maracas (particle noise), bongos/congas (membrane resonance model), and the general PI architecture using Karplus-Strong and resonator-bank synthesis.</description>
-    <pubDate>2026-01-01</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-08-md-pi.htm</guid>
-    <category>c</category>
-    <category>puredata</category>
-    <category>audio</category>
-    <category>synthesis</category>
-    <category>elektron</category>
-  </item>
-  <item>
-    <title>Elektron Synthesis - Part 11: Monomachine FM+ Extended FM Engine</title>
-    <link>https://5l0p.github.io/tutorials/art/2026/elektron-11-mnm-fmplus.htm</link>
-    <description>Recreating the Monomachine FM+ engine in Pure Data: extended FM synthesis beyond 2-operator VO, including feedback operator chains, algorithm selection between parallel and series operator topologies, and the FM+ parameter set for bass, brass, and complex evolving pads.</description>
-    <pubDate>2026-01-01</pubDate>
-    <guid>https://5l0p.github.io/tutorials/art/2026/elektron-11-mnm-fmplus.htm</guid>
-    <category>c</category>
-    <category>puredata</category>
-    <category>audio</category>
-    <category>synthesis</category>
-    <category>elektron</category>
+    <title>Containers - Part 10: FUSE: Writing a Userspace Filesystem</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-10-fuse.htm</link>
+    <description>How the FUSE kernel module works, implementing a passthrough filesystem with libfuse in C, and the same filesystem in Go using bazil.org/fuse.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-10-fuse.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
   </item>
   <item>
     <title>Elektron Synthesis - Part 6: Machinedrum EFM — FM Drum Synthesis</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-06-md-efm.htm</link>
     <description>Recreating the Machinedrum&apos;s EFM (Extended FM) machines in Pure Data: 2-operator FM synthesis applied to bass drum, snare, hi-hat, and cymbal voices. Operator algorithms, index-to-timbre mapping, and how FM produces percussive envelopes naturally through index decay.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-06-md-efm.htm</guid>
     <category>c</category>
     <category>puredata</category>
@@ -454,10 +775,112 @@
     <category>elektron</category>
   </item>
   <item>
+    <title>Drums - Part 7: Assembling a Drum Machine in Pure Data and Lua</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/drums-07-machine.htm</link>
+    <description>Combining the four drum voices into a sequenced drum machine: a Pd step sequencer with pattern storage, per-step velocity, tempo sync, a Lua UI with step buttons and pattern banks, the simple drum machine patch as a starting point, and a minimal techno pattern to verify the whole system.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/drums-07-machine.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>lua</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>drums</category>
+  </item>
+  <item>
+    <title>Containers - Part 9: Virtual Filesystems: proc, sysfs &amp; devtmpfs</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-09-virtual-filesystems.htm</link>
+    <description>What proc, sysfs, and devtmpfs are, why containers need their own mounts of them, and how to set them up correctly inside a new namespace.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-09-virtual-filesystems.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 11: Shaders &amp; GLSL</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-11-shaders.htm</link>
+    <description>What shaders are, how the vertex/fragment pipeline works, and how to write GLSL shaders in openFrameworks that react to mouse position, audio amplitude, and texture data.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-11-shaders.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>LLM - Part 9: MCP over WebSocket</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-09-mcp-websocket.htm</link>
+    <description>Build an MCP server and client using WebSocket transport for bidirectional streaming, and handle reconnection gracefully.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-09-mcp-websocket.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>DSP - Part 8: Envelope Follower &amp; Parameter Smoothing</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-08-envelope-follower.htm</link>
+    <description>Peak and RMS envelope detection, attack/release timing with exponential coefficients, and one-pole smoothers to eliminate zipper noise on parameter changes.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-08-envelope-follower.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 6: Typography</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-06-typography.htm</link>
+    <description>Rendering text in openFrameworks using ofTrueTypeFont - loading fonts, drawing strings, measuring text bounds, supporting UTF-8, and using ofDrawBitmapString for quick debug output.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-06-typography.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>DSP - Part 10: Dynamics: Gate</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-10-gate.htm</link>
+    <description>Implementing a noise gate in C: threshold detection, hold counter, hysteresis, and integrating the gate into a signal chain with a compressor.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-10-gate.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>Containers - Part 19: Building a Mini Container Runtime in Go</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-19-mini-runtime.htm</link>
+    <description>Assemble all the Linux primitives into a working Go container runtime - namespaces, pivot_root, UTS, and the main entry point that ties everything together.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-19-mini-runtime.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>DSP - Part 28: Testing DSP Code</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-28-testing.htm</link>
+    <description>Unit testing C DSP code with the Unity test framework: numerical tolerance assertions (TEST_ASSERT_FLOAT_WITHIN), impulse-response comparison, offline WAV render-and-compare, running the test binary in CI, and a Makefile target that builds and runs all tests.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-28-testing.htm</guid>
+    <category>c</category>
+    <category>cpp</category>
+    <category>testing</category>
+    <category>dsp</category>
+    <category>unity</category>
+  </item>
+  <item>
+    <title>Go - Part 17: Testing in Go</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-17-testing.htm</link>
+    <description>A complete guide to Go testing: table-driven tests, subtests, benchmarks, fuzzing, test helpers, and golden files - compared to C# xUnit/NUnit patterns throughout.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-17-testing.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
     <title>Elektron Synthesis - Part 2: Machinedrum TRX-BD Bass Drum</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-02-md-trx-bd.htm</link>
     <description>Reverse-engineering and recreating the Machinedrum TRX-BD bass drum machine in Pure Data: two exponentially-swept oscillators, a transient oscillator for click, filtered noise burst, waveshaping distortion, and parameter-lock-ready receivers for all eight track parameters.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-02-md-trx-bd.htm</guid>
     <category>c</category>
     <category>puredata</category>
@@ -466,10 +889,69 @@
     <category>elektron</category>
   </item>
   <item>
+    <title>Go - Part 13: Building &amp; Cross-Compilation</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-13-cross-compilation.htm</link>
+    <description>How to cross-compile Go binaries using GOOS and GOARCH, handle CGO, produce static binaries, and build for Windows from Linux.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-13-cross-compilation.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 6: Generating Chord Progressions</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-06-chord-progressions.htm</link>
+    <description>A Markov chain over harmonic function (T, S, D) rather than individual chords, mapping functions to chord degree choices, generating 4-bar progressions, and modal interchange for colour without key change.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-06-chord-progressions.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Pico — Part 7: UART MIDI Input</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-07-midi-uart.htm</link>
+    <description>UART MIDI at 31250 baud on the RP2040 — IRQ handler, MIDI byte-stream state machine with running status, and a lock-free ring buffer to the audio core.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-07-midi-uart.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
+    <category>audio</category>
+    <category>pico</category>
+  </item>
+  <item>
+    <title>Containers - Part 13: Network Namespaces</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-13-network-namespaces.htm</link>
+    <description>Network namespaces give each container a private network stack - learn to create veth pairs, bridge them to the host, and NAT outbound traffic with iptables, all from C and Go.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-13-network-namespaces.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Containers - Part 14: User Namespaces &amp; Rootless Containers</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-14-user-namespaces.htm</link>
+    <description>User namespaces map unprivileged UIDs to fake root inside a container - the kernel primitive that makes rootless containers possible without a setuid binary.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-14-user-namespaces.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>DSP - Part 21: Writing a Pure Data External</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-21-pd-external.htm</link>
+    <description>Pure Data external architecture using m_pd.h: object structs, setup() convention, inlets and outlets, signal processing with perform() and dsp_add, a biquad~ object, and a control-rate abstraction.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-21-pd-external.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
     <title>Elektron Synthesis - Part 15: Machinedrum and Monomachine Effects in Pd</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-15-fx.htm</link>
     <description>Recreating the effects processing of the Elektron Machinedrum and Monomachine in Pure Data: MD track compression, global delay and reverb, MNM per-voice chorus/flanger/delay/EQ, the MNM&apos;s stereo effects bus, and how to route all voices through a shared effects chain with send/return architecture.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-15-fx.htm</guid>
     <category>c</category>
     <category>puredata</category>
@@ -478,10 +960,59 @@
     <category>elektron</category>
   </item>
   <item>
+    <title>Go - Part 20: CLI Tools - flags and cobra</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-20-cli-cobra.htm</link>
+    <description>Build command-line tools in Go using the stdlib flag package and multi-command CLIs with cobra, including subcommands, persistent flags, shell completion, and a complete worked example.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-20-cli-cobra.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>libpd - Part 1: What Is libpd?</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-01-what-is-libpd.htm</link>
+    <description>An introduction to libpd, the embeddable version of the Pure Data DSP engine, and the C API surface it exposes.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-01-what-is-libpd.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 24: Compute Shaders</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-24-compute-shaders.htm</link>
+    <description>OpenGL 4.3 compute shaders in openFrameworks - GL_COMPUTE_SHADER, layout(local_size), Shader Storage Buffer Objects, glDispatchCompute, memory barriers, spectral processing on the GPU, and a particle simulation.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-24-compute-shaders.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Lua - Part 2: The Lua C API - The Stack Model</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-02-stack-model.htm</link>
+    <description>The virtual stack is the only communication channel between C and Lua - understanding indices, type checks, and stack discipline is the foundation of every embedding.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-02-stack-model.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>LLM - Part 4: Building a Simple Agent Loop</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-04-agent-loop.htm</link>
+    <description>Implement the think→act→observe cycle as a Go for-loop, with termination conditions, error handling, and a file-system agent example.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-04-agent-loop.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
     <title>Elektron Synthesis - Part 4: Machinedrum TRX-CY Cymbal and TRX-CB Cowbell</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-04-md-trx-cy.htm</link>
     <description>Recreating the Machinedrum TRX-CY cymbal and TRX-CB cowbell in Pure Data: the CY&apos;s dense inharmonic oscillator bank with ring modulation and very long exponential decay, and the CB&apos;s classic two-oscillator resonant bandpass cowbell architecture from the TR-808.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-04-md-trx-cy.htm</guid>
     <category>c</category>
     <category>puredata</category>
@@ -493,7 +1024,7 @@
     <title>Elektron Synthesis - Part 13: Monomachine DigiPro Engine</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-13-mnm-digipro.htm</link>
     <description>Recreating the Monomachine DigiPro synthesis engine in Pure Data: phase distortion synthesis (Casio CZ-style), wavetable scanning, and the DigiPro machine variants (DP SIN, DP TRI, DP SAW, DP SQR, DP TBLX). How phase shaping transforms a sine wave into complex timbres.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-13-mnm-digipro.htm</guid>
     <category>c</category>
     <category>puredata</category>
@@ -505,7 +1036,7 @@
     <title>Elektron Synthesis - Part 12: Monomachine SuperWave Engine</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-12-mnm-superwave.htm</link>
     <description>Recreating the Monomachine SuperWave engine in Pure Data: multiple detuned oscillators generating a super-saw or super-square sound, detune spread control, mix between centre and edge oscillators, and how to build a dense unison synthesiser voice from [osc~] instances with shared filter and amplitude envelope.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-12-mnm-superwave.htm</guid>
     <category>c</category>
     <category>puredata</category>
@@ -514,10 +1045,204 @@
     <category>elektron</category>
   </item>
   <item>
+    <title>DSP - Part 12: Spectral Processing with FFT</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-12-spectral-processing.htm</link>
+    <description>Overlap-add block processing, spectral gate, spectral freeze, fast convolution, and phase vocoder loop structure - all implemented in C using the FFT from Part 11.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-12-spectral-processing.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>libpd - Part 10: libpd Inside a VST3 Plugin</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-10-vst3.htm</link>
+    <description>How to embed libpd as the DSP engine of a VST3 plugin, mapping parameter changes to Pd messages and processing audio through IAudioProcessor.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-10-vst3.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>Lua - Part 7: Userdata - Wrapping C Structs as Lua Objects</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-07-userdata.htm</link>
+    <description>Use lua_newuserdata and metatables to wrap a C BiquadFilter struct as a Lua object with methods, automatic __gc cleanup, and type-safe casting via luaL_checkudata.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-07-userdata.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>libpd - Part 7: Arrays &amp; Tables</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-07-arrays.htm</link>
+    <description>How to read and write Pd array and table data from C using libpd, and how to use tables as wavetables for oscillator lookup.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-07-arrays.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>Lua - Part 12: Lua in openFrameworks</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-12-lua-of.htm</link>
+    <description>Add ofxLua to an openFrameworks project, drive setup/update/draw from Lua, live-reload on file change, bind your own C++ class, and write a complete audio-visual sketch in Lua.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-12-lua-of.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+    <category>openframeworks</category>
+  </item>
+  <item>
+    <title>Containers - Part 4: PID Namespaces</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-04-pid-namespaces.htm</link>
+    <description>How PID namespaces give containers their own process numbering, why PID 1 matters, and how zombie reaping works inside a namespace.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-04-pid-namespaces.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>LLM - Part 20: Testing Agent Code</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-20-testing-agents.htm</link>
+    <description>Mocking the OpenAI/llama.cpp API with a local HTTP stub, deterministic replay from recorded fixtures, table-driven agent tests in Go, golden-output comparison, and testing tool dispatch logic in isolation.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-20-testing-agents.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>testing</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Go - Part 7: Goroutines &amp; Channels</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-07-goroutines-channels.htm</link>
+    <description>How goroutines and channels work in Go, compared to C pthreads and C# async/await, with examples of the select statement and channel patterns.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-07-goroutines-channels.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>Containers - Part 6: Mount Namespaces &amp; chroot</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-06-mount-chroot.htm</link>
+    <description>How mount namespaces let containers have independent filesystem trees, how bind mounts work, and why chroot alone is not safe for container isolation.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-06-mount-chroot.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Drums - Part 4: Hi-Hat Synthesis in Pure Data</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/drums-04-hihat.htm</link>
+    <description>Building the classic metallic hi-hat in Pure Data: six detuned square wave oscillators, SID-style noise blending, three-band filter split with independent decay envelopes, open/closed hat via decay time, and an optional flanger effect.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/drums-04-hihat.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>drums</category>
+  </item>
+  <item>
+    <title>Containers - Part 12: WebDAV: HTTP as a Filesystem</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-12-webdav.htm</link>
+    <description>WebDAV extends HTTP with filesystem operations - implement a server in Go with golang.org/x/net/webdav and mount it on Linux with davfs2 and on macOS via Finder.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-12-webdav.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>DSP - Part 23: Putting It All Together — a Complete Monophonic Synthesiser</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-23-putting-together.htm</link>
+    <description>A complete playable monophonic synth under 500 lines: wavetable oscillator, biquad filter, ADSR envelope, ALSA MIDI input, and SDL2 audio output, with a series retrospective.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-23-putting-together.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>DSP - Part 7: Filter Cookbook: Bandpass, Notch &amp; Shelves</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-07-filter-cookbook-2.htm</link>
+    <description>Biquad coefficients for bandpass, notch, peaking EQ, low shelf, and high shelf filters, plus cascading sections for a parametric EQ.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-07-filter-cookbook-2.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>LLM - Part 15: LangChain &amp; LangGraph Concepts</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-15-langchain-concepts.htm</link>
+    <description>A conceptual tour of chains, graphs, and agent patterns from the LangChain ecosystem - and how they map to what you have already built in Go.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-15-langchain-concepts.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 14: YAML in C++ with yaml-cpp</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-14-yaml.htm</link>
+    <description>Adding yaml-cpp to an openFrameworks project, parsing and writing YAML config files, using YAML as a preset format for ofParameter groups, and knowing when to prefer it over JSON.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-14-yaml.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 17: Windows Builds</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-17-windows-builds.htm</link>
+    <description>Visual Studio workflow for openFrameworks on Windows - WASAPI audio, path and Unicode pitfalls, DLL distribution, debugging, and fixing common Windows-specific compile errors.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-17-windows-builds.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Pico — Part 9: Multicore Communication</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-09-multicore.htm</link>
+    <description>RP2040 SIO FIFO, hardware spinlocks, and the double-buffer swap pattern for passing parameter updates from core 0 to the audio engine on core 1 without glitches.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-09-multicore.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
+    <category>audio</category>
+    <category>pico</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 8: L-Systems</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-08-l-systems.htm</link>
+    <description>Lindenmayer systems as production grammars for melody generation, mapping symbols to notes and directions, turtle-graphics interpretation of symbol strings, and self-similar musical structure at multiple time scales.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-08-l-systems.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Pico — Part 6: 4-Operator FM Synthesis</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-06-fm-synth.htm</link>
+    <description>A 4-operator FM engine in C at 44.1 kHz on the RP2040 — operator structs, ADSR envelopes in fixed-point, the algorithm graph, and a measured CPU budget.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-06-fm-synth.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
+    <category>audio</category>
+    <category>pico</category>
+  </item>
+  <item>
     <title>Elektron Synthesis - Part 9: Monomachine SID Engine</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-09-mnm-sid.htm</link>
     <description>Recreating the Monomachine&apos;s SID synthesis engine in Pure Data: emulating the MOS6581/8580 SID chip from the Commodore 64, including triangle/sawtooth/square/noise waveforms, pulse width modulation, ring modulation, hard sync, and the SID&apos;s characteristic multimode resonant filter.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-09-mnm-sid.htm</guid>
     <category>c</category>
     <category>puredata</category>
@@ -526,10 +1251,176 @@
     <category>elektron</category>
   </item>
   <item>
+    <title>Go - Part 14: Formatting, Linting &amp; Tooling</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-14-tooling.htm</link>
+    <description>The Go developer toolkit: gofmt, go vet, staticcheck, golangci-lint, gopls, go doc, and pprof - and how to wire them into CI.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-14-tooling.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>Lua - Part 8: Coroutines and C</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-08-coroutines.htm</link>
+    <description>Lua coroutines driven from C: lua_resume, yield with data in both directions, a scripted sequence machine, and a cooperative task scheduler driven from a C game loop.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-08-coroutines.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>Go - Part 18: Clean Code &amp; Project Layout</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-18-project-layout.htm</link>
+    <description>How to structure Go projects: package naming, flat vs nested layouts, the internal package, avoiding god packages, and the cmd/internal/pkg convention.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-18-project-layout.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>DSP - Part 20: SDL2 as an Audio Backend</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-20-sdl2-audio.htm</link>
+    <description>Using SDL2 for cross-platform audio: SDL_AudioSpec, callback model, SDL_OpenAudioDevice, device enumeration, and integrating earlier DSP building blocks into a working demo.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-20-sdl2-audio.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>DSP - Part 3: Oscillators: Basic Waveforms</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-03-oscillators.htm</link>
+    <description>Implementing sine, square, sawtooth, and triangle oscillators in C using the phase accumulator pattern.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-03-oscillators.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 21: SDL2 as a Lighter Alternative</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-21-sdl2.htm</link>
+    <description>Using SDL2 for window management, rendering, input, and text when you do not need the full openFrameworks stack - and connecting SDL2 audio to DSP code from the Series 4 articles.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-21-sdl2.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Containers - Part 3: The clone() and unshare() Syscalls</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-03-clone-unshare.htm</link>
+    <description>How to create new namespaces with clone() in C and with SysProcAttr.Cloneflags in Go, plus how unshare() detaches from existing namespaces.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-03-clone-unshare.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 12: 3D: Meshes, Lights, and Cameras</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-12-3d.htm</link>
+    <description>Building 3D scenes in openFrameworks with ofNode transform hierarchies, ofEasyCam, ofLight, ofMesh, the depth buffer, and procedurally generated geometry.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-12-3d.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>DSP - Part 25: Makefiles for C and C++</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-25-makefiles.htm</link>
+    <description>Writing a Makefile from scratch: variables, pattern rules, automatic header dependency generation with -MMD, phony targets, debug/release configurations, and a multi-target Makefile that builds a static library and a test binary side by side.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-25-makefiles.htm</guid>
+    <category>c</category>
+    <category>cpp</category>
+    <category>make</category>
+    <category>build-systems</category>
+  </item>
+  <item>
+    <title>Go - Part 2: Syntax &amp; Types</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-02-syntax-types.htm</link>
+    <description>Go&apos;s variable declarations, constants, zero values, and built-in types explained for developers coming from C or C#.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-02-syntax-types.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>DSP - Part 5: Biquad Filters</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-05-biquad.htm</link>
+    <description>The biquad as the universal second-order IIR filter: Direct Form I, Direct Form II transposed, and coefficient storage in C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-05-biquad.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>libpd in C++ Applications</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-12-cpp-interop.htm</link>
+    <description>How to use libpd cleanly from C++ — RAII wrappers, exception safety, integrating with C++ audio frameworks, and embedding Pure Data as a typed DSP module in a larger C++ codebase.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-12-cpp-interop.htm</guid>
+    <category>libpd</category>
+    <category>cpp</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>dsp</category>
+    <category>raii</category>
+  </item>
+  <item>
+    <title>Go - Part 16: Platform-Specific Code &amp; Build Constraints</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-16-build-constraints.htm</link>
+    <description>How to write portable Go code that compiles different implementations per OS or architecture using build tags, file-name suffixes, and interface-based platform abstractions.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-16-build-constraints.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>DSP - Part 19: MIDI I/O on Linux with ALSA</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-19-midi-linux.htm</link>
+    <description>Reading and writing MIDI on Linux using ALSA raw MIDI devices and the ALSA sequencer: opening devices, polling, the sequencer client/port model, and programmatic port connection.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-19-midi-linux.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+    <category>linux</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 7: Voice Leading</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-07-voice-leading.htm</link>
+    <description>Why chord progressions need smooth voice movement, the nearest-neighbour assignment algorithm for three-voice voice leading, detecting and avoiding parallel fifths and octaves, and a complete Lua implementation.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-07-voice-leading.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Go - Part 1: Why Go? The Language at a Glance</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-01-why-go.htm</link>
+    <description>An overview of Go&apos;s design philosophy, what it deliberately leaves out, and why experienced C and C# developers find it productive.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-01-why-go.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 18: macOS Builds</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-18-macos-builds.htm</link>
+    <description>Xcode project generator, CoreAudio backend, app bundle structure, ofToDataPath() and bundle-relative paths, ad-hoc signing for development, notarisation for distribution, and ARM vs x86_64 universal binaries.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-18-macos-builds.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
     <title>Elektron Synthesis - Part 7: Machinedrum E12 — Vector Emulation Machines</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-07-md-e12.htm</link>
     <description>Understanding and recreating the Machinedrum E12 machines in Pure Data: how E12 uses a vector/interpolation model between sampled spectral snapshots to emulate classic drum machines, the E12 parameter set, and a Pd wavetable implementation.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-07-md-e12.htm</guid>
     <category>c</category>
     <category>puredata</category>
@@ -538,10 +1429,469 @@
     <category>elektron</category>
   </item>
   <item>
+    <title>LLM - Part 13: Local Models with llama.cpp</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-13-local-models.htm</link>
+    <description>Run llama.cpp as a local OpenAI-compatible server, swap the base URL in your Go agent, and understand the trade-offs between local and cloud models.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-13-local-models.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Containers - Part 16: cgroups v2 - The Unified Hierarchy</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-16-cgroups-v2.htm</link>
+    <description>cgroups v2 unifies all resource controllers under a single hierarchy with cleaner delegation, pressure files, and a simpler interface - understand the differences and migrate your v1 code.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-16-cgroups-v2.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Go - Part 6: defer, panic, and recover</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-06-defer-panic-recover.htm</link>
+    <description>How Go&apos;s defer keyword replaces try-finally and using blocks, what panic and recover do, and when each is appropriate.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-06-defer-panic-recover.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 10: OSC: OpenSoundControl</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-10-osc.htm</link>
+    <description>Using the ofxOSC addon to send and receive Open Sound Control messages between openFrameworks and other software - Pure Data, Max, TouchDesigner, and more.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-10-osc.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 19: Android</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-19-android.htm</link>
+    <description>Building openFrameworks apps for Android - NDK toolchain, Android Studio project structure, ofxAndroid activity lifecycle, touch input, audio backends, APK build from CLI, and adb logcat debugging.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-19-android.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 4: Markov Chains for Melody</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-04-markov-chains.htm</link>
+    <description>Encoding musical tendency as a first-order Markov transition matrix over scale degrees, sampling from a probability distribution in Lua, building a rhythm chain, and combining pitch and rhythm into a complete melody generator.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-04-markov-chains.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 11: Putting It All Together</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-11-putting-it-together.htm</link>
+    <description>A complete self-generating Krell-style patch in Pure Data driven by Lua scripts, wiring the Brownian melody generator, Markov chord progression, voice leading, Euclidean drum patterns, and the Monomachine synthesis engines from Series 10 into a single autonomous system.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-11-putting-it-together.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>LLM - Part 11: RAG: Retrieval-Augmented Generation</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-11-rag.htm</link>
+    <description>Generate embeddings with OpenAI, implement cosine similarity in Go, build a JSON-backed vector store, and wire retrieval into the agent loop.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-11-rag.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 17: Multi-Agent Orchestration</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-17-multi-agent.htm</link>
+    <description>Spawn sub-agents as goroutines, aggregate results via channels, cancel with context, and build a parallel research orchestrator.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-17-multi-agent.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 2: Chat Completions Deep Dive</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-02-chat-completions.htm</link>
+    <description>Understand roles, temperature, token limits, and how to build a stateful REPL that manages conversation history.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-02-chat-completions.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 9: Audio I/O with ofSoundStream</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-09-audio.htm</link>
+    <description>Setting up real-time audio input and output in openFrameworks using ofSoundStream and ofSoundStreamSettings, writing DSP code in the audioIn/audioOut callbacks, and managing buffer size and latency.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-09-audio.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Go - Part 5: Error Handling Best Practices</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-05-error-handling.htm</link>
+    <description>How Go treats errors as values, wrapping with fmt.Errorf, errors.Is and errors.As, sentinel errors, and the trade-offs versus C and C# error models.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-05-error-handling.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 1: What Is Algorithmic Composition?</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-01-what-is-algorithmic-composition.htm</link>
+    <description>What it means to compose rules rather than notes, the spectrum from stochastic to deterministic, and how algorithmic composition connects to the synthesis engines built in Series 9 and 10.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-01-what-is-algorithmic-composition.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>Containers - Part 15: cgroups v1</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-15-cgroups-v1.htm</link>
+    <description>The cgroupfs API at /sys/fs/cgroup/ - resource controllers, writing limits, reading usage, attaching processes from C and Go, and watching a container get OOM-killed.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-15-cgroups-v1.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>DSP - Part 17: Granular Synthesis</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-17-granular.htm</link>
+    <description>Granular synthesis from scratch: grain model, Hann envelope, scatter and density, pitch randomisation, fixed-pool grain scheduler in C, time-stretch, and pitch-shift.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-17-granular.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>libpd - Part 6: Receiving Messages from Pd</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-06-receive-messages.htm</link>
+    <description>How to set up libpd hook callbacks to receive bangs, floats, symbols, lists, and print output from a running Pd patch.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-06-receive-messages.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 7: Mouse, Keyboard &amp; Touch Input</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-07-input.htm</link>
+    <description>Handling mouse, keyboard, and touch events in openFrameworks - the event callbacks, OF_KEY constants, ofGetMouseX/Y, and building an interactive sketch.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-07-input.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>DSP - Part 15: Wavetable Synthesis</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-15-wavetable.htm</link>
+    <description>Wavetable synthesis from scratch: single-cycle tables, linear and cubic interpolation, band-limited multi-octave tables, and morphing between waveforms in C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-15-wavetable.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>Containers - Part 17: Linux Capabilities</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-17-capabilities.htm</link>
+    <description>Linux capabilities divide root privilege into ~40 independent bits - learn the five capability sets, how containers drop them with prctl and capset, and what Docker removes by default.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-17-capabilities.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Go - Part 15: Code Generation with go generate</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-15-codegen.htm</link>
+    <description>How to use //go:generate to automate repetitive code, from stringer to writing your own text/template generator and inspecting code with go/ast.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-15-codegen.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>libpd - Part 9: libpd in openFrameworks: ofxPd</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-09-ofxpd.htm</link>
+    <description>How to use the ofxPd addon to embed libpd inside an openFrameworks application, route audio, and exchange messages.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-09-ofxpd.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>Lua - Part 14: Bundling Lua Modules for Offline Use</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-14-bundling.htm</link>
+    <description>Vendoring third-party .lua files into a lua_modules/ tree, adjusting package.path at embed time, precompiling to bytecode with luac for tamper-resistance and load-time speed, LuaRocks offline workflow (--tree flag, tarball cache), and a worked example embedding inspect and penlight into a C host application without a network connection.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-14-bundling.htm</guid>
+    <category>lua</category>
+    <category>c</category>
+    <category>luarocks</category>
+    <category>bundling</category>
+    <category>offline</category>
+  </item>
+  <item>
+    <title>Go - Part 12: Vendoring</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-12-vendoring.htm</link>
+    <description>How go mod vendor works, when to use the vendor directory, and how it interacts with the module cache and CI pipelines.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-12-vendoring.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 5: Images &amp; Textures</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-05-images-textures.htm</link>
+    <description>Loading and drawing images with ofImage, working with ofPixels for CPU-side pixel manipulation, uploading data to the GPU with ofTexture, and using ofFbo for render-to-texture.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-05-images-textures.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Containers - Part 22: Testing Container Code</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-22-testing.htm</link>
+    <description>Integration test patterns for namespace and cgroup code: t.Cleanup teardown helpers, running subtests that require CAP_SYS_ADMIN with a t.Skip guard, golden-state assertions on /proc and /sys, and a reusable test harness for the mini runtime.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-22-testing.htm</guid>
+    <category>go</category>
+    <category>linux</category>
+    <category>containers</category>
+    <category>namespaces</category>
+    <category>testing</category>
+  </item>
+  <item>
+    <title>Lua - Part 13: Testing Lua Code</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-13-testing.htm</link>
+    <description>The busted test framework: describe/it/before_each, spying on C function calls from Lua, mocking the Lua C API in host-side tests, running busted from the command line and from a Makefile target, and integrating with CI.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-13-testing.htm</guid>
+    <category>lua</category>
+    <category>testing</category>
+    <category>c</category>
+    <category>busted</category>
+  </item>
+  <item>
+    <title>Lua - Part 3: Running Lua from C</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-03-running-lua.htm</link>
+    <description>Load Lua files and strings, call named Lua functions, handle errors through protected calls, and read multiple return values - the complete workflow for driving Lua from C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-03-running-lua.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>libpd - Part 4: The Audio Render Loop</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-04-render-loop.htm</link>
+    <description>How to integrate libpd_process_float into a platform audio callback, handle block-size alignment, and structure the render loop correctly.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-04-render-loop.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>Containers - Part 7: pivot_root &amp; the Container Rootfs</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-07-pivot-root.htm</link>
+    <description>How pivot_root() replaces the filesystem root inside a container, how to build a minimal rootfs with BusyBox, and a complete Go implementation.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-07-pivot-root.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Drums - Part 3: Snare Drum Synthesis in Pure Data</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/drums-03-snare.htm</link>
+    <description>Building a parametric snare in Pure Data: two sine oscillators for the body tone, SID-style noise through dual LPF/HPF filter envelopes, a resonant body filter, dual short delay lines for snare rattle, and two-stage distortion.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/drums-03-snare.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>drums</category>
+  </item>
+  <item>
+    <title>Go - Part 21: Go Workspaces</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-21-workspaces.htm</link>
+    <description>How to use go.work for multi-module repositories, when workspaces beat replace directives, and how to manage a shared library with two dependent apps - plus a reflection on the full Go series.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-21-workspaces.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>Go - Part 9: The Context Package</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-09-context.htm</link>
+    <description>How Go&apos;s context package propagates cancellation, deadlines, and request-scoped values through an API call tree.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-09-context.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 1: What Is openFrameworks?</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-01-what-is-of.htm</link>
+    <description>An introduction to openFrameworks: what it is, how it compares to Processing and p5.js, and why C++ is a compelling choice for creative coding.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-01-what-is-of.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Containers - Part 1: What Is a Container?</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-01-what-is-a-container.htm</link>
+    <description>Containers are ordinary Linux processes with restricted views of the system - built from six kernel primitives, not a single syscall.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-01-what-is-a-container.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Lua - Part 6: Module Tables and Hot-Reload</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-06-module-tables.htm</link>
+    <description>Declare application components as Lua tables, build a C dispatcher that reads a modules={} table and constructs real objects by type, and reload at runtime without restarting.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-06-module-tables.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>Algorithmic Composition - Part 10: Euclidean Rhythms</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/algo-10-euclidean-rhythms.htm</link>
+    <description>Bjorklund&apos;s algorithm for distributing k beats across n slots as evenly as possible, the surprising match to world-music rhythmic patterns, generating polyrhythms from coprime period lengths, and integrating Euclidean patterns with the drums-07 sequencer in Lua.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/algo-10-euclidean-rhythms.htm</guid>
+    <category>lua</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>music-theory</category>
+    <category>generative</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 4: 2D Drawing Primitives</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-04-2d-drawing.htm</link>
+    <description>A complete guide to openFrameworks&apos; 2D drawing API: colors, shapes, filled and stroked geometry, custom polygons with ofBeginShape, and the coordinate system.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-04-2d-drawing.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 15: Cross-Platform Overview</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-15-cross-platform.htm</link>
+    <description>How openFrameworks abstracts the platform layer, what actually differs between Linux, macOS, and Windows, and how to write a single codebase that builds cleanly on all three.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-15-cross-platform.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>C++ PD Externals: Porting DSP Classes to Pure Data</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-24-cpp-pd-externals.htm</link>
+    <description>How to write Pure Data externals in C++ — wrapping a C++ DSP class with a thin m_pd.h shim, managing object lifetime with placement new, and porting a VST-style processor to a Pd object.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-24-cpp-pd-externals.htm</guid>
+    <category>dsp</category>
+    <category>puredata</category>
+    <category>cpp</category>
+    <category>externals</category>
+    <category>vst</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>Drums - Part 1: Electronic Drum Synthesis — Architecture and Approach</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/drums-01-architecture.htm</link>
+    <description>How classic electronic drum machines synthesise their sounds from first principles: tonal oscillators with pitch sweeps, filtered noise, transient clicks, and the Prok Drums extend-decay envelope pattern. Building blocks for every voice in the series.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/drums-01-architecture.htm</guid>
+    <category>c</category>
+    <category>puredata</category>
+    <category>audio</category>
+    <category>synthesis</category>
+    <category>drums</category>
+  </item>
+  <item>
+    <title>Pico — Part 5: Porting DSP Code from the Desktop</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-05-porting-dsp.htm</link>
+    <description>What changes when you move a biquad filter and sine oscillator from a desktop float to the RP2040&apos;s soft-float Cortex-M0+, and how to measure exactly what you spent.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-05-porting-dsp.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
+    <category>audio</category>
+    <category>pico</category>
+  </item>
+  <item>
+    <title>DSP - Part 16: FM Synthesis</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-16-fm-synthesis.htm</link>
+    <description>FM synthesis operator model, modulation index and sidebands, two-operator pairs, DX7-style algorithms, six-operator engine, FM envelopes, and worked timbres in C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-16-fm-synthesis.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>LLM - Part 5: Skills &amp; Structured Tool Libraries</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-05-skills.htm</link>
+    <description>Organise tools as named structs with a common interface, build a registry for routing, and compose a small standard library of reusable skills.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-05-skills.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 2: Setup &amp; Project Generator</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-02-setup.htm</link>
+    <description>How to download openFrameworks, use the project generator to create a new project, understand the folder layout, and build and run your first sketch on Linux, macOS, and Windows.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-02-setup.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>DSP - Part 18: MIDI 1.0 Protocol and Parsing</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-18-midi-protocol.htm</link>
+    <description>MIDI 1.0 wire format, status and data bytes, running status, all channel and system messages, and a complete byte-stream state machine in C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-18-midi-protocol.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
     <title>Elektron Synthesis - Part 10: Monomachine VO — Virtual Operator FM</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-10-mnm-vo.htm</link>
     <description>Recreating the Monomachine VO (Virtual Operator) FM synthesis engine in Pure Data: 2-operator FM with carrier/modulator ratio, feedback FM, ADSR index envelopes, the four VO machine variants (VO SIN, VO TRP, VO EA, VO EB), and musical parameter mapping for bass, lead, and keyboard sounds.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-10-mnm-vo.htm</guid>
     <category>c</category>
     <category>puredata</category>
@@ -550,16 +1900,201 @@
     <category>elektron</category>
   </item>
   <item>
+    <title>Pico — Part 10: Complete Synthesiser Voice</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-10-synth-voice.htm</link>
+    <description>Series capstone — a complete monophonic synthesiser on the RP2040 with wavetable oscillator, resonant lowpass filter, dual ADSR envelopes, USB MIDI input, and I2S audio output.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-10-synth-voice.htm</guid>
+    <category>c</category>
+    <category>embedded</category>
+    <category>audio</category>
+    <category>pico</category>
+  </item>
+  <item>
+    <title>DSP - Part 14: Sample Playback</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-14-sample-playback.htm</link>
+    <description>Loading PCM from a WAV file in C, float buffer storage, one-shot and looping playback, linear and cubic Hermite interpolation, and pitch shifting via playback rate.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-14-sample-playback.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>libpd - Part 11: Headless libpd</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/libpd-11-headless.htm</link>
+    <description>How to run libpd without a GUI or audio device - offline rendering to WAV, server-side audio generation, and automated testing of Pd patches from C.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/libpd-11-headless.htm</guid>
+    <category>c</category>
+    <category>audio</category>
+    <category>puredata</category>
+  </item>
+  <item>
+    <title>RPIPicoDSP - Part 11: Testing Pico Code on the Host</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/pico-11-host-testing.htm</link>
+    <description>Compiling RP2040 C code for x86 with a stub pico/stdlib.h and hardware register shims, running DSP unit tests (biquad, oscillator, ADSR) on the host without a board, a CMake PLATFORM=host target that switches between Pico SDK and stub headers, and integration with Unity for embedded test output over serial.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/pico-11-host-testing.htm</guid>
+    <category>c</category>
+    <category>rp2040</category>
+    <category>pico</category>
+    <category>testing</category>
+    <category>embedded</category>
+    <category>cmake</category>
+  </item>
+  <item>
+    <title>LLM - Part 19: Supervisor &amp; Swarm Patterns</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-19-supervisor-swarm.htm</link>
+    <description>Implement a hierarchical supervisor agent and a peer swarm with consensus, with failure recovery and a reference architecture in ASCII.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-19-supervisor-swarm.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Containers - Part 11: 9P: The Plan 9 Network Filesystem Protocol</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/containers-11-9p.htm</link>
+    <description>The 9P wire protocol, its message types, implementing a minimal 9P file server in Go, and mounting it with the Linux kernel 9p driver.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/containers-11-9p.htm</guid>
+    <category>linux</category>
+    <category>containers</category>
+  </item>
+  <item>
+    <title>Lua - Part 11: Scripting a DSP Pipeline from Lua</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-11-lua-audio.htm</link>
+    <description>Declare an audio node graph as a Lua DSL, wire real biquad and oscillator C structs from a C loader, and hot-reload the pipeline at runtime without stopping audio.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-11-lua-audio.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+    <category>dsp</category>
+  </item>
+  <item>
+    <title>LLM - Part 1: OpenAI API Basics</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-01-openai-api-basics.htm</link>
+    <description>Make your first call to the OpenAI API in Go using only the standard library - no SDK required.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-01-openai-api-basics.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>LLM - Part 16: Implementing a Mini LangChain in Go</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-16-mini-langchain.htm</link>
+    <description>Build chains, prompt templates, a router, and an LLM-backed step in ~200 lines of Go - implementing the core LangChain patterns from scratch.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-16-mini-langchain.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>DSP - Part 9: Dynamics: Compressor</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-09-compressor.htm</link>
+    <description>Implementing a feed-forward mono compressor in C: level detection, gain computer, attack/release smoothing, make-up gain, and stereo linking.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-09-compressor.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
     <title>Elektron Synthesis - Part 1: Machinedrum and Monomachine Architecture</title>
     <link>https://5l0p.github.io/tutorials/art/2026/elektron-01-overview.htm</link>
     <description>An engineering overview of the Elektron Machinedrum and Monomachine synthesisers: their machine-type architectures, synthesis families (TRX, EFM, E12, PI; GND, SFX, VO, DIGI), how parameter-per-step locks work, and the approach for recreating each machine type as a Pd patch or external.</description>
-    <pubDate>2026-01-01</pubDate>
+    <pubDate>2026-06-01</pubDate>
     <guid>https://5l0p.github.io/tutorials/art/2026/elektron-01-overview.htm</guid>
     <category>c</category>
     <category>puredata</category>
     <category>audio</category>
     <category>synthesis</category>
     <category>elektron</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 25: Putting It Together - Audio-Visual Sketch</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-25-av-sketch.htm</link>
+    <description>Series capstone: a complete audio-visual sketch combining live audio input, FFT analysis, shader-driven visuals reacting to frequency bands, an ofEasyCam 3D scene, and ofxGui live tweaking. Full source for main.cpp, ofApp.h, ofApp.cpp, and both shaders.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-25-av-sketch.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>LLM - Part 18: Agent-to-Agent Communication</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-18-agent-communication.htm</link>
+    <description>Make one agent expose itself as an MCP server so another agent can call it as a typed tool, with a shared state store and cycle prevention.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-18-agent-communication.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>Go - Part 10: Generics</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-10-generics.htm</link>
+    <description>Go 1.18 generics: type parameters, constraints, the ~ operator, and when to use generics versus interfaces.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-10-generics.htm</guid>
+    <category>go</category>
+  </item>
+  <item>
+    <title>Lua - Part 5: Tables as Configuration</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/lua-05-tables-config.htm</link>
+    <description>Read top-level and nested Lua tables from C - lua_getglobal, lua_getfield, lua_next iteration, required-field validation, and a complete audio config loader.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/lua-05-tables-config.htm</guid>
+    <category>c</category>
+    <category>lua</category>
+    <category>scripting</category>
+  </item>
+  <item>
+    <title>LLM - Part 8: MCP over HTTP</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/llm-08-mcp-http.htm</link>
+    <description>Run an MCP server over HTTP with Server-Sent Events, add basic authentication, and understand when HTTP transport fits better than stdio.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/llm-08-mcp-http.htm</guid>
+    <category>go</category>
+    <category>llm</category>
+    <category>llama.cpp</category>
+    <category>agents</category>
+  </item>
+  <item>
+    <title>DSP - Part 6: Filter Cookbook: Lowpass, Highpass &amp; Resonance</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/dsp-06-filter-cookbook-1.htm</link>
+    <description>Deriving biquad coefficients for lowpass and highpass filters from the Audio EQ Cookbook, with resonance and worked C code.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/dsp-06-filter-cookbook-1.htm</guid>
+    <category>c</category>
+    <category>dsp</category>
+    <category>audio</category>
+  </item>
+  <item>
+    <title>openFrameworks - Part 20: Writing Portable oF Code</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/of-20-portable-code.htm</link>
+    <description>Practical patterns for writing openFrameworks code that builds cleanly on Linux, macOS, Windows, and Android - preprocessor guards, interface abstraction, ofToDataPath(), endianness, and a portability audit checklist.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/of-20-portable-code.htm</guid>
+    <category>cpp</category>
+    <category>openframeworks</category>
+    <category>graphics</category>
+  </item>
+  <item>
+    <title>Go - Part 19: Vertical Slice Architecture</title>
+    <link>https://5l0p.github.io/tutorials/art/2026/go-19-vertical-slice.htm</link>
+    <description>How to organise a Go HTTP service by feature rather than technical layer, with a worked vertical slice example that shows handler, logic, and storage living together in one package.</description>
+    <pubDate>2026-06-01</pubDate>
+    <guid>https://5l0p.github.io/tutorials/art/2026/go-19-vertical-slice.htm</guid>
+    <category>go</category>
   </item>
 </channel>
 </rss>

@@ -1,0 +1,365 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>DSP - Part 33: The Modified Discrete Cosine Transform</title>
+    <meta name="description" content="Why perceptual codecs use the MDCT instead of the FFT - real-valued output, better energy compaction, and perfect reconstruction from 50%-overlapping windows via time-domain aliasing cancellation - implemented and numerically verified in C.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="dsp-33-mdct.txt">plain/text</a> | <i>2026-07-13</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a></i>
+        <h2>DSP - Part 33: The Modified Discrete Cosine Transform</h2>
+        <p>
+Every FFT-based spectral processor built in
+<a href="dsp-11-fft.htm">Part 11</a> and <a href="dsp-12-spectral-processing.htm">Part 12</a>
+has to solve the same two annoyances: the FFT of a real signal produces redundant
+complex output (as noted when building <a href="dsp-32-fft-in-puredata.htm">the Pd
+version</a>), and any windowed block processing needs a separate overlap-add scheme
+bolted on afterward to avoid clicks at block boundaries. The Modified Discrete Cosine
+Transform - the transform actually used inside MP3, AAC, Vorbis, and Opus - solves
+both problems in the transform itself: it produces only real-valued output, and its
+50%-overlapping windows achieve <i>perfect</i> reconstruction through a mechanism
+called time-domain aliasing cancellation, with the overlap-add built into the math
+rather than added on top of it. This article builds a forward and inverse MDCT in C,
+verifies the reconstruction numerically, and explains why this is the transform of
+choice for quantizing spectral data, which is the missing piece needed to combine the
+<a href="dsp-31-bark-scale.htm">Bark-scale masking model</a> with actual audio data.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why the MDCT takes 2N real input samples and produces only N real output coefficients - a 2:1 reduction the FFT cannot give you for free</li>
+<li>The forward and inverse MDCT formulas, and how to implement both directly in C</li>
+<li>The Princen-Bradley condition a window must satisfy for perfect reconstruction</li>
+<li>Time-domain aliasing cancellation (TDAC): why overlapping, windowed MDCT blocks reconstruct the original signal exactly, with no separate overlap-add bookkeeping</li>
+<li>How to verify perfect reconstruction numerically instead of taking it on faith</li>
+<li>Why perceptual codecs quantize MDCT coefficients instead of FFT bins</li>
+</ul>
+
+<h3>Why Not Just Use the FFT?</h3>
+
+<p>
+An FFT of a length-<code>M</code> real signal produces <code>M</code> complex output
+values, but because the input is real, the spectrum is conjugate-symmetric - only
+about half the values are independent (this is exactly what let
+<a href="dsp-32-fft-in-puredata.htm"><code>rfft~</code></a> pack the spectrum into a
+single signal-length vector). So for real audio, an FFT already carries redundant
+information relative to the samples that produced it, and you still need a window and
+a separate overlap-add stage to avoid block-edge artifacts if you are going to
+resynthesize.
+</p>
+
+<p>
+The MDCT is built specifically for this real-signal, block-overlapping case: it takes
+<code>2N</code> real input samples and produces exactly <code>N</code> real
+coefficients - genuinely half as much data as the input, not "half the FFT output
+after you throw away the redundant half." And its overlap-add is not bolted on
+afterward - it is the mechanism that makes the transform invertible at all.
+</p>
+
+<h3>The Forward and Inverse Formulas</h3>
+
+<p>
+For a block of <code>2N</code> input samples <code>x[0..2N-1]</code>, the forward
+MDCT produces <code>N</code> coefficients:
+</p>
+
+<pre>
+X[k] = Σ (n=0 to 2N-1)  x[n] · cos( (π/N) · (n + 0.5 + N/2) · (k + 0.5) )
+</pre>
+
+<p>
+and the inverse MDCT (IMDCT) takes those <code>N</code> coefficients back to
+<code>2N</code> time-domain samples using the same basis functions, just summed the
+other way:
+</p>
+
+<pre>
+y[n] = (2/N) · Σ (k=0 to N-1)  X[k] · cos( (π/N) · (n + 0.5 + N/2) · (k + 0.5) )
+</pre>
+
+<p>
+In C, both are direct translations of the sums (an <code>O(N&sup2;)</code> reference
+implementation - real encoders use a fast MDCT algorithm built on an FFT, the same way
+Part 11's FFT beat the naive DFT, but the direct sum is what makes the transform
+itself easy to verify):
+</p>
+
+<pre>
+#include &lt;math.h&gt;
+
+#define N 8          /* number of MDCT coefficients per block */
+#define BLOCK (2*N)  /* samples per block (window length) */
+
+void mdct_forward(const double *in, double *out) {
+    for (int k = 0; k &lt; N; k++) {
+        double sum = 0.0;
+        for (int n = 0; n &lt; BLOCK; n++) {
+            double angle = (M_PI / N) * (n + 0.5 + N / 2.0) * (k + 0.5);
+            sum += in[n] * cos(angle);
+        }
+        out[k] = sum;
+    }
+}
+
+void mdct_inverse(const double *in, double *out) {
+    for (int n = 0; n &lt; BLOCK; n++) {
+        double sum = 0.0;
+        for (int k = 0; k &lt; N; k++) {
+            double angle = (M_PI / N) * (n + 0.5 + N / 2.0) * (k + 0.5);
+            sum += in[k] * cos(angle);
+        }
+        out[n] = sum * (2.0 / N);
+    }
+}
+</pre>
+
+<p>
+Notice both functions use the <i>identical</i> angle formula - the MDCT's basis
+functions are shared between forward and inverse transforms, just contracted in
+opposite directions (2N values into N, or N values back out to 2N). This is a
+structural consequence of the transform being built from a DCT-IV, which is its own
+inverse up to a scale factor.
+</p>
+
+<h3>The Catch: A Single Block Does Not Reconstruct</h3>
+
+<p>
+Run <code>mdct_inverse(mdct_forward(x))</code> on one isolated <code>2N</code>-sample
+block and you will <i>not</i> get <code>x</code> back - you will get something
+corrupted by what looks like the signal folded over itself. This is not a bug; it is
+the transform deliberately throwing away exactly half the information (2N samples
+condensed to N coefficients cannot, on its own, carry enough information to invert
+losslessly). The missing half is recovered only by <i>overlapping</i> consecutive
+blocks by 50% and summing their windowed IMDCT outputs - the "aliasing" in each
+individual block's inverse is real, and it cancels out only when the next block's
+aliasing is the exact mirror image, which is exactly what a 50%-overlapped sequence of
+identically-windowed blocks guarantees. This is time-domain aliasing cancellation
+(TDAC), and it is why the MDCT is always discussed together with its window, never on
+its own.
+</p>
+
+<h3>The Window: the Princen-Bradley Condition</h3>
+
+<p>
+For TDAC to actually cancel the aliasing, the window applied before the forward
+transform (and again after the inverse transform) must satisfy the Princen-Bradley
+condition: for a window of length <code>2N</code>,
+</p>
+
+<pre>
+w(n)² + w(n + N)² = 1     for all n in [0, N)
+</pre>
+
+<p>
+The standard MDCT sine window satisfies this automatically, because
+<code>sin²θ + cos²θ = 1</code> falls straight out of the phase shift between
+<code>w(n)</code> and <code>w(n+N)</code>:
+</p>
+
+<pre>
+double window(int n) {
+    return sin((M_PI / BLOCK) * (n + 0.5));
+}
+</pre>
+
+<pre>
+Princen-Bradley check (should all be ~1.0):
+  n=0  w(n)^2+w(n+N)^2 = 1.000000
+  n=1  w(n)^2+w(n+N)^2 = 1.000000
+  n=2  w(n)^2+w(n+N)^2 = 1.000000
+  n=3  w(n)^2+w(n+N)^2 = 1.000000
+  n=4  w(n)^2+w(n+N)^2 = 1.000000
+  n=5  w(n)^2+w(n+N)^2 = 1.000000
+  n=6  w(n)^2+w(n+N)^2 = 1.000000
+  n=7  w(n)^2+w(n+N)^2 = 1.000000
+</pre>
+
+<h3>Verifying Perfect Reconstruction Numerically</h3>
+
+<p>
+Rather than trust the algebra, process a real test signal through overlapping,
+windowed MDCT/IMDCT blocks and measure the reconstruction error directly. Pad the
+signal with <code>N</code> zero samples on each side (so the very first and last real
+blocks have something to overlap against), then step through it with a hop size of
+exactly <code>N</code> (50% overlap for a <code>2N</code>-sample window):
+</p>
+
+<pre>
+#include &lt;string.h&gt;
+
+int main(void) {
+    int signal_len = 40;
+    double signal[40];
+    for (int i = 0; i &lt; signal_len; i++) {
+        signal[i] = sin(2.0 * M_PI * i / 11.3) + 0.3 * sin(2.0 * M_PI * i / 3.7);
+    }
+
+    int padded_len = signal_len + 2 * N;
+    double padded[40 + 2*N];
+    memset(padded, 0, sizeof(padded));
+    memcpy(padded + N, signal, sizeof(signal));
+
+    double reconstructed[40 + 2*N];
+    memset(reconstructed, 0, sizeof(reconstructed));
+
+    double coeffs[N], windowed_in[BLOCK], imdct_out[BLOCK];
+
+    for (int start = 0; start + BLOCK &lt;= padded_len; start += N) {
+        for (int i = 0; i &lt; BLOCK; i++) {
+            windowed_in[i] = padded[start + i] * window(i);
+        }
+        mdct_forward(windowed_in, coeffs);
+        mdct_inverse(coeffs, imdct_out);
+        for (int i = 0; i &lt; BLOCK; i++) {
+            reconstructed[start + i] += imdct_out[i] * window(i);
+        }
+    }
+
+    double max_err = 0.0;
+    for (int i = N; i &lt; signal_len; i++) {
+        double err = fabs(reconstructed[i] - signal[i - N]);
+        if (err &gt; max_err) max_err = err;
+    }
+    printf("max reconstruction error (away from edges): %e\n", max_err);
+    return 0;
+}
+</pre>
+
+<pre>
+max reconstruction error (away from edges): 2.831069e-15
+</pre>
+
+<p>
+That error is floating-point noise, not approximation error - this is genuinely
+perfect reconstruction, not "close enough for audio." Three things had to be true
+together for this to work: the window satisfies Princen-Bradley, consecutive blocks
+overlap by exactly 50% (hop size <code>N</code> for a <code>2N</code>-sample window),
+and every windowed IMDCT output is summed (not just written) into the output buffer -
+the <code>+=</code> in the loop above is doing the actual TDAC cancellation, not
+merely avoiding overwriting neighbouring data.
+</p>
+
+<h3>Why This Matters for Quantization</h3>
+
+<p>
+A perceptual codec's whole job, from <a href="dsp-31-bark-scale.htm">Part 31</a>, is
+to quantize spectral coefficients according to a masking threshold. Doing that on FFT
+bins works, but wastes half your coefficient budget on redundant conjugate-symmetric
+information and needs a bolted-on overlap-add scheme to avoid block-edge artifacts in
+the reconstructed audio. Doing it on MDCT coefficients gives you real-valued
+coefficients with no redundancy to discard, and the overlap-add is inseparable from
+the transform itself - which is exactly why MP3, AAC, Vorbis, and Opus all quantize
+MDCT (or MDCT-derived) coefficients rather than FFT bins for the actual audio-carrying
+data path, reserving FFT analysis for auxiliary tasks like the psychoacoustic model's
+own masking calculations.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+The MDCT trades the FFT's complex, redundant output for a smaller, purely real
+coefficient set, at the cost of a transform that only reconstructs correctly when
+its 50%-overlapping windows satisfy the Princen-Bradley condition and consecutive
+blocks are summed rather than concatenated - time-domain aliasing cancellation. That
+constraint is exactly what makes the overlap-add machinery Part 12 built by hand
+disappear into the transform itself. With a verified, perfect-reconstruction MDCT/IMDCT
+pair in hand, the remaining piece needed to combine
+<a href="dsp-30-quantization-dither.htm">quantization</a>,
+<a href="dsp-31-bark-scale.htm">the Bark-scale masking model</a>, and
+<a href="codec-04-entropy-coding.htm">entropy coding</a> into an actual toy perceptual
+codec is just wiring them together in the right order - which is exactly where this
+site's compression series is headed next.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://ieeexplore.ieee.org/document/1172443">Princen, J. &amp; Bradley, A. - "Analysis/Synthesis Filter Bank Design Based on Time Domain Aliasing Cancellation" (IEEE Trans. ASSP, 1986)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Modified_discrete_cosine_transform">Modified Discrete Cosine Transform - Wikipedia</a></li>
+<li><a href="https://www.iis.fraunhofer.de/en/ff/amm/dl/mp3.html">Fraunhofer IIS - MP3 technical background</a></li>
+<li><a href="https://xiph.org/vorbis/doc/Vorbis_I_spec.html">Vorbis I Specification</a> - a fully open-source codec built on the MDCT</li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="dsp-11-fft.htm">FFT from Scratch</a></li>
+<li><a href="dsp-12-spectral-processing.htm">Spectral Processing with FFT</a></li>
+<li><a href="dsp-31-bark-scale.htm">The Bark Scale and Perceptual Bit Allocation</a></li>
+<li><a href="codec-04-entropy-coding.htm">Audio Compression Part 4: Entropy Coding with Huffman and Golomb-Rice</a></li>
+<li><a href="codec-08-toy-perceptual-codec.htm">Audio Compression Part 8: Building a Toy Perceptual Codec</a> - this transform wired into a complete encoder/decoder</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

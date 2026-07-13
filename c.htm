@@ -72,9 +72,42 @@
 <h1>~5l0p/tut</h1>
 <!-- header end -->
         <a href="https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
-        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="audio-plugins.htm">audio-plugins</a>, <a href="build-systems.htm">build-systems</a>, <a href="bundling.htm">bundling</a>, <a href="busted.htm">busted</a>, <a href="c.htm">c</a>, <a href="cmake.htm">cmake</a>, <a href="cpp.htm">cpp</a>, <a href="cross-platform.htm">cross-platform</a>, <a href="dependencies.htm">dependencies</a>, <a href="distribution.htm">distribution</a>, <a href="drums.htm">drums</a>, <a href="dsp.htm">dsp</a>, <a href="effects.htm">effects</a>, <a href="elektron.htm">elektron</a>, <a href="embedded.htm">embedded</a>, <a href="linux.htm">linux</a>, <a href="lua.htm">lua</a>, <a href="luarocks.htm">luarocks</a>, <a href="make.htm">make</a>, <a href="offline.htm">offline</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="pico.htm">pico</a>, <a href="puredata.htm">puredata</a>, <a href="rp2040.htm">rp2040</a>, <a href="scripting.htm">scripting</a>, <a href="static-linking.htm">static-linking</a>, <a href="synthesis.htm">synthesis</a>, <a href="testing.htm">testing</a>, <a href="unity.htm">unity</a>, <a href="vendoring.htm">vendoring</a>, <a href="vst3.htm">vst3</a></i>
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a>  | <i><a href="audio.htm">audio</a>, <a href="audio-plugins.htm">audio-plugins</a>, <a href="build-systems.htm">build-systems</a>, <a href="bundling.htm">bundling</a>, <a href="busted.htm">busted</a>, <a href="c.htm">c</a>, <a href="cmake.htm">cmake</a>, <a href="codec.htm">codec</a>, <a href="compression.htm">compression</a>, <a href="cpp.htm">cpp</a>, <a href="cross-platform.htm">cross-platform</a>, <a href="dependencies.htm">dependencies</a>, <a href="distribution.htm">distribution</a>, <a href="drums.htm">drums</a>, <a href="dsp.htm">dsp</a>, <a href="effects.htm">effects</a>, <a href="elektron.htm">elektron</a>, <a href="embedded.htm">embedded</a>, <a href="linux.htm">linux</a>, <a href="lua.htm">lua</a>, <a href="luarocks.htm">luarocks</a>, <a href="make.htm">make</a>, <a href="offline.htm">offline</a>, <a href="openframeworks.htm">openframeworks</a>, <a href="pico.htm">pico</a>, <a href="puredata.htm">puredata</a>, <a href="rp2040.htm">rp2040</a>, <a href="scripting.htm">scripting</a>, <a href="static-linking.htm">static-linking</a>, <a href="synthesis.htm">synthesis</a>, <a href="testing.htm">testing</a>, <a href="unity.htm">unity</a>, <a href="vendoring.htm">vendoring</a>, <a href="vst3.htm">vst3</a></i>
 <h2>Tutorials</h2>
 <h2>c-</h2>
+<p><b><a href="art/2026/dsp-33-mdct.htm">DSP - Part 33: The Modified Discrete Cosine Transform</a></b> - 2026-07-13<br>
+Why perceptual codecs use the MDCT instead of the FFT - real-valued output, better energy compaction, and perfect reconstruction from 50%-overlapping windows via time-domain aliasing cancellation - implemented and numerically verified in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-31-bark-scale.htm">DSP - Part 31: The Bark Scale and Perceptual Bit Allocation</a></b> - 2026-07-13<br>
+The Bark critical-band scale, the absolute threshold of hearing, simultaneous masking, and how a perceptual audio codec uses all three to decide how many bits to spend on each FFT bin - implemented in C on top of the FFT from Part 11.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/dsp-30-quantization-dither.htm">DSP - Part 30: Quantization, Noise, and Dither</a></b> - 2026-07-13<br>
+The quantization error model, the SQNR formula derived from first principles, why quantization without dither correlates error with the signal, and how triangular dither and noise shaping fix it - implemented in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>
+<p><b><a href="art/2026/codec-01-mu-law-companding.htm">Audio Compression - Part 1: mu-law and A-law Companding</a></b> - 2026-07-13<br>
+Implementing G.711 mu-law and A-law companding in C: why linear PCM wastes bits on quiet signals, the logarithmic law, lookup-table encode/decode, and measuring the quantization error you traded away.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="codec.htm">codec</a>, <a href="compression.htm">compression</a></i></p>
+<p><b><a href="art/2026/codec-02-dpcm.htm">Audio Compression - Part 2: Differential PCM</a></b> - 2026-07-13<br>
+Implementing lossless and lossy DPCM in C: exploiting sample-to-sample correlation with delta encoding, building a fixed quantizer, and understanding the error-accumulation problem that motivates adaptive step sizes.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="codec.htm">codec</a>, <a href="compression.htm">compression</a></i></p>
+<p><b><a href="art/2026/codec-03-adpcm.htm">Audio Compression - Part 3: IMA ADPCM</a></b> - 2026-07-13<br>
+Implementing the IMA ADPCM standard in C: adaptive step-size quantization, the official step and index tables, a bit-exact encoder/decoder pair, nibble packing, and how ADPCM data is laid out inside a WAV file.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="codec.htm">codec</a>, <a href="compression.htm">compression</a></i></p>
+<p><b><a href="art/2026/codec-08-toy-perceptual-codec.htm">Audio Compression - Part 8: Building a Toy Perceptual Codec</a></b> - 2026-07-13<br>
+Wiring the MDCT, Bark-scale masking, quantization bit allocation, and Rice entropy coding into one working perceptual encoder/decoder in C - a series retrospective across mu-law, DPCM/ADPCM, Huffman/Rice, lossless prediction, CELP, and the psychoacoustic DSP articles.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="codec.htm">codec</a>, <a href="compression.htm">compression</a></i></p>
+<p><b><a href="art/2026/codec-07-celp.htm">Audio Compression - Part 7: Vector Quantization and CELP</a></b> - 2026-07-13<br>
+Vector quantization fundamentals (codebooks, nearest-neighbor search, the LBG algorithm) and Code-Excited Linear Prediction: LPC analysis via Levinson-Durbin, the source-filter model of speech, and analysis-by-synthesis codebook search - implemented and measured in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="codec.htm">codec</a>, <a href="compression.htm">compression</a></i></p>
+<p><b><a href="art/2026/codec-05-lossless-predictive-coding.htm">Audio Compression - Part 5: Lossless Predictive Coding</a></b> - 2026-07-13<br>
+Combining DPCM-style fixed linear predictors with Golomb-Rice entropy coding into a real, measured lossless audio codec in C - the same architecture FLAC and Shorten are built on.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="codec.htm">codec</a>, <a href="compression.htm">compression</a></i></p>
+<p><b><a href="art/2026/codec-04-entropy-coding.htm">Audio Compression - Part 4: Entropy Coding with Huffman and Golomb-Rice</a></b> - 2026-07-13<br>
+Implementing Huffman coding and Golomb-Rice coding in C - the entropy coding stage that turns lossless DPCM's residuals from Part 2 into an actual compression ratio, plus a bit-level reader/writer to pack variable-length codes into bytes.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="codec.htm">codec</a>, <a href="compression.htm">compression</a></i></p>
+<p><b><a href="art/2026/codec-06-wav-mp3-headers.htm">Audio Compression - Part 6: WAV and MP3 File Headers</a></b> - 2026-07-13<br>
+The RIFF/WAV chunk structure (including the extended fmt chunk non-PCM formats like mu-law and ADPCM require) and the MP3 frame header's bit layout, bitrate/sample-rate tables, and frame-length formula - parsed and written in C.<br>
+<i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a>, <a href="codec.htm">codec</a>, <a href="compression.htm">compression</a></i></p>
 <p><b><a href="art/2026/dsp-01-audio-fundamentals.htm">DSP - Part 1: Audio Fundamentals</a></b> - 2026-06-01<br>
 Sample rate, bit depth, the Nyquist theorem, aliasing, and decibel arithmetic - the vocabulary every audio programmer must know.<br>
 <i><a href="c.htm">c</a>, <a href="dsp.htm">dsp</a>, <a href="audio.htm">audio</a></i></p>

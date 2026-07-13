@@ -1,0 +1,356 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>DSP - Part 30: Quantization, Noise, and Dither</title>
+    <meta name="description" content="The quantization error model, the SQNR formula derived from first principles, why quantization without dither correlates error with the signal, and how triangular dither and noise shaping fix it - implemented in C.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="dsp-30-quantization-dither.txt">plain/text</a> | <i>2026-07-13</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a></i>
+        <h2>DSP - Part 30: Quantization, Noise, and Dither</h2>
+        <p>
+Every digital audio signal has already been quantized once, at the analog-to-digital
+converter, and it gets quantized again every time you reduce bit depth, apply gain in
+fixed-point arithmetic, or design a lossy codec like the ones in this site's
+compression series. Quantization is usually described loosely as "rounding
+introduces some noise", but the interesting engineering is in exactly how much noise,
+where that noise sits in the spectrum, and why the naive version of quantization
+sounds worse than the numbers suggest. This article derives the standard noise model,
+shows you how to measure it, and then shows why real audio equipment adds noise
+<i>before</i> quantizing, which sounds backwards until you see the alternative.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Quantization as rounding to the nearest representable level, and the resulting error bound</li>
+<li>The additive-noise model of quantization error and the assumptions it depends on</li>
+<li>How to derive the SQNR formula (6.02 dB per bit + 1.76 dB) from that model</li>
+<li>Why quantizing a low-level or correlated signal without dither creates audible distortion, not just noise</li>
+<li>How triangular (TPDF) dither decorrelates the error from the signal, at the cost of a small noise floor increase</li>
+<li>What noise shaping does: pushing quantization noise out of the range you care about instead of just accepting it</li>
+</ul>
+
+<h3>Quantization Is Rounding</h3>
+
+<p>
+To quantize a value to <code>b</code> bits, you map it to the nearest of
+<code>2^b</code> evenly spaced representable levels. For a signal normalized to
+[-1, 1] quantized to <code>b</code> bits, the step size is:
+</p>
+
+<pre>
+Δ = 2 / (2^b)
+</pre>
+
+<p>
+and quantizing a sample <code>x</code> means:
+</p>
+
+<pre>
+#include &lt;math.h&gt;
+
+/* Quantizes x (in [-1,1]) to b bits. Returns the quantized value,
+   still in [-1,1]. */
+double quantize(double x, int bits) {
+    double step = 2.0 / (double)(1 &lt;&lt; bits);
+    return round(x / step) * step;
+}
+</pre>
+
+<p>
+The error <code>e = quantize(x) - x</code> is bounded: <code>|e| &lt;= Δ/2</code>, by
+definition of "nearest". That bound is the entire foundation of the standard noise
+model.
+</p>
+
+<h3>The Additive Noise Model</h3>
+
+<p>
+The rounding error itself is a deterministic function of the input - for a given
+<code>x</code> you always get the same <code>e</code>. But if the input signal is
+"busy" enough (covers many quantization steps, is not near-DC, is not a simple
+low-order rational multiple of the step size), the sequence of errors across many
+samples behaves statistically like independent noise, uniformly distributed over
+<code>[-Δ/2, Δ/2]</code>. This is an approximation, not a law of physics - it breaks
+down exactly in the cases covered in the next section - but under it, we can treat
+quantization as: <code>quantized_signal = signal + noise</code>, where the noise has
+a flat (white) spectrum and a computable power.
+</p>
+
+<p>
+For a uniform distribution over <code>[-Δ/2, Δ/2]</code>, the noise power (mean
+square) is:
+</p>
+
+<pre>
+noise_power = Δ² / 12
+</pre>
+
+<p>
+Comparing that to the power of a full-scale sine wave (amplitude 1, power = 1/2)
+gives the signal-to-quantization-noise ratio:
+</p>
+
+<pre>
+SQNR = 10 * log10( (1/2) / (Δ²/12) )
+     = 6.02 * bits + 1.76   dB
+</pre>
+
+<p>
+This is the formula behind "16-bit audio has ~98 dB of dynamic range" (6.02·16 + 1.76
+≈ 98). Each additional bit buys roughly 6 dB - the same "6 dB per bit" rule you will
+see quoted everywhere in audio engineering, now with a derivation behind it instead
+of just a rule to memorize.
+</p>
+
+<h3>Measuring SQNR</h3>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+
+#define N 4096
+
+int main(void) {
+    for (int bits = 4; bits &lt;= 16; bits += 4) {
+        double signal_power = 0.0, noise_power = 0.0;
+        for (int i = 0; i &lt; N; i++) {
+            double x = sin(2.0 * M_PI * i / 97.3);  /* non-integer period avoids periodicity artifacts */
+            double q = quantize(x, bits);
+            double e = q - x;
+            signal_power += x * x;
+            noise_power  += e * e;
+        }
+        signal_power /= N;
+        noise_power  /= N;
+        double sqnr = 10.0 * log10(signal_power / noise_power);
+        double predicted = 6.02 * bits + 1.76;
+        printf("bits=%2d  measured_sqnr=%6.2f dB  predicted=%6.2f dB\n",
+               bits, sqnr, predicted);
+    }
+    return 0;
+}
+</pre>
+
+<pre>
+bits= 4  measured_sqnr= 26.22 dB  predicted= 25.84 dB
+bits= 8  measured_sqnr= 50.02 dB  predicted= 49.92 dB
+bits=12  measured_sqnr= 73.86 dB  predicted= 74.00 dB
+bits=16  measured_sqnr= 98.36 dB  predicted= 98.08 dB
+</pre>
+
+<p>
+Measured and predicted converge as bit depth increases, because the noise model's
+assumptions hold better when the signal spans many quantization steps. At 4 bits, a
+sine wave only has 16 representable levels to work with, so the "noise" is visibly
+not statistically ideal - which is exactly the failure mode the next section covers.
+</p>
+
+<h3>When the Noise Model Breaks: Correlated Error</h3>
+
+<p>
+The additive white noise model assumes the error is independent of the signal.
+It is not, in general - it is a deterministic function of the signal. This is easy
+to miss at high bit depths and high signal levels, where the approximation is good
+enough to be inaudible. It becomes obvious at low bit depths or low signal levels:
+quantize a quiet sine wave (say, amplitude 0.01 at 4 bits, where the step size is
+2/16 = 0.125 - larger than the whole signal) and every sample rounds to the
+<i>same</i> one or two quantization levels. The "noise" is not noise at all - it is a
+harshly distorted, harmonically-related square-ish wave, because the error tracks
+the signal instead of behaving randomly. This is audible as buzzy, gritty distortion,
+not smooth hiss, and it gets worse - not better - as the true signal gets quieter,
+which is exactly backwards from what you want in a decaying reverb tail or a fade-out.
+</p>
+
+<h3>Dither: Decorrelating the Error From the Signal</h3>
+
+<p>
+The fix seems paradoxical: add noise <i>before</i> quantizing. Specifically, add
+random dither noise with a triangular probability distribution (TPDF - the sum of
+two independent uniform random variables) spanning one quantization step, then
+quantize the sum:
+</p>
+
+<pre>
+#include &lt;stdlib.h&gt;
+
+/* Uniform random in [-0.5, 0.5) */
+static double rand_uniform(void) {
+    return ((double)rand() / ((double)RAND_MAX + 1.0)) - 0.5;
+}
+
+/* Triangular dither: sum of two independent uniforms, scaled to
+   span one quantization step (peak-to-peak = 2*step, i.e. +-1 step). */
+static double tpdf_dither(double step) {
+    return (rand_uniform() + rand_uniform()) * step;
+}
+
+double quantize_with_dither(double x, int bits) {
+    double step = 2.0 / (double)(1 &lt;&lt; bits);
+    double dithered = x + tpdf_dither(step);
+    return round(dithered / step) * step;
+}
+</pre>
+
+<p>
+TPDF dither, specifically, is what makes the quantization error's statistics
+independent of the signal (uniform or single-triangular dither reduces correlation
+but does not fully eliminate it; TPDF is the standard choice because it is the
+minimum dither that achieves total decorrelation of the error's first two moments
+from the input). The audible result: the buzzy, signal-dependent distortion from the
+undithered case becomes flat, signal-independent hiss - a noise floor that does not
+change character as the true signal fades to silence. You pay for this with a
+slightly higher measured noise floor (dither adds its own power on top of the
+quantization noise), which is the correct trade: consistent, low-level hiss over
+audible, level-dependent distortion.
+</p>
+
+<h3>Noise Shaping: Moving the Noise, Not Just Randomizing It</h3>
+
+<p>
+Dither makes the noise floor flat and predictable, but it does not reduce the total
+noise power. Noise shaping goes a step further: it feeds the previous sample's
+quantization error back into the next sample before quantizing, with a filter that
+pushes noise energy toward frequencies you care about less (typically upward, since
+digital audio's high frequencies are both closer to Nyquist rolloff and where hearing
+is least sensitive) and away from frequencies you care about more.
+</p>
+
+<pre>
+typedef struct {
+    double error_feedback;  /* accumulated quantization error */
+} NoiseShaper;
+
+void noise_shaper_init(NoiseShaper *ns) {
+    ns-&gt;error_feedback = 0.0;
+}
+
+/* First-order noise shaping: simplest useful case. Feeding back
+   100% of the previous error pushes noise power toward high
+   frequencies (a 6 dB/octave highpass-shaped noise spectrum). */
+double noise_shaper_process(NoiseShaper *ns, double x, int bits) {
+    double step = 2.0 / (double)(1 &lt;&lt; bits);
+    double shaped_input = x + ns-&gt;error_feedback;
+    double q = round(shaped_input / step) * step;
+    ns-&gt;error_feedback = shaped_input - q;
+    return q;
+}
+</pre>
+
+<p>
+This is the same "feed the error into the next decision" idea used in delta-sigma
+ADCs and in dithered image quantization (Floyd-Steinberg error diffusion is the 2D
+analogue). For audio, it is why professional bit-depth-reduction tools (16-bit
+masters mixed down from 24/32-bit sessions) always offer a noise-shaped dither
+option - it moves the same noise power to where your ears are least likely to notice
+it, rather than reducing it.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Quantization error is bounded by half a step size and, under the right conditions, can
+be modeled as flat additive noise with a predictable power - which is where the
+6.02·bits + 1.76 dB SQNR formula comes from. That model quietly assumes the error is
+uncorrelated with the signal, and at low bit depths or low signal levels this
+assumption fails, turning the "noise" into audible, signal-dependent distortion.
+Adding TPDF dither before quantizing restores the independence the model assumes,
+trading a slightly higher noise floor for a much less objectionable failure mode.
+Noise shaping goes further, using feedback of the quantization error to relocate that
+noise power away from perceptually important frequencies. This is the general
+foundation the next article builds on: perceptual codecs do not just quantize
+uniformly and add dither - they use a model of what frequencies matter to decide
+<i>how much</i> quantization error is acceptable where, and that model is the Bark
+scale.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://www.aes.org/e-lib/browse.cfm?elib=7048">Lipshitz, Wannamaker, Vanderkooy - "Quantization and Dither: A Theoretical Survey" (JAES)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Dither#Audio">Dither in Audio - Wikipedia</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Noise_shaping">Noise Shaping - Wikipedia</a></li>
+<li><a href="https://www.cs.cmu.edu/~music/icm-online/readings/dither/">Understanding Dither - Ken Pohlmann (CMU course notes)</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="dsp-31-bark-scale.htm">The Bark Scale and Perceptual Bit Allocation</a></li>
+<li><a href="codec-01-mu-law-companding.htm">Audio Compression Part 1: mu-law and A-law Companding</a> - a non-uniform quantizer that trades step size for perceptual accuracy</li>
+<li><a href="dsp-11-fft.htm">FFT from Scratch</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

@@ -1,0 +1,237 @@
+DSP - Part 32: FFT in Pure Data
+2026-07-13
+
+
+Part 11 built an FFT from scratch in C and
+Part 12 used it for spectral effects
+inside a hand-written audio callback. Pure Data gives you the same DFT/IFFT pair as
+patchable objects, but the way it exposes them is unusual if you are coming from
+writing your own C: there is no "FFT size" argument anywhere. The FFT size is
+inherited from the audio block size of the subpatch the FFT objects live in. This
+article explains that mechanism, the objects Pd gives you (rfft~,
+fft~, cartopol~, poltocar~), and builds a
+complete windowed, overlap-added spectral gate patch - the Pd equivalent of the C
+version from Part 12.
+
+
+What You Will Learn
+
+
+Why block~, not an FFT object argument, sets your FFT size in Pd
+The difference between fft~/ifft~ (full complex) and rfft~/rifft~ (real-input, packed output)
+How to convert the packed spectrum to magnitude/phase with cartopol~/poltocar~ for practical processing
+Why Pd's FFT objects do not window your signal for you, and how to apply a Hann window using a table
+How to reconstruct clean audio from processed spectral frames with overlap-add
+How to build a complete spectral gate patch that zeroes bins below a magnitude threshold
+
+
+Block Size Is FFT Size
+
+
+In Pd, every subpatch has a block size - the number of samples processed per DSP
+tick inside that subpatch - which defaults to inheriting its parent's block size
+(usually 64). The block~ object, placed inside a subpatch, overrides that
+subpatch's block size:
+
+
+
+block~ 1024
+
+
+
+Any FFT object (rfft~, fft~) inside that same subpatch then
+operates on exactly that many samples per call - a 1024-point FFT, in this example.
+This is the single most important thing to understand about doing FFT work in Pd:
+you do not tell rfft~ how big a transform to do. You put it inside a
+subpatch, set that subpatch's block size with block~, and the FFT size
+follows. The block size must be a power of two, matching the radix-2 requirement from
+Part 11.
+
+
+
+Because the outer patch can run at a smaller block size (commonly 64 samples) while
+the FFT subpatch runs at 1024, Pd automatically buffers between the two rates. This is
+convenient, but it means your FFT subpatch only produces one new spectral frame every
+1024 samples - at 44.1 kHz that is once every ~23 ms, which is the inherent latency
+floor of whatever you build inside it.
+
+
+rfft~ and fft~
+
+
+fft~ takes two signals in (real, imaginary) and produces two signals out
+- a full complex FFT, useful when your input is already complex (for example, chained
+from another complex spectral operation). For ordinary real audio input, that second
+inlet would just be silence, which wastes half the computation the standard is
+already able to skip: a real-input DFT has a symmetric spectrum, so only half of it
+carries independent information.
+
+
+
+rfft~ exploits that symmetry: it takes a single real audio signal in and
+produces a single signal out containing the spectrum in packed format - the
+real parts of bins 0..N/2 followed by the imaginary parts of bins 1..N/2-1, all in one
+signal vector of the same length as the input block. You get the full information of
+the complex spectrum in half the storage, at the cost of the layout being a specific
+convention rather than an intuitive interleaving. rifft~ takes that same
+packed layout back to real audio. Use rfft~/rifft~ for real
+audio in and out - which is the overwhelmingly common case - and reserve
+fft~/ifft~ for signals that are already genuinely complex.
+
+
+cartopol~ and poltocar~
+
+
+Packed real/imaginary format is what the FFT objects speak, but it is an awkward
+format to actually process: scaling "loudness" of a bin without touching its timing
+means scaling magnitude while leaving phase alone, which is not a simple operation on
+raw real/imaginary pairs. cartopol~ converts a cartesian (real,
+imaginary) pair of signals to polar (magnitude, phase); poltocar~ does
+the reverse. The typical spectral-processing chain is:
+
+
+
+rfft~  -  cartopol~  -  [ process magnitude, leave phase alone ]  -  poltocar~  -  rifft~
+
+
+
+rfft~'s single packed output does need separating into a real and
+imaginary pair before cartopol~ can take it - in practice you will see
+patches use [fft~] directly when magnitude/phase manipulation is the
+whole point, precisely because fft~ already gives you separate real and
+imaginary outlets with no unpacking step, trading away the packed-format's storage
+saving for convenience. Which one is "correct" depends on whether you are optimizing
+for CPU (favor rfft~) or for patching convenience (favor fft~);
+for a first working patch, use fft~.
+
+
+Windowing: Pd Does Not Do This For You
+
+
+Neither fft~ nor rfft~ applies a window function before
+transforming. Feed either one a raw, un-windowed block and - exactly as in Part 11 -
+you get spectral leakage from the implicit discontinuity at the block edges. Worse,
+if you are going to resynthesize with ifft~/rifft~ and
+overlap-add the results, skipping the window produces audible clicks at every block
+boundary, because adjacent blocks do not taper smoothly into each other.
+
+
+
+Build a Hann window into a table once at patch load time, and multiply your signal by
+it before the FFT:
+
+
+
+table hann-window 1024
+
+loadbang - [ ; hann-window sinesum -1024 1 ]     (fills the table with a Hann shape via a signed sinesum trick, or precompute and set with a message)
+
+
+
+then, inside the FFT subpatch, multiply the incoming signal by a phasor-driven
+tabread4~ (or tabread~ for simplicity, since the window's
+table index maps directly to sample position within the fixed-size block) reading
+that same table, sample-for-sample, before it reaches fft~/rfft~.
+The window must be re-applied identically on the way out for a symmetric
+analysis/resynthesis window (common in phase-vocoder-style patches), or applied only
+on the way in if you are doing simple spectral gating where perfect resynthesis
+fidelity matters less than in a phase vocoder.
+
+
+Overlap-Add
+
+
+A single FFT block resynthesized without overlap reproduces the original signal
+exactly for a rectangular window, but any tapering window (Hann included) attenuates
+the edges of each block - if you just concatenate windowed-and-reconstructed blocks
+back to back, you get audible amplitude dips at every block boundary. The fix, exactly
+as in Part 12's C implementation, is
+overlap-add: run the FFT subpatch on overlapping blocks (a hop size of 1/4 or 1/2 the
+block size is typical), and sum each reconstructed, windowed block into an output
+buffer at its overlapping position rather than writing it in isolation. In Pd this
+overlap is normally built with two or more block~ subpatches running out
+of phase with each other (a "polyphase" arrangement), or, more commonly in practice,
+by using a helper abstraction - the Pd documentation's own fft-help.pd
+patches under doc/6.audio.examples in a standard Pd install are the
+canonical worked example. Read the actual patch there rather than re-deriving the
+polyphase wiring from a description; it is the reference implementation the rest of
+the Pd community's spectral patches are built from.
+
+
+Building a Spectral Gate
+
+
+With all the pieces above, a spectral gate - zero out any bin whose magnitude is below
+a threshold, exactly the effect built in C in
+Part 12 - is a short chain inside the FFT
+subpatch:
+
+
+
+[inlet~]
+   |
+[* windowed by hann table, per above]
+   |
+[fft~]                          (real and imaginary outlets)
+   |         |
+[cartopol~]                     (magnitude, phase outlets)
+   |         |
+[ threshold]   |                (magnitude outlet: 1 if above threshold, else 0)
+   |         |
+[* magnitude]   |                (zero the magnitude if the gate is closed)
+   \         /
+   [poltocar~]                  (back to real, imaginary)
+       |
+     [ifft~]
+       |
+   [outlet~]                    (into your overlap-add buffer)
+
+
+
+The [> threshold] box compares the magnitude signal against a
+threshold constant and outputs 1 or 0 per sample; multiplying that against the
+magnitude signal itself is the gate - bins below the threshold are zeroed, bins above
+it pass through unchanged, before going back through poltocar~ and
+ifft~. This is deliberately the simplest possible gate (a hard per-bin
+cutoff); the same slot is where you would instead plug in the Bark-band-informed
+masking threshold from Part 31 if you wanted the
+gate to track a perceptual model instead of a single fixed number - compute one
+threshold per Bark band on the control side, expand it back out to one value per FFT
+bin, and compare against that instead of a scalar constant.
+
+
+Summary
+
+
+Pd's FFT is not a self-contained object with its own size parameter - it is
+block~, set inside a subpatch, that determines the transform size,
+with rfft~/fft~ doing the actual transform and
+cartopol~/poltocar~ converting to and from the
+magnitude/phase representation that most spectral processing actually wants to work
+in. Because Pd does not window or overlap-add for you, any patch that resynthesizes
+audio (as opposed to pure analysis/visualization) needs an explicit Hann-windowed,
+overlapping block~ arrangement or clicks appear at every block boundary - the same
+requirement Part 12 covered for the hand-written C version, just wired with patch
+cords instead of a for-loop. With those pieces in place, a spectral gate, a spectral
+freeze, or a full phase vocoder are all variations on the same
+fft~/cartopol~/process/poltocar~/ifft~
+chain.
+
+
+Further Reading
+
+
+Miller Puckette - Theory and Technique of Electronic Music, Chapter 9 (Spectral Processing)
+Pure Data Documentation - list of built-in objects
+Pd Documentation Index - Miller Puckette
+Pure Data source: doc/6.audio.examples - the reference FFT/overlap-add patches
+
+
+See Also
+
+
+FFT from Scratch
+Spectral Processing with FFT
+The Bark Scale and Perceptual Bit Allocation
+libpd Part 1: What Is libpd? - embedding this same Pd engine in an application instead of running the standalone GUI
+

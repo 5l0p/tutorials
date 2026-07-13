@@ -293,4 +293,7 @@ See Also
 Spectral Processing with FFT
 Audio Fundamentals
 Wavetable Synthesis
+The Bark Scale and Perceptual Bit Allocation - using this FFT to drive a perceptual model
+FFT in Pure Data - the same transform as a patchable object
+The Modified Discrete Cosine Transform - the real-valued, self-overlapping transform perceptual codecs use instead
 

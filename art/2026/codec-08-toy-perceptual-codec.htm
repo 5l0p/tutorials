@@ -1,0 +1,317 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Audio Compression - Part 8: Building a Toy Perceptual Codec</title>
+    <meta name="description" content="Wiring the MDCT, Bark-scale masking, quantization bit allocation, and Rice entropy coding into one working perceptual encoder/decoder in C - a series retrospective across mu-law, DPCM/ADPCM, Huffman/Rice, lossless prediction, CELP, and the psychoacoustic DSP articles.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio, codec, compression">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="codec-08-toy-perceptual-codec.txt">plain/text</a> | <i>2026-07-13</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a>, <a href="../../codec.htm">codec</a>, <a href="../../compression.htm">compression</a></i>
+        <h2>Audio Compression - Part 8: Building a Toy Perceptual Codec</h2>
+        <p>
+Eight articles of quantizers, transforms, and entropy coders lead here. This one wires
+four of them together into a single working perceptual encoder/decoder: the
+<a href="dsp-33-mdct.htm">MDCT</a> turns each block of audio into real-valued spectral
+coefficients, the <a href="dsp-31-bark-scale.htm">Bark-scale masking model</a> decides
+how many bits each coefficient's band deserves, a scalar quantizer spends exactly that
+many bits per band, and <a href="codec-04-entropy-coding.htm">Rice coding</a> packs the
+result into an actual bitstream - decoded back into audio with a measured signal-to-
+noise ratio. Nothing here is new machinery; every piece already exists in an earlier
+article. What is new is seeing them work as one system, on one real signal, with real
+numbers.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>How to thread together the MDCT (Part 33), Bark-band masking (Part 31), quantization theory (Part 30), and Rice coding (Part 4) into a single encoder</li>
+<li>How per-block, per-band bit allocation actually changes as a signal gets quieter</li>
+<li>How to measure a toy codec's real compression ratio and reconstruction SNR, not just describe it in the abstract</li>
+<li>Where this toy codec's simplifications are, and what a production codec (MP3/AAC/Opus) adds back in to close the gap</li>
+<li>A retrospective on the whole series: what eight articles of quantizers, predictors, and transforms add up to</li>
+</ul>
+
+<h3>The Pipeline</h3>
+
+<p>
+Per block, the encoder does five steps, each one built and tested in an earlier
+article:
+</p>
+
+<ol>
+<li><b>Window and transform</b> (<a href="dsp-33-mdct.htm">Part 33</a>): apply the sine
+    window and the forward MDCT to get <code>N</code> real spectral coefficients.</li>
+<li><b>Map to Bark bands</b> (<a href="dsp-31-bark-scale.htm">Part 31</a>): group the
+    coefficients by critical band and compute each band's energy in dB.</li>
+<li><b>Allocate bits</b> (<a href="dsp-30-quantization-dither.htm">Part 30</a>): compare
+    each band's energy to the absolute threshold of hearing and allocate bits in
+    proportion to how far above threshold it sits - zero bits for a fully masked band.</li>
+<li><b>Quantize</b>: scale each band by its own maximum coefficient magnitude and
+    round to the allocated number of bits.</li>
+<li><b>Entropy-code</b> (<a href="codec-04-entropy-coding.htm">Part 4</a>): Rice-code the
+    quantized values, choosing one Rice parameter per block from their statistics.</li>
+</ol>
+
+<p>
+Decoding reverses steps 5 down to 1: Rice-decode, dequantize each band by the same
+scale factor, run the inverse MDCT, and overlap-add into the output - exactly Part
+33's verified perfect-reconstruction machinery, now carrying lossily-quantized data
+instead of the untouched coefficients Part 33 tested with.
+</p>
+
+<h3>Allocating Bits Per Band</h3>
+
+<p>
+This is the step that makes the codec "perceptual" rather than just "a transform
+codec": instead of spending the same number of bits on every band, spend zero on a
+band the ear cannot hear anyway, and spend more on a band that sits well above the
+audible threshold - directly reusing Part 30's SQNR relationship (roughly 6.02 dB of
+headroom per bit) and Part 31's absolute threshold of hearing curve:
+</p>
+
+<pre>
+for (int b = 0; b &lt; NUM_BARK_BANDS; b++) {
+    double ath = absolute_threshold_db(band_center_hz[b] / 1000.0);
+    double headroom = band_energy_db[b] - ath;
+    bits[b] = (headroom &lt;= 0.0) ? 0 : (int)ceil(headroom / 6.02);
+    if (bits[b] &gt; 12) bits[b] = 12;
+}
+</pre>
+
+<p>
+This toy uses the absolute threshold of hearing alone, deliberately skipping Part
+31's simultaneous-masking spread across neighbouring bands - that additional model is
+real and matters for real codec efficiency, but adding it here would obscure the
+pipeline this article is actually demonstrating. Every real gain a full psychoacoustic
+model adds comes from exactly this same slot: a smarter <code>bits[b]</code>
+calculation, wired into the identical quantize/entropy-code steps that follow.
+</p>
+
+<h3>Quantizing Each Band</h3>
+
+<p>
+Each band gets its own scale factor (its largest coefficient's magnitude in this
+block), and every coefficient in the band is quantized to a signed integer with
+exactly the allocated number of bits:
+</p>
+
+<pre>
+for (int k = 0; k &lt; N; k++) {
+    int b = bin_to_bark[k];
+    if (bits[b] == 0 || band_max[b] &lt; 1e-9) { quant[k] = 0; continue; }
+    double step = band_max[b] / ((1 &lt;&lt; (bits[b]-1)) - 1 &gt; 0 ? (1 &lt;&lt; (bits[b]-1)) - 1 : 1);
+    quant[k] = (int32_t)lround(coeffs[k] / step);
+}
+</pre>
+
+<p>
+A real codec quantizes the scale factors themselves (they cost bits too, and
+transmitting one exact 32-bit float per band per block would eat any savings this
+codec is trying to make); this toy transmits them exactly, which is a genuine
+simplification worth naming rather than hiding.
+</p>
+
+<h3>Entropy Coding the Result</h3>
+
+<p>
+With quantized integer coefficients in hand, coding them is exactly Part 4's Rice
+coder, choosing one parameter <code>k</code> per block from the block's own
+statistics - no code table, no per-band side information beyond the (unquantized, in
+this toy) scale factors:
+</p>
+
+<pre>
+double mean_abs = 0.0;
+for (int k = 0; k &lt; N; k++) mean_abs += zigzag_encode(quant[k]);
+mean_abs /= N;
+int k_param = (mean_abs &lt; 1.0) ? 0 : (int)ceil(log2(mean_abs));
+if (k_param &lt; 0) k_param = 0;
+
+bitwriter_put(&amp;bw, (uint32_t)k_param, 5);
+for (int k = 0; k &lt; N; k++) rice_encode(&amp;bw, zigzag_encode(quant[k]), k_param);
+</pre>
+
+<h3>Running It on a Real Signal</h3>
+
+<p>
+Feed the whole pipeline a 2000-sample test signal that is loud for the first half and
+roughly 30 dB quieter for the second half (a two-tone signal at full amplitude, then
+the same two tones at about 1/30th the amplitude) - exactly the case a fixed-bitrate
+scheme handles badly and a perceptual one should handle well:
+</p>
+
+<pre>
+block at sample 320  (loud half): bits per band (first 12 bands): 0 10 0 0 9 0 0 12 0 12 0 12
+block at sample 1600 (quiet half): bits per band (first 12 bands): 0 4 0 0 7 0 0 1 0 10 0 9
+</pre>
+
+<p>
+Every active band gets fewer bits once the signal gets quieter - band 1 drops from 10
+bits to 4, band 7 from 12 down to 1. Summed over every block in each half of the
+signal:
+</p>
+
+<pre>
+bits spent on loud-half blocks: 11992   bits spent on quiet-half blocks: 10560
+</pre>
+
+<p>
+The quiet half costs noticeably less even though it contains exactly the same musical
+content, just at lower amplitude - the codec is genuinely spending its bit budget
+where the signal actually needs it, not applying a flat rate regardless of loudness.
+</p>
+
+<h3>Measuring the Whole Codec</h3>
+
+<pre>
+blocks=32  fixed-16bit-bits=32000  toy-codec-bits=22552  ratio=1.42:1
+reconstruction SNR: 33.38 dB
+</pre>
+
+<p>
+1.42:1 compression with a 33 dB reconstruction SNR is a modest, honest result for a
+codec missing simultaneous masking, scale-factor quantization, and any encoder-side
+rate control - real perceptual codecs at genuinely low bitrates rely on all three to
+get both far higher compression ratios and better perceived quality at a given bit
+count. What this measurement demonstrates is not "this beats MP3" - it does not - but
+that the pipeline is real and correctly wired: bits move to where the masking model
+says they are needed, the entropy coder captures the resulting skew in the quantized
+values, and the decoder reconstructs a recognizable, measurably accurate version of
+the original signal, entirely from parts built and separately tested in this series.
+</p>
+
+<h3>What Production Codecs Add</h3>
+
+<p>
+Every simplification named above has a name attached to what a real codec does
+instead, and every one of them slots into the same five-step pipeline without
+changing its shape:
+</p>
+
+<ul>
+<li><b>Simultaneous masking</b> (skipped here, built in <a href="dsp-31-bark-scale.htm">Part 31</a>): spreads each band's masking influence to its neighbours, letting a loud band suppress quantization noise in adjacent quiet bands too.</li>
+<li><b>Quantized scale factors</b>: coded with only a few bits each (often differentially, since adjacent bands' scale factors correlate), instead of transmitted exactly.</li>
+<li><b>Rate control / bit reservoir</b>: a real encoder targets a specific average bitrate and borrows bits from easy blocks to spend on hard ones, rather than letting bitrate float freely per block the way this toy does.</li>
+<li><b>Huffman tables for coefficients</b> (built in <a href="codec-04-entropy-coding.htm">Part 4</a>): MP3 specifically uses Huffman coding, not Rice, for its quantized coefficients, with several standard tables selected per block.</li>
+<li><b>Stereo coding</b>: joint or mid-side coding across channels, which this mono toy has no need for.</li>
+</ul>
+
+<h3>Series Retrospective</h3>
+
+<p>
+This series started with the simplest possible codec - mu-law's per-sample
+logarithmic companding, no history, no prediction - and ended with a fully wired
+perceptual transform codec. Along the way: <a href="codec-02-dpcm.htm">DPCM</a> and
+<a href="codec-03-adpcm.htm">ADPCM</a> showed that predicting a sample from its
+neighbours, and adapting the quantizer to the signal's recent behaviour, beats
+treating every sample as independent. <a href="codec-04-entropy-coding.htm">Huffman and
+Rice coding</a> showed that skewed data - which prediction reliably produces - can be
+packed below its fixed bit width with no loss at all.
+<a href="codec-05-lossless-predictive-coding.htm">Combining a predictor with an entropy
+coder</a> turned out to be the entire architecture of a real lossless codec like FLAC.
+<a href="dsp-30-quantization-dither.htm">Quantization and dither</a> gave the
+mathematical foundation (SQNR, the noise model, and why it breaks down) that both the
+lossy codecs and the perceptual model depend on. <a href="dsp-31-bark-scale.htm">The
+Bark scale</a> replaced "quantize everything the same" with "quantize according to what
+the ear can actually hear." <a href="dsp-33-mdct.htm">The MDCT</a> gave that masking
+model a real-valued, self-overlapping transform to operate on. <a href="codec-07-celp.htm">
+Vector quantization and CELP</a> showed a completely different strategy - modeling the
+signal's <i>source</i> (the vocal tract) rather than just its spectrum, and searching a
+codebook by how the result sounds rather than how it measures. And
+<a href="codec-06-wav-mp3-headers.htm">WAV and MP3 headers</a> covered the unglamorous
+but essential question of how any of this actually reaches a file or a stream a real
+player can open. Every algorithm inside MP3, AAC, Opus, FLAC, and every VoIP codec you
+have ever used is built from exactly these pieces, combined in different proportions -
+you now know what each piece does and why it is there.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://www.iis.fraunhofer.de/en/ff/amm/dl/mp3.html">Fraunhofer IIS - MP3 technical background</a></li>
+<li><a href="https://xiph.org/vorbis/doc/Vorbis_I_spec.html">Vorbis I Specification</a> - a complete, open-source perceptual codec spec worth reading end to end</li>
+<li><a href="https://www.iso.org/standard/22412.html">ISO/IEC 11172-3 (MPEG-1 Audio) - Annex D: Psychoacoustic Model</a></li>
+<li><a href="https://xiph.org/flac/documentation_format_overview.html">FLAC Format Overview</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="dsp-33-mdct.htm">The Modified Discrete Cosine Transform</a></li>
+<li><a href="dsp-31-bark-scale.htm">The Bark Scale and Perceptual Bit Allocation</a></li>
+<li><a href="codec-04-entropy-coding.htm">Audio Compression Part 4: Entropy Coding with Huffman and Golomb-Rice</a></li>
+<li><a href="codec-01-mu-law-companding.htm">Audio Compression Part 1: mu-law and A-law Companding</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

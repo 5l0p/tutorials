@@ -1,0 +1,518 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Audio Compression - Part 4: Entropy Coding with Huffman and Golomb-Rice</title>
+    <meta name="description" content="Implementing Huffman coding and Golomb-Rice coding in C - the entropy coding stage that turns lossless DPCM's residuals from Part 2 into an actual compression ratio, plus a bit-level reader/writer to pack variable-length codes into bytes.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio, codec, compression">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="codec-04-entropy-coding.txt">plain/text</a> | <i>2026-07-13</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a>, <a href="../../codec.htm">codec</a>, <a href="../../compression.htm">compression</a></i>
+        <h2>Audio Compression - Part 4: Entropy Coding with Huffman and Golomb-Rice</h2>
+        <p>
+<a href="codec-02-dpcm.htm">Part 2</a> built lossless delta coding and then stopped
+short of an actual compression ratio, noting that the deltas still needed a wide
+enough field to cover their worst case - and that the real saving only appears once
+those deltas are fed into an entropy coder. This article builds that missing piece:
+two different entropy coders, Huffman and Golomb-Rice, both of which do the same
+essential job (spend fewer bits on values that occur more often) but make very
+different tradeoffs in how they get there. By the end you will have exactly what
+FLAC and Shorten are built from - a predictor (Part 2's DPCM) feeding an entropy coder
+(this article) - and you will understand why real lossless audio codecs pick
+Golomb-Rice over Huffman for this specific job.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why fixed-width codes waste bits whenever symbol probabilities are skewed</li>
+<li>How to pack variable-length bit codes into a byte buffer with a bit writer/reader</li>
+<li>How to build an optimal prefix code from a frequency table with Huffman's algorithm</li>
+<li>Why Huffman needs its code table transmitted or rebuilt, and why that is a problem for streaming residuals</li>
+<li>Golomb-Rice coding: a single-parameter code family matched to geometrically-distributed data, with no table to transmit</li>
+<li>How to pick the Rice parameter <code>k</code> directly from the data's mean magnitude</li>
+</ul>
+
+<h3>Why Fixed-Width Codes Waste Bits</h3>
+
+<p>
+Storing every symbol in a fixed number of bits (8 for a byte, 16 for a PCM sample) is
+correct but pessimistic: it assumes every possible value is equally likely. DPCM
+residuals are not like this at all - a residual of 0 or ±1 is common, a residual near
+the maximum representable value is rare. An entropy coder assigns <i>short</i> codes
+to <i>common</i> values and <i>long</i> codes to <i>rare</i> ones, so that the average
+number of bits per symbol drops below the fixed width, provided the input really is
+skewed the way the coder assumes.
+</p>
+
+<h3>A Bit Writer and Reader</h3>
+
+<p>
+Variable-length codes do not land on byte boundaries, so before building either
+coder you need a way to pack and unpack individual bits into a byte buffer, most
+significant bit first:
+</p>
+
+<pre>
+#include &lt;stdint.h&gt;
+
+typedef struct {
+    uint8_t *buf;
+    int byte_pos;
+    int bit_pos;   /* 0..7: next free bit in the current byte */
+} BitWriter;
+
+void bitwriter_init(BitWriter *bw, uint8_t *buf) {
+    bw-&gt;buf = buf; bw-&gt;byte_pos = 0; bw-&gt;bit_pos = 0;
+    bw-&gt;buf[0] = 0;
+}
+
+void bitwriter_put_bit(BitWriter *bw, int bit) {
+    bw-&gt;buf[bw-&gt;byte_pos] |= (bit &lt;&lt; (7 - bw-&gt;bit_pos));
+    bw-&gt;bit_pos++;
+    if (bw-&gt;bit_pos == 8) {
+        bw-&gt;bit_pos = 0;
+        bw-&gt;byte_pos++;
+        bw-&gt;buf[bw-&gt;byte_pos] = 0;
+    }
+}
+
+void bitwriter_put(BitWriter *bw, uint32_t bits, int length) {
+    for (int i = length - 1; i &gt;= 0; i--) {
+        bitwriter_put_bit(bw, (bits &gt;&gt; i) &amp; 1);
+    }
+}
+
+int bitwriter_total_bits(const BitWriter *bw) {
+    return bw-&gt;byte_pos * 8 + bw-&gt;bit_pos;
+}
+</pre>
+
+<pre>
+typedef struct {
+    const uint8_t *buf;
+    int byte_pos;
+    int bit_pos;
+} BitReader;
+
+void bitreader_init(BitReader *br, const uint8_t *buf) {
+    br-&gt;buf = buf; br-&gt;byte_pos = 0; br-&gt;bit_pos = 0;
+}
+
+int bitreader_get_bit(BitReader *br) {
+    int bit = (br-&gt;buf[br-&gt;byte_pos] &gt;&gt; (7 - br-&gt;bit_pos)) &amp; 1;
+    br-&gt;bit_pos++;
+    if (br-&gt;bit_pos == 8) { br-&gt;bit_pos = 0; br-&gt;byte_pos++; }
+    return bit;
+}
+</pre>
+
+<p>
+Every encoder below writes through <code>bitwriter_put</code>/<code>bitwriter_put_bit</code>,
+and every decoder reads through <code>bitreader_get_bit</code> - the entropy coding
+scheme only decides <i>how many</i> bits to write per symbol and in what pattern, not
+how those bits get flushed to memory.
+</p>
+
+<h3>Huffman Coding</h3>
+
+<p>
+Huffman's algorithm builds an optimal prefix code (no code is a prefix of another,
+which is what makes the bitstream uniquely decodable with no delimiters) from a table
+of symbol frequencies. The construction: repeatedly take the two least-frequent
+remaining nodes and merge them into a parent node whose frequency is their sum, until
+one root remains. Symbols that end up deep in the resulting tree (merged early, because
+they were rare) get long codes; symbols near the root (merged late, because they were
+common) get short codes.
+</p>
+
+<pre>
+#include &lt;stdlib.h&gt;
+
+typedef struct Node {
+    int freq;
+    int symbol;       /* -1 for internal nodes */
+    struct Node *left, *right;
+} Node;
+
+#define MAX_SYMBOLS 256
+
+static Node *new_node(int freq, int symbol, Node *l, Node *r) {
+    Node *n = malloc(sizeof(Node));
+    n-&gt;freq = freq; n-&gt;symbol = symbol; n-&gt;left = l; n-&gt;right = r;
+    return n;
+}
+
+/* Builds a Huffman tree from a frequency table using a simple O(n^2)
+   selection instead of a heap - fine for a 256-symbol alphabet, and
+   clearer to read than heap bookkeeping. A real implementation over a
+   large or streaming alphabet should use a priority queue instead. */
+Node *build_huffman_tree(const int *freq, int n_symbols) {
+    Node *nodes[MAX_SYMBOLS];
+    int n = 0;
+    for (int i = 0; i &lt; n_symbols; i++) {
+        if (freq[i] &gt; 0) nodes[n++] = new_node(freq[i], i, NULL, NULL);
+    }
+    if (n == 0) return NULL;
+    if (n == 1) return new_node(nodes[0]-&gt;freq, -1, nodes[0], NULL);
+
+    while (n &gt; 1) {
+        int a = 0, b = 1;
+        if (nodes[b]-&gt;freq &lt; nodes[a]-&gt;freq) { int t=a; a=b; b=t; }
+        for (int i = 2; i &lt; n; i++) {
+            if (nodes[i]-&gt;freq &lt; nodes[a]-&gt;freq) { b = a; a = i; }
+            else if (nodes[i]-&gt;freq &lt; nodes[b]-&gt;freq) { b = i; }
+        }
+        Node *parent = new_node(nodes[a]-&gt;freq + nodes[b]-&gt;freq, -1, nodes[a], nodes[b]);
+        int lo = a &lt; b ? a : b, hi = a &lt; b ? b : a;
+        nodes[lo] = parent;
+        nodes[hi] = nodes[n - 1];
+        n--;
+    }
+    return nodes[0];
+}
+</pre>
+
+<p>
+Walking the finished tree from the root, recording a 0 for every left branch and a 1
+for every right branch, gives each symbol its code:
+</p>
+
+<pre>
+typedef struct {
+    uint32_t bits;   /* left-justified code bits */
+    int length;
+} Code;
+
+static void assign_codes(Node *node, uint32_t code, int depth, Code *table) {
+    if (!node) return;
+    if (node-&gt;symbol &gt;= 0) {
+        table[node-&gt;symbol].bits = code;
+        table[node-&gt;symbol].length = depth &gt; 0 ? depth : 1;
+        return;
+    }
+    assign_codes(node-&gt;left,  code &lt;&lt; 1,       depth + 1, table);
+    assign_codes(node-&gt;right, (code &lt;&lt; 1) | 1, depth + 1, table);
+}
+</pre>
+
+<p>
+The <code>depth &gt; 0 ? depth : 1</code> guard handles the degenerate case of an
+alphabet with only one distinct symbol - the tree has no branches at all, but you
+still need to emit at least one bit per occurrence so the decoder knows how many
+there were.
+</p>
+
+<h3>Testing Huffman on Skewed Data</h3>
+
+<pre>
+#include &lt;stdio.h&gt;
+
+int main(void) {
+    /* A skewed byte distribution, like DPCM residuals clustering near 0. */
+    uint8_t data[] = {
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        1,1,1,1,1,1,1,1,1,1,
+        2,2,2,2,2,
+        3,3,
+        250, 251
+    };
+    int n = sizeof(data);
+
+    int freq[MAX_SYMBOLS] = {0};
+    for (int i = 0; i &lt; n; i++) freq[data[i]]++;
+
+    Node *root = build_huffman_tree(freq, MAX_SYMBOLS);
+    Code table[MAX_SYMBOLS] = {0};
+    assign_codes(root, 0, 0, table);
+
+    uint8_t out[256] = {0};
+    BitWriter bw; bitwriter_init(&amp;bw, out);
+    for (int i = 0; i &lt; n; i++) {
+        bitwriter_put(&amp;bw, table[data[i]].bits, table[data[i]].length);
+    }
+    int total_bits = bitwriter_total_bits(&amp;bw);
+    printf("n=%d symbols, fixed-width would be %d bits, huffman uses %d bits\n",
+           n, n * 8, total_bits);
+    return 0;
+}
+</pre>
+
+<pre>
+symbol=  0 freq=20 code_len=1
+symbol=  1 freq=10 code_len=2
+symbol=  2 freq= 5 code_len=3
+symbol=  3 freq= 2 code_len=4
+symbol=250 freq= 1 code_len=5
+symbol=251 freq= 1 code_len=5
+n=39 symbols, fixed-width would be 312 bits, huffman uses 73 bits
+</pre>
+
+<p>
+39 bytes (312 bits) compressed to 73 bits - a 4.3:1 ratio, entirely from the skew in
+this particular sample. Notice the shortest code (1 bit) went to the most frequent
+symbol (0, appearing 20 times) exactly as the algorithm's construction guarantees.
+</p>
+
+<h3>Huffman's Practical Problem for Audio</h3>
+
+<p>
+Huffman coding is provably optimal for a <i>known, fixed</i> symbol distribution -
+but that "known" is doing a lot of work. To decode, the receiver needs the same code
+table the encoder used, which means either transmitting the table alongside the data
+(overhead that eats into the savings, especially for short blocks) or agreeing on a
+single fixed table in advance (which stops being optimal the moment the real data's
+distribution drifts from what the fixed table assumed - very likely for audio, where
+residual magnitude distribution changes constantly between quiet and loud passages).
+Canonical Huffman codes and adaptive Huffman variants exist to soften this, but they
+add real implementation complexity. This is exactly the gap Golomb-Rice coding is
+built to close.
+</p>
+
+<h3>Golomb-Rice Coding</h3>
+
+<p>
+Golomb-Rice coding assumes the data follows (approximately) a two-sided geometric
+distribution - which is exactly the shape DPCM residuals tend to have: a sharp peak
+at zero, falling off roughly exponentially in both directions. Instead of building a
+table from the data, Rice coding needs only a single integer parameter,
+<code>k</code>, and both encoder and decoder can derive it directly from the data's
+statistics with no table transmission at all.
+</p>
+
+<p>
+To encode an unsigned value with parameter <code>k</code>: split it into a quotient
+(<code>value &gt;&gt; k</code>) written in unary (that many 1-bits followed by a
+terminating 0), and a remainder (the low <code>k</code> bits) written as fixed-width
+binary.
+</p>
+
+<pre>
+void rice_encode(BitWriter *bw, uint32_t value, int k) {
+    uint32_t q = value &gt;&gt; k;
+    for (uint32_t i = 0; i &lt; q; i++) bitwriter_put_bit(bw, 1);
+    bitwriter_put_bit(bw, 0);
+    if (k &gt; 0) bitwriter_put(bw, value &amp; ((1u &lt;&lt; k) - 1), k);
+}
+
+uint32_t rice_decode(BitReader *br, int k) {
+    uint32_t q = 0;
+    while (bitreader_get_bit(br) == 1) q++;
+    uint32_t r = 0;
+    for (int i = 0; i &lt; k; i++) r = (r &lt;&lt; 1) | bitreader_get_bit(br);
+    return (q &lt;&lt; k) | r;
+}
+</pre>
+
+<p>
+Small values (quotient 0) cost just <code>k+1</code> bits. Larger values cost more,
+growing linearly with the value rather than staying capped - which is fine as long as
+large values stay rare, exactly the assumption the geometric distribution encodes.
+Pick <code>k</code> too small and common small values waste bits on an unnecessarily
+long remainder field; pick it too large and the unary quotient part balloons for
+values that would have fit comfortably in a smaller <code>k</code>.
+</p>
+
+<h3>Handling Signed Residuals: Zigzag Mapping</h3>
+
+<p>
+DPCM residuals are signed, but Rice coding (like Huffman above) works on
+non-negative magnitudes. Zigzag mapping interleaves positive and negative values into
+a single non-negative sequence, keeping small-magnitude values (of either sign) close
+to zero:
+</p>
+
+<pre>
+/* Maps signed n to unsigned: 0,-1,1,-2,2,... -> 0,1,2,3,4,... */
+uint32_t zigzag_encode(int32_t n) {
+    return (uint32_t)((n &lt;&lt; 1) ^ (n &gt;&gt; 31));
+}
+int32_t zigzag_decode(uint32_t u) {
+    return (int32_t)((u &gt;&gt; 1) ^ (~(u &amp; 1) + 1));
+}
+</pre>
+
+<p>
+The <code>n &gt;&gt; 31</code> in the encoder relies on arithmetic (sign-extending)
+right shift, which is what plain C guarantees for signed integer types on every
+mainstream compiler/platform in practice, even though the standard technically leaves
+it implementation-defined - it produces all 1-bits for negative <code>n</code> and
+all 0-bits for non-negative <code>n</code>, which is exactly the mask needed to flip
+the sign-and-shift trick into the interleaved 0,1,2,3,4... sequence.
+</p>
+
+<h3>Choosing k From the Data</h3>
+
+<p>
+For a two-sided geometric distribution, a good rule of thumb is to set
+<code>k</code> from the mean absolute value of the (zigzag-space) residuals:
+</p>
+
+<pre>
+#include &lt;math.h&gt;
+
+int best_rice_k(const int32_t *residuals, int n) {
+    double mean_abs = 0.0;
+    for (int i = 0; i &lt; n; i++) {
+        mean_abs += (residuals[i] &lt; 0 ? -residuals[i] : residuals[i]);
+    }
+    mean_abs /= n;
+    if (mean_abs &lt; 1.0) return 0;
+    int k = (int)ceil(log2(mean_abs));
+    return k &lt; 0 ? 0 : k;
+}
+</pre>
+
+<h3>Testing Rice Coding on DPCM-Like Residuals</h3>
+
+<pre>
+int main(void) {
+    int32_t residuals[] = {
+        0, 1, -1, 2, -2, 0, 1, 0, -1, 3, -3, 0, 0, 1, -1, 2,
+        0, -1, 1, 0, 5, -4, 0, 1, -2, 0, 1, -1, 0, 2, -1, 0
+    };
+    int n = sizeof(residuals) / sizeof(residuals[0]);
+
+    int k = best_rice_k(residuals, n);
+
+    uint8_t out[256] = {0};
+    BitWriter bw; bitwriter_init(&amp;bw, out);
+    for (int i = 0; i &lt; n; i++) {
+        rice_encode(&amp;bw, zigzag_encode(residuals[i]), k);
+    }
+    int total_bits = bitwriter_total_bits(&amp;bw);
+    printf("n=%d residuals, fixed 16-bit would be %d bits, rice(k=%d) uses %d bits\n",
+           n, n * 16, k, total_bits);
+
+    BitReader br; bitreader_init(&amp;br, out);
+    int ok = 1;
+    for (int i = 0; i &lt; n; i++) {
+        int32_t decoded = zigzag_decode(rice_decode(&amp;br, k));
+        if (decoded != residuals[i]) ok = 0;
+    }
+    printf("round-trip: %s\n", ok ? "OK" : "FAILED");
+    return 0;
+}
+</pre>
+
+<pre>
+chosen rice k=1
+n=32 residuals, fixed 16-bit would be 512 bits, rice(k=1) uses 91 bits
+round-trip: OK
+</pre>
+
+<p>
+512 bits down to 91 - a 5.6:1 ratio on this sample, with no code table to transmit at
+all: the decoder only needs the single integer <code>k</code>, which can be sent as
+one small field per block, or re-derived independently by both sides if the block
+boundaries and statistics-gathering rule are agreed in advance. This is exactly why
+Golomb-Rice, not Huffman, is the entropy stage inside FLAC and Shorten: predictive
+audio residuals are close enough to geometrically distributed, and re-estimating one
+integer per block is far cheaper than shipping or adapting a Huffman table.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+Both Huffman and Golomb-Rice coding exploit the same fact - skewed data compresses
+below its fixed bit width once you allow variable-length codes - but they get there
+differently. Huffman builds a provably optimal code from an explicit frequency table,
+at the cost of needing that table (or an agreed-upon substitute) on the decoding side.
+Golomb-Rice assumes a geometric-ish distribution and derives its entire behaviour from
+one parameter, <code>k</code>, which can be recomputed cheaply per block directly from
+the data with no table overhead. For DPCM-style residuals - which really do look close
+to geometric, clustering near zero and falling off in both directions - Rice coding is
+both simpler to implement and cheaper in practice, which is exactly why real lossless
+predictive audio codecs (FLAC, Shorten, and the format described in the next article)
+are built on it rather than on Huffman.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://ieeexplore.ieee.org/document/1057433">Rice, R.F. - "Some Practical Universal Noiseless Coding Techniques" (JPL)</a></li>
+<li><a href="https://xiph.org/flac/documentation_format_overview.html">FLAC Format Overview</a> - Rice coding used in a real, widely deployed lossless codec</li>
+<li><a href="https://www.cs.cmu.edu/~aarti/Class/10704/Intro_Info_Theory.pdf">Introduction to Information Theory - Cover &amp; Thomas (entropy and optimal codes)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Golomb_coding">Golomb Coding - Wikipedia</a></li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="codec-02-dpcm.htm">Audio Compression Part 2: Differential PCM</a></li>
+<li><a href="codec-05-lossless-predictive-coding.htm">Audio Compression Part 5: Lossless Predictive Coding</a></li>
+<li><a href="dsp-30-quantization-dither.htm">Quantization, Noise, and Dither</a></li>
+<li><a href="codec-08-toy-perceptual-codec.htm">Audio Compression Part 8: Building a Toy Perceptual Codec</a> - this entropy coder as the last stage of a complete pipeline</li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

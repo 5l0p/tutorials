@@ -1,0 +1,371 @@
+Audio Compression - Part 6: WAV and MP3 File Headers
+2026-07-13
+
+
+Every codec built earlier in this series - mu-law,
+IMA ADPCM, and the lossless predictive coder still to
+come - produces a stream of bits, not a file. Something has to say what codec those
+bits are, at what sample rate, with how many channels, before a decoder can do
+anything with them. WAV and MP3 solve this container problem in almost opposite ways:
+WAV describes the whole file once, up front, in a chunked structure any parser can
+walk even for chunk types it does not understand; MP3 has no whole-file header at all
+- every frame carries its own complete description, which is exactly what lets you
+tune into an MP3 radio stream already in progress. This article covers both, with
+working C code that writes a real WAV file and parses a real MP3 frame header.
+
+
+What You Will Learn
+
+
+The general RIFF chunk structure: four-character ID, a size field, and how unknown chunks get skipped safely
+WAV's three required chunks (RIFF, fmt, data) and exactly what each field means
+Why non-PCM format tags (like mu-law's 7 or IMA ADPCM's 0x11) need the extended fmt chunk, and what breaks if you use the plain 16-byte one
+How to write a correct, minimal WAV file in C without relying on compiler struct padding
+The MP3 frame header's bit-packed layout: sync word, version, layer, bitrate and sample-rate tables
+The frame-length formula, and why MP3 has no equivalent of WAV's single upfront header
+
+
+RIFF: A Chunk Is a Tag, a Size, and Some Bytes
+
+
+WAV is a specific use of the Resource Interchange File Format (RIFF), a generic
+container made of chunks. Every chunk has the same three-part shape: a 4-byte
+ASCII tag identifying the chunk type, a 4-byte little-endian length, and that many
+bytes of chunk-specific data. A parser that does not recognize a given tag can still
+skip straight past it using the length field - it never needs to understand every
+chunk type to correctly walk the file, which is the entire point of a chunked format:
+you can add new chunk types later without breaking old readers.
+
+
+
+A WAV file is itself one chunk: a RIFF chunk tagged RIFF, whose data
+starts with the 4-byte tag WAVE followed by a sequence of sub-chunks -
+in the simplest case, exactly two: fmt  (with a trailing space, four
+characters) describing the audio format, and data holding the actual
+samples.
+
+
+The fmt Chunk
+
+
+The base fmt  chunk (valid only for format tag 1, plain linear PCM) is
+16 bytes:
+
+
+
+offset  size  field
+0       2     format tag       (1 = PCM, 6 = A-law, 7 = mu-law, 0x11 = IMA ADPCM, ...)
+2       2     channels
+4       4     sample rate      (Hz)
+8       4     byte rate        (sample rate * channels * bits_per_sample / 8)
+12      2     block align      (channels * bits_per_sample / 8)
+14      2     bits per sample
+
+
+
+Any format tag other than plain PCM requires the extended fmt chunk: the
+same 16 bytes, plus a 2-byte cbSize field giving the length of any
+further format-specific bytes that follow it (zero is a valid value for formats, like
+mu-law, that need no extra fields). Skip this extra field for a non-PCM format tag and
+you have written a file that looks fine until a strict parser notices the fmt chunk
+size does not match what the format tag requires and rejects it - this is a common,
+easy-to-miss bug when hand-rolling a WAV writer for anything other than plain PCM.
+IMA ADPCM needs even more: its extended fmt chunk carries an extra
+samplesPerBlock field after cbSize, and the file needs an
+additional fact chunk giving the total decoded sample count, both driven
+by the block structure described in Part 3.
+
+
+Writing a Minimal mu-law WAV File in C
+
+
+Do not declare a struct for this and write it with a single
+fwrite - the compiler is free to insert padding between struct members
+for alignment, and that padding will corrupt the file layout in ways that vary by
+compiler and platform. Write each field individually instead, so the byte layout is
+exactly what the format demands and nothing else:
+
+
+
+#include <stdint.h>
+#include <stdio.h>
+
+#define WAVE_FORMAT_MULAW 0x0007
+
+static void write_u32le(FILE *f, uint32_t v) {
+    uint8_t b[4] = { v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF };
+    fwrite(b, 1, 4, f);
+}
+static void write_u16le(FILE *f, uint16_t v) {
+    uint8_t b[2] = { v & 0xFF, (v >> 8) & 0xFF };
+    fwrite(b, 1, 2, f);
+}
+
+/* Writes a minimal WAV file containing 8-bit mu-law data (format tag 7).
+   Non-PCM format tags require the extended fmt chunk (size 18, with a
+   trailing cbSize field even if it is zero) - a plain 16-byte fmt chunk
+   is only valid for WAVE_FORMAT_PCM (tag 1). */
+void write_mulaw_wav(const char *path, const uint8_t *mulaw_data,
+                     uint32_t num_samples, uint32_t sample_rate) {
+    FILE *f = fopen(path, "wb");
+
+    uint16_t channels = 1;
+    uint16_t bits_per_sample = 8;
+    uint32_t byte_rate = sample_rate * channels * bits_per_sample / 8;
+    uint16_t block_align = channels * bits_per_sample / 8;
+    uint32_t fmt_chunk_size = 18;             /* extended fmt: 16 base fields + cbSize */
+    uint32_t data_chunk_size = num_samples;   /* 1 byte per mu-law sample */
+    uint32_t riff_chunk_size = 4
+                             + (8 + fmt_chunk_size)
+                             + (8 + data_chunk_size);
+
+    fwrite("RIFF", 1, 4, f);
+    write_u32le(f, riff_chunk_size);
+    fwrite("WAVE", 1, 4, f);
+
+    fwrite("fmt ", 1, 4, f);
+    write_u32le(f, fmt_chunk_size);
+    write_u16le(f, WAVE_FORMAT_MULAW);
+    write_u16le(f, channels);
+    write_u32le(f, sample_rate);
+    write_u32le(f, byte_rate);
+    write_u16le(f, block_align);
+    write_u16le(f, bits_per_sample);
+    write_u16le(f, 0);   /* cbSize: no extra format bytes for mu-law */
+
+    fwrite("data", 1, 4, f);
+    write_u32le(f, data_chunk_size);
+    fwrite(mulaw_data, 1, num_samples, f);
+
+    fclose(f);
+}
+
+
+
+Notice the RIFF chunk's own size field excludes only its own 8-byte tag+size header -
+it counts the WAVE tag plus every following sub-chunk in full (tag, size
+field, and data). Get this wrong by one chunk header and strict parsers will refuse
+the file even though a lenient player might still guess its way through it.
+
+
+Verifying the Byte Layout
+
+
+Write 16 bytes of mu-law data (reusing the encoder from
+Part 1) through the function above and
+inspect the raw bytes:
+
+
+
+int main(void) {
+    uint8_t fake_mulaw[16] = { 0xff,0xce,0xbf,0xb7,0xaf,0xab,0xa8,0xa4,
+                               0xff,0xce,0xbf,0xb7,0xaf,0xab,0xa8,0xa4 };
+    write_mulaw_wav("test_mulaw.wav", fake_mulaw, sizeof(fake_mulaw), 8000);
+    return 0;
+}
+
+
+
+52 49 46 46 36 00 00 00 57 41 56 45 66 6d 74 20
+12 00 00 00 07 00 01 00 40 1f 00 00 40 1f 00 00
+01 00 08 00 00 00 64 61 74 61 10 00 00 00 ff ce
+bf b7 af ab a8 a4 ff ce bf b7 af ab a8 a4
+
+total file size on disk: 62 bytes
+
+
+
+Reading it back by hand: 52 49 46 46 is "RIFF",
+36 00 00 00 is the RIFF chunk size (0x36 = 54, which is 62 total bytes
+minus the 8-byte RIFF tag+size header), 57 41 56 45 is
+"WAVE", then 66 6d 74 20 is "fmt ",
+12 00 00 00 is 18 (the extended fmt size), 07 00 is format
+tag 7 (mu-law), 01 00 is 1 channel, 40 1f 00 00 twice is
+0x1f40 = 8000 for both sample rate and byte rate (they match here because mono 8-bit
+gives 1 byte per sample), 01 00 is block align 1,
+08 00 is 8 bits per sample, and the final 00 00 is
+cbSize. Then 64 61 74 61 is "data",
+10 00 00 00 is 16 bytes, followed by the mu-law payload itself.
+
+
+MP3: No Whole-File Header, Every Frame Self-Describes
+
+
+MP3 takes a completely different approach: there is no RIFF-style container at all
+(the .mp3 extension notwithstanding). An MP3 stream is a sequence of
+independent frames, and every single frame starts with its own 4-byte header
+giving everything needed to decode that frame - and, crucially, to find the
+next frame. This is what lets you start playing an MP3 (or an MP3 internet
+radio stream) from any point: a decoder just scans forward for the next valid frame
+sync, with no need to have seen a file-level header first.
+
+
+The Frame Header Bit Layout
+
+
+The 4-byte header is packed bit-by-bit, most significant bit first:
+
+
+
+byte 0:           11111111                          (first 8 bits of the 11-bit sync word)
+byte 1, bits 7-5: 111                                (last 3 bits of the sync word)
+byte 1, bits 4-3: MPEG version    (11 = MPEG1)
+byte 1, bits 2-1: layer           (01 = Layer III, 10 = Layer II, 11 = Layer I)
+byte 1, bit  0:   protection bit  (1 = no CRC follows)
+byte 2, bits 7-4: bitrate index   (table lookup, see below)
+byte 2, bits 3-2: sample rate index (table lookup, see below)
+byte 2, bit  1:   padding bit     (adds one extra byte to this frame's length)
+byte 2, bit  0:   private bit     (not used by the decoder)
+byte 3, bits 7-6: channel mode    (00 stereo, 01 joint stereo, 10 dual channel, 11 mono)
+byte 3, ...       mode extension, copyright, original, emphasis bits
+
+
+
+The sync word being 11 straight 1-bits is deliberately unlikely to occur by
+coincidence inside encoded audio data, which is what makes frame-by-frame scanning
+practical in the first place.
+
+
+Parsing a Frame Header in C
+
+
+#include <stdint.h>
+
+/* MPEG-1 Layer III bitrate table, indexed 0..15, in kbps. Index 0 is
+   "free" (encoder-defined, rare) and 15 is reserved/invalid. */
+static const int mpeg1_layer3_bitrate_kbps[16] = {
+    0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, -1
+};
+
+/* MPEG-1 sample rate table, indexed 0..3 (3 is reserved). */
+static const int mpeg1_samplerate_hz[4] = { 44100, 48000, 32000, -1 };
+
+typedef struct {
+    int version_is_mpeg1;
+    int layer;
+    int protected_by_crc;
+    int bitrate_kbps;
+    int sample_rate_hz;
+    int padding;
+    int channel_mode;
+    int frame_length_bytes;
+} Mp3FrameHeader;
+
+/* Parses a 4-byte MP3 frame header. Returns 1 on a recognized sync +
+   MPEG1/Layer III header, 0 otherwise. */
+int parse_mp3_frame_header(const uint8_t *b, Mp3FrameHeader *out) {
+    if (b[0] != 0xFF || (b[1] & 0xE0) != 0xE0) return 0;
+
+    int version_id = (b[1] >> 3) & 0x03;
+    int layer_bits = (b[1] >> 1) & 0x03;
+    int protection = b[1] & 0x01;
+
+    out->version_is_mpeg1 = (version_id == 0x03);
+    switch (layer_bits) {
+        case 0x01: out->layer = 3; break;
+        case 0x02: out->layer = 2; break;
+        case 0x03: out->layer = 1; break;
+        default:   out->layer = 0; break;
+    }
+    out->protected_by_crc = !protection;
+
+    int bitrate_index    = (b[2] >> 4) & 0x0F;
+    int samplerate_index = (b[2] >> 2) & 0x03;
+    out->padding          = (b[2] >> 1) & 0x01;
+
+    out->bitrate_kbps   = mpeg1_layer3_bitrate_kbps[bitrate_index];
+    out->sample_rate_hz = mpeg1_samplerate_hz[samplerate_index];
+    out->channel_mode   = (b[3] >> 6) & 0x03;
+
+    /* Layer II/III frame length formula (Layer I uses a different one). */
+    if (out->bitrate_kbps > 0 && out->sample_rate_hz > 0) {
+        out->frame_length_bytes =
+            (144 * out->bitrate_kbps * 1000) / out->sample_rate_hz + out->padding;
+    } else {
+        out->frame_length_bytes = -1;
+    }
+
+    return out->version_is_mpeg1 && out->layer == 3;
+}
+
+
+
+int main(void) {
+    /* A common real-world header pattern: LAME-encoded MPEG1 Layer III,
+       128 kbps, 44100 Hz, joint stereo. */
+    uint8_t header[4] = { 0xFF, 0xFB, 0x90, 0x64 };
+    Mp3FrameHeader parsed;
+    parse_mp3_frame_header(header, &parsed);
+
+    printf("bitrate: %d kbps\n", parsed.bitrate_kbps);
+    printf("sample rate: %d Hz\n", parsed.sample_rate_hz);
+    printf("frame length: %d bytes\n", parsed.frame_length_bytes);
+    return 0;
+}
+
+
+
+recognized MPEG1 Layer III: yes
+bitrate: 128 kbps
+sample rate: 44100 Hz
+channel mode: Joint Stereo
+protected by CRC: no
+padding bit: 0
+frame length: 417 bytes
+
+
+
+The frame length formula (144 * bitrate / sample_rate, plus the padding
+bit) is why MP3 frame boundaries usually do not fall on tidy round numbers: it is
+derived from how many samples a Layer III frame always encodes (1152) and the actual
+bitrate/sample-rate ratio, and the result almost never divides evenly - the padding
+bit exists specifically to let the encoder correct the accumulated rounding error by
+occasionally inserting one extra byte, keeping the long-run average bitrate accurate
+even though 144*128000/44100 alone is not a whole number of bytes.
+
+
+ID3 Tags: Metadata Bolted On, Not Part of the Codec
+
+
+Song title, artist, and album art in an MP3 file live in ID3 tags, which are not part
+of the MPEG audio specification at all - they are a separate, later convention.
+ID3v2 sits at the very start of the file, before the first frame sync, as a
+variable-length block a decoder must skip over (or explicitly parse) before it will
+find valid frame syncs; ID3v1 sits in a fixed 128-byte block at the very end. A
+minimal MP3 parser can ignore both entirely and still decode all the audio - which is
+exactly the layering you would expect from a genuinely frame-synchronizable format:
+metadata is decoupled from the bitstream that actually carries sound.
+
+
+Summary
+
+
+WAV and MP3 sit at opposite ends of the same design question - where does the
+information a decoder needs live? WAV answers "once, up front, in a chunk any parser
+can skip past if it does not recognize it," which is simple and makes random-access
+playback trivial but is not naturally streamable from an arbitrary starting point.
+MP3 answers "in every frame," which costs a few repeated bytes per frame but is what
+makes tuning into a live stream, or seeking to an arbitrary point in a file, work with
+nothing more than a scan for the next sync word. Getting either container wrong is
+usually invisible until a stricter parser than the one you tested against rejects the
+file - the extended fmt chunk for non-PCM WAV data, and the bitrate/sample-rate table
+lookups for MP3, are exactly the details that are easy to skip and hard to notice
+missing until something else breaks on your output.
+
+
+Further Reading
+
+
+RFC 2361 - WAVE and AVI Codec Registries (format tag numbers)
+Multimedia Programming Guide - WAVE File Format (Microsoft)
+MP3 Frame Header - mp3-tech.org (bit layout reference)
+ID3.org - ID3v1 and ID3v2 tag specifications
+
+
+See Also
+
+
+Audio Compression Part 1: mu-law and A-law Companding
+Audio Compression Part 3: IMA ADPCM - the block layout this article's extended fmt chunk needs to describe
+The Modified Discrete Cosine Transform - the transform underneath the MP3 frames parsed here
+

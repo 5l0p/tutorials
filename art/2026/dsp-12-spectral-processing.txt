@@ -442,4 +442,6 @@ FFT from Scratch
 Filter Cookbook: Lowpass & Highpass
 Biquad Filters
 PolyBLEP Anti-Aliasing
+FFT in Pure Data - this same overlap-add machinery, patched instead of hand-coded
+The Modified Discrete Cosine Transform - a transform where the overlap-add is inherent instead of bolted on
 

@@ -1,0 +1,351 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<!--
+    we target 90's computers, so lets write html like a 90's school kid :-)
+-->
+<head>
+    <title>Audio Compression - Part 2: Differential PCM</title>
+    <meta name="description" content="Implementing lossless and lossy DPCM in C: exploiting sample-to-sample correlation with delta encoding, building a fixed quantizer, and understanding the error-accumulation problem that motivates adaptive step sizes.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="keywords" content="c, dsp, audio, codec, compression">
+    <meta name="ai-disclosure" content="ai-generated">
+    <meta charset="UTF-8">
+    <style>
+    <!--
+            body {
+            background-color: #f7c469;
+                color: #000000;
+                margin: 20px;
+                padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            color: #ffffff;
+                background-color: #412525;
+            padding: 10px;
+            border: 2px solid #000000;
+        }
+
+        h2 {
+            font-size: 18px;
+            color: #000000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #000000;
+            text-decoration: underline;
+        }
+
+        a:visited {
+            color: #333333;
+        }
+        a:hover {
+            color: #cc0000;
+        }
+
+        p {
+            margin-top: 10px;
+                margin-bottom: 10px;
+        }
+
+        li {
+            list-style-type: none;
+        }
+
+        pre {
+            background-color: #f9f79f;
+                color: #000000;
+                padding: 10px;
+                border: 1px solid #000000;
+                border-left: 5px solid #463705;
+            font-family: monospace;
+        }
+
+    -->
+    </style>
+</head>
+<body>
+<h1>~5l0p/tut</h1>
+<!-- header end -->
+<!-- article begin -->
+        <a href=".https://5l0p.github.io/tutorials/rss.xml">RSS</a> - 
+        <a href="https://5l0p.github.io/tutorials/index.htm">Home</a> - 
+        <a href="codec-02-dpcm.txt">plain/text</a> | <i>2026-07-13</i> | <i><a href="../../c.htm">c</a>, <a href="../../dsp.htm">dsp</a>, <a href="../../audio.htm">audio</a>, <a href="../../codec.htm">codec</a>, <a href="../../compression.htm">compression</a></i>
+        <h2>Audio Compression - Part 2: Differential PCM</h2>
+        <p>
+mu-law companding, covered in <a href="codec-01-mu-law-companding.htm">the previous
+article</a>, compresses each sample independently - it never looks at its neighbours.
+But adjacent audio samples are rarely independent: at a 44.1 kHz sample rate even a
+5 kHz tone only moves roughly 1/9 of the way through a cycle between samples, so
+consecutive sample values are usually close together. Differential Pulse Code
+Modulation (DPCM) exploits exactly this: instead of storing each sample's absolute
+value, store the <i>difference</i> from the previous sample. Differences cluster
+near zero far more tightly than the original waveform does, so they need fewer bits
+to represent to the same perceptual accuracy - and unlike mu-law, DPCM can be made
+fully lossless if you want it to be.
+</p>
+
+<h3>What You Will Learn</h3>
+
+<ul>
+<li>Why differences between adjacent samples compress better than the samples themselves</li>
+<li>How to implement lossless delta coding, and why it alone does not reduce storage</li>
+<li>How to add a fixed quantizer to get real bit-rate reduction, and what that costs you</li>
+<li>Why a DPCM decoder must accumulate exactly like the encoder or the two diverge</li>
+<li>The error-accumulation ("drift") problem that comes from encoder/decoder mismatch</li>
+<li>Why a fixed quantization step is either too coarse for quiet passages or too fine for loud ones - setting up the case for adaptive DPCM</li>
+</ul>
+
+<h3>The Idea: Predict, Then Encode the Error</h3>
+
+<p>
+The general DPCM architecture has three pieces:
+</p>
+
+<ol>
+<li><b>Predictor</b>: guesses the next sample from ones already seen. The simplest
+    possible predictor is "the next sample equals the last one" - a zeroth-order
+    predictor.</li>
+<li><b>Difference</b>: subtract the prediction from the actual sample. This residual
+    is what gets encoded.</li>
+<li><b>Quantizer</b> (optional): reduces the precision of the residual to save bits.
+    Skip this step and DPCM is lossless; include it and DPCM becomes lossy but
+    higher-compression.</li>
+</ol>
+
+<p>
+The decoder mirrors this: it decodes the residual, adds back the same prediction the
+encoder used, and reconstructs the sample. The predictor at decode time <i>must</i>
+compute the identical prediction the encoder used, from data the decoder has already
+reconstructed - not from the original signal, which the decoder never sees.
+</p>
+
+<h3>Lossless Delta Coding</h3>
+
+<p>
+With a zeroth-order predictor and no quantizer, DPCM is just delta coding: store the
+difference between each sample and the last one.
+</p>
+
+<pre>
+#include &lt;stdint.h&gt;
+#include &lt;stdio.h&gt;
+
+typedef struct {
+    int16_t prev;
+} DeltaEncoder;
+
+void delta_encoder_init(DeltaEncoder *e) {
+    e-&gt;prev = 0;
+}
+
+/* Returns the delta. Because both operands are int16_t, the true
+   mathematical difference can overflow int16_t range (e.g. 32767 - (-32768)),
+   so we compute in a wider type and let the caller decide how to store it. */
+int32_t delta_encode(DeltaEncoder *e, int16_t sample) {
+    int32_t delta = (int32_t)sample - (int32_t)e-&gt;prev;
+    e-&gt;prev = sample;
+    return delta;
+}
+
+typedef struct {
+    int16_t prev;
+} DeltaDecoder;
+
+void delta_decoder_init(DeltaDecoder *d) {
+    d-&gt;prev = 0;
+}
+
+int16_t delta_decode(DeltaDecoder *d, int32_t delta) {
+    int16_t sample = (int16_t)((int32_t)d-&gt;prev + delta);
+    d-&gt;prev = sample;
+    return sample;
+}
+</pre>
+
+<p>
+This round-trips exactly - no loss at all - but notice the delta is stored as a
+32-bit (or at least 17-bit) value to cover the worst case, which means naive lossless
+delta coding <i>alone</i> saves nothing; it can even cost more space than the
+original signal in the worst case. The saving only shows up once you feed the deltas
+into an entropy coder (Huffman, Golomb-Rice, range coding) that assigns short codes
+to the small values that dominate real audio - lossless codecs like FLAC and Shorten
+are built exactly this way: predictor + entropy coder, no quantizer, bit-exact
+reconstruction. Building that entropy stage is outside the scope of this article, but
+knowing the split (prediction reduces the *entropy* of the data; the entropy coder is
+what actually shrinks the *bit count*) tells you where lossless compressors get their
+gain.
+</p>
+
+<h3>Lossy DPCM: Adding a Quantizer</h3>
+
+<p>
+To get a compression ratio without an entropy coder, quantize the delta down to
+fewer bits before storing it. A 4-bit quantizer represents the delta as one of 16
+fixed step values, immediately giving 4:1 compression versus 16-bit linear PCM:
+</p>
+
+<pre>
+#include &lt;stdint.h&gt;
+
+#define DPCM_STEP 128  /* size of one quantization step, in linear PCM units */
+
+typedef struct {
+    int16_t predicted;  /* what the decoder will also have */
+} DpcmEncoder;
+
+void dpcm_encoder_init(DpcmEncoder *e) {
+    e-&gt;predicted = 0;
+}
+
+/* Encodes one sample to a signed 4-bit code (range -8..7). */
+int8_t dpcm_encode(DpcmEncoder *e, int16_t sample) {
+    int32_t diff = (int32_t)sample - (int32_t)e-&gt;predicted;
+
+    int32_t code = diff / DPCM_STEP;
+    if (code &gt; 7)  code = 7;
+    if (code &lt; -8) code = -8;
+
+    /* Critical: reconstruct the same quantized value the decoder will
+       produce, and predict from THAT - not from the original sample.
+       This is what keeps encoder and decoder in sync. */
+    int32_t quantized_diff = code * DPCM_STEP;
+    e-&gt;predicted = (int16_t)((int32_t)e-&gt;predicted + quantized_diff);
+
+    return (int8_t)code;
+}
+
+typedef struct {
+    int16_t predicted;
+} DpcmDecoder;
+
+void dpcm_decoder_init(DpcmDecoder *d) {
+    d-&gt;predicted = 0;
+}
+
+int16_t dpcm_decode(DpcmDecoder *d, int8_t code) {
+    int32_t quantized_diff = (int32_t)code * DPCM_STEP;
+    d-&gt;predicted = (int16_t)((int32_t)d-&gt;predicted + quantized_diff);
+    return d-&gt;predicted;
+}
+</pre>
+
+<p>
+The comment in the middle is the single most important line in this article to
+understand. It is tempting to write <code>e-&gt;predicted = sample;</code> - after
+all, the encoder knows the true sample value. But the decoder never sees the true
+sample, only the 4-bit code. If the encoder predicts from the exact original sample
+while the decoder predicts from the quantized reconstruction, the two predictors see
+different histories and the reconstruction error compounds every sample instead of
+staying bounded. This technique - having the encoder run its own local copy of the
+decoder to predict from what the decoder will actually have - is called a
+<b>closed-loop</b> or <b>backward-adaptive</b> predictor, and every production DPCM
+and ADPCM codec uses it for exactly this reason.
+</p>
+
+<h3>Round-Tripping and Measuring Error</h3>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+
+int main(void) {
+    int16_t samples[] = { 0, 500, 1000, 1200, 1100, 800, 300, -200, -600 };
+    int n = sizeof(samples) / sizeof(samples[0]);
+
+    DpcmEncoder enc; dpcm_encoder_init(&amp;enc);
+    DpcmDecoder dec; dpcm_decoder_init(&amp;dec);
+
+    for (int i = 0; i &lt; n; i++) {
+        int8_t code = dpcm_encode(&amp;enc, samples[i]);
+        int16_t recon = dpcm_decode(&amp;dec, code);
+        printf("orig=%5d  code=%3d  recon=%5d  error=%4d\n",
+               samples[i], code, recon, recon - samples[i]);
+    }
+    return 0;
+}
+</pre>
+
+<pre>
+orig=    0  code=  0  recon=    0  error=   0
+orig=  500  code=  3  recon=  384  error=-116
+orig= 1000  code=  4  recon=  896  error=-104
+orig= 1200  code=  2  recon= 1152  error= -48
+orig= 1100  code=  0  recon= 1152  error=  52
+orig=  800  code= -2  recon=  896  error=  96
+orig=  300  code= -4  recon=  384  error=  84
+orig= -200  code= -4  recon= -128  error=  72
+orig= -600  code= -3  recon= -512  error=  88
+</pre>
+
+<h3>The Slope Overload Problem</h3>
+
+<p>
+Look at what happens when the signal changes quickly (sample 3 to sample 4: a jump
+of -100 that the quantizer, stepping in units of 128, cannot represent exactly) versus
+slowly. With a <i>fixed</i> step size you are stuck between two failure modes:
+</p>
+
+<ul>
+<li><b>Step size too large</b>: quiet, slowly-changing passages get coarse,
+    unnecessarily large steps - audible as granular noise or "idle noise" even in
+    near-silence.</li>
+<li><b>Step size too small</b>: loud, fast-changing passages exceed the maximum
+    step the coder can take per sample, so the reconstruction lags behind the real
+    signal and audibly distorts. This specific failure is called <b>slope overload</b>,
+    and you can see the seeds of it above - the coder is one step behind the direction
+    the signal is heading whenever the signal moves faster than <code>DPCM_STEP</code>
+    per sample.</li>
+</ul>
+
+<p>
+There is no single fixed step size that avoids both problems on real audio, because
+real audio's local dynamics vary constantly between quiet and loud passages. The fix
+is to let the step size adapt sample-by-sample based on recent signal behaviour -
+widen it when the signal is moving fast (avoiding slope overload), narrow it when the
+signal is calm (avoiding granular noise). That adaptive step size is exactly what
+turns DPCM into ADPCM, the subject of the next article.
+</p>
+
+<h3>Summary</h3>
+
+<p>
+DPCM exploits the fact that adjacent audio samples are usually close in value by
+encoding the difference from a prediction rather than the sample itself. Without
+quantization this is lossless and only pays off once paired with an entropy coder;
+with a fixed quantizer it gives a direct, guaranteed compression ratio (4:1 for a
+4-bit code) at the cost of introducing quantization error. The one rule that must
+never be broken is that the encoder's predictor has to be driven by the same
+quantized reconstruction the decoder will produce, not by the true input - otherwise
+the two sides diverge. A fixed step size, though, forces a compromise between
+granular noise on quiet material and slope overload on loud, fast-changing material -
+which is the problem adaptive step sizes exist to solve.
+</p>
+
+<h3>Further Reading</h3>
+
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Differential_pulse-code_modulation">Differential Pulse-Code Modulation - Wikipedia</a></li>
+<li><a href="https://www.itu.int/rec/T-REC-G.726">ITU-T G.726: 40, 32, 24, 16 kbit/s Adaptive Differential PCM</a></li>
+<li><a href="https://ccrma.stanford.edu/~jos/pasp/Differential_Pulse_Code_Modulation.html">Differential PCM - Julius O. Smith III</a></li>
+<li><a href="https://xiph.org/flac/documentation_format_overview.html">FLAC Format Overview</a> - a real lossless codec built on prediction + entropy coding</li>
+</ul>
+
+<h3>See Also</h3>
+
+<ul>
+<li><a href="codec-01-mu-law-companding.htm">Audio Compression Part 1: mu-law and A-law Companding</a></li>
+<li><a href="codec-03-adpcm.htm">Audio Compression Part 3: IMA ADPCM</a></li>
+<li><a href="codec-04-entropy-coding.htm">Audio Compression Part 4: Entropy Coding with Huffman and Golomb-Rice</a> - the entropy coder this article's lossless delta coding needs to actually save space</li>
+<li><a href="codec-05-lossless-predictive-coding.htm">Audio Compression Part 5: Lossless Predictive Coding</a> - this predictor and that entropy coder, wired into a real measured codec</li>
+<li><a href="dsp-01-audio-fundamentals.htm">Audio Fundamentals</a></li>
+</ul>
+
+<!-- article end -->
+<!-- footer begin -->
+</body>
+</html>

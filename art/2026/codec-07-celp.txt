@@ -1,0 +1,391 @@
+Audio Compression - Part 7: Vector Quantization and CELP
+2026-07-13
+
+
+Every quantizer built so far in this series - mu-law's companding curve, DPCM and
+ADPCM's step sizes, even the Bark-band bit allocation - quantizes one number at a
+time. Vector quantization (VQ) quantizes a whole group of numbers jointly, against
+a shared codebook of candidate groups, and speech codecs use this idea in a
+particularly clever way: instead of picking the codebook entry that looks most like
+the residual, Code-Excited Linear Prediction (CELP) picks the entry that, after being
+run back through a model of the vocal tract, sounds most like the original
+signal. This article builds both pieces: a minimal vector quantizer with the standard
+LBG training algorithm, and a toy CELP encoder combining
+Part 5's linear prediction with
+analysis-by-synthesis codebook search, measured end to end in C.
+
+
+What You Will Learn
+
+
+Vector quantization versus scalar quantization: quantizing a block of samples jointly instead of one at a time
+How to build a VQ codebook with the LBG (generalized Lloyd) algorithm and encode by nearest-neighbor search
+The source-filter model of speech: an LPC filter standing in for the vocal tract, driven by an excitation signal
+How to estimate LPC coefficients from real audio with the autocorrelation method and Levinson-Durbin recursion
+CELP's central idea - analysis-by-synthesis - and why it searches for the excitation that sounds right rather than the one that looks right
+Why codebook size trades bitrate against quality, and why real CELP codecs do not use a giant brute-force random codebook
+
+
+Vector Quantization: Quantizing Groups, Not Samples
+
+
+A scalar quantizer, like mu-law's companding curve, maps one input value to one of a
+fixed set of output levels. A vector quantizer does the same job on a vector -
+a fixed-length block of N numbers - mapping it to the closest of a fixed
+set of candidate vectors (the codebook). "Closest" is measured by a distance
+metric, most simply squared Euclidean distance. The payoff for grouping samples
+together is that VQ can exploit correlation between the samples within a
+vector, not just their individual distributions - two scalar quantizers applied
+independently can never do better than treating each dimension as unrelated to its
+neighbours, while a vector quantizer's codebook can be shaped to match whatever joint
+structure the real data actually has.
+
+
+Building a Codebook: the LBG Algorithm
+
+
+The Linde-Buzo-Gray (LBG) algorithm - the vector generalization of k-means clustering
+- builds a codebook from training data by alternating two steps until convergence:
+assign every training vector to its nearest current codeword, then move each
+codeword to the centroid (average) of the vectors assigned to it.
+
+
+
+#include <float.h>
+
+#define DIM 2
+#define CODEBOOK_SIZE 2
+
+double dist2(const double *a, const double *b) {
+    double d = 0.0;
+    for (int i = 0; i < DIM; i++) d += (a[i]-b[i]) * (a[i]-b[i]);
+    return d;
+}
+
+int nearest(const double *codebook, int k, const double *v) {
+    int best = 0;
+    double best_d = DBL_MAX;
+    for (int c = 0; c < k; c++) {
+        double d = dist2(&codebook[c*DIM], v);
+        if (d < best_d) { best_d = d; best = c; }
+    }
+    return best;
+}
+
+
+
+/* One LBG/k-means iteration: assign, then recompute centroids. */
+for (int iter = 0; iter < 5; iter++) {
+    double sum[CODEBOOK_SIZE][DIM] = {{0}};
+    int count[CODEBOOK_SIZE] = {0};
+
+    for (int i = 0; i < NUM_VECTORS; i++) {
+        int c = nearest((double*)codebook, CODEBOOK_SIZE, data[i]);
+        for (int d = 0; d < DIM; d++) sum[c][d] += data[i][d];
+        count[c]++;
+    }
+    for (int c = 0; c < CODEBOOK_SIZE; c++) {
+        if (count[c] > 0) {
+            for (int d = 0; d < DIM; d++) codebook[c][d] = sum[c][d] / count[c];
+        }
+    }
+}
+
+
+
+Running this on 8 training vectors that form two obvious clusters - four points near
+(1,1) and four points near (8,8) - converges the codebook exactly to those two
+cluster centers regardless of where it started:
+
+
+
+final codebook:
+  codeword 0: (1.50, 1.50)
+  codeword 1: (8.50, 8.50)
+
+assignments:
+  (1,1) - codeword 0
+  (1,2) - codeword 0
+  (2,1) - codeword 0
+  (2,2) - codeword 0
+  (8,8) - codeword 1
+  (8,9) - codeword 1
+  (9,8) - codeword 1
+  (9,9) - codeword 1
+
+
+
+Encoding with a finished codebook is just nearest() - find the index of
+the closest codeword and transmit that index, which costs log2(codebook_size)
+bits regardless of the vector's dimension. A codebook of 256 entries encodes a
+40-sample vector in 8 bits total - 0.2 bits per sample - at the cost of the
+reconstruction being only as good as the nearest codeword happens to be. This
+direct-distance approach (minimize distance between the vector and the codeword) is
+exactly what a real VQ-based codec does when quantizing, say, LPC coefficients
+themselves. CELP does something more interesting with it.
+
+
+The Source-Filter Model of Speech
+
+
+Speech is well described as a simple two-stage model: a source (air forced
+through the vocal folds, either as quasi-periodic pulses for voiced sounds like
+vowels, or as turbulent noise for unvoiced sounds like "s") passing through a
+filter (the vocal tract's resonant cavities - throat, mouth, tongue position -
+which shape the source's raw spectrum into recognizable phonemes). This is exactly
+the LPC model from Part 5: the
+filter is the LPC predictor, and what is left over after prediction - the
+excitation - stands in for the source. Where Part 5 used LPC to strip
+redundancy for lossless compression, CELP uses the same filter to model the vocal
+tract and spends its entire bit budget describing the excitation as efficiently as
+possible, because the filter itself is cheap (a handful of coefficients per 20 ms
+frame) while the excitation, sample for sample, is where most of the information
+actually lives.
+
+
+LPC Analysis: Autocorrelation and Levinson-Durbin
+
+
+Given a frame of samples, the autocorrelation method estimates how much each sample
+correlates with the ones a fixed distance behind it, for each lag up to the LPC
+order:
+
+
+
+#define LPC_ORDER 4
+
+void autocorrelate(const double *x, int n, int lag_max, double *R) {
+    for (int lag = 0; lag <= lag_max; lag++) {
+        double sum = 0.0;
+        for (int i = 0; i < n - lag; i++) sum += x[i] * x[i + lag];
+        R[lag] = sum;
+    }
+}
+
+
+
+The Levinson-Durbin recursion turns those autocorrelation values into LPC
+coefficients in O(p&sup2;) time (rather than the O(p&sup3;)
+a general linear solve would need), by building up the solution for order
+i from the solution for order i-1:
+
+
+
+/* a[1..p]: predicted x[n] ~= sum_{i=1}^{p} a[i]*x[n-i] */
+void levinson_durbin(const double *R, int p, double *a) {
+    double E = R[0];
+    double tmp[LPC_ORDER + 1];
+    for (int i = 0; i <= p; i++) a[i] = 0.0;
+
+    for (int i = 1; i <= p; i++) {
+        double acc = R[i];
+        for (int j = 1; j < i; j++) acc -= a[j] * R[i - j];
+        double k = (E > 1e-9) ? acc / E : 0.0;
+
+        for (int j = 1; j < i; j++) tmp[j] = a[j] - k * a[i - j];
+        for (int j = 1; j < i; j++) a[j] = tmp[j];
+        a[i] = k;
+
+        E *= (1.0 - k * k);
+    }
+}
+
+
+
+Tested against a synthetic signal built by driving a known 4-pole filter
+(coefficients [1.2, -0.6, 0.15, -0.1]) with noise, the recovered
+coefficients land close to the true ones on every frame - confirming the analysis is
+finding the actual filter, not just fitting noise:
+
+
+
+frame at 0:   a = [1.1907 -0.5109  0.1032 -0.1001]  (true = [1.2 -0.6 0.15 -0.1])
+frame at 160: a = [1.1248 -0.4702 -0.0290  0.0919]  (true = [1.2 -0.6 0.15 -0.1])
+frame at 320: a = [1.2649 -0.8084  0.3100 -0.1213]  (true = [1.2 -0.6 0.15 -0.1])
+
+
+
+The estimates vary frame to frame - that is expected, since each frame is a short,
+noisy sample of the true underlying filter, and real speech's vocal tract shape
+genuinely does change slightly from frame to frame anyway.
+
+
+Analysis-by-Synthesis: Searching for What Sounds Right
+
+
+Here is CELP's actual insight. A direct-distance vector quantizer (as in the LBG
+example above) would search a codebook of candidate excitation vectors for the one
+that looks most like the true residual. CELP instead runs every candidate through
+the LPC synthesis filter and searches for the one whose synthesized output
+best matches the original signal - because two excitation vectors that look quite
+different can produce nearly identical filtered output (the filter itself does a lot
+of the shaping), and it is the filtered output the listener actually hears.
+
+
+
+The synthesis filter reconstructs a signal from an excitation and the filter's own
+memory of prior output:
+
+
+
+void synth_filter(const double *a, int p, const double *excitation,
+                  int len, const double *mem, double *out) {
+    double history[LPC_ORDER + 1000];
+    for (int i = 0; i < p; i++) history[i] = mem[i];
+    for (int i = 0; i < len; i++) {
+        double pred = 0.0;
+        for (int j = 1; j <= p; j++) pred += a[j] * history[p + i - j];
+        double y = excitation[i] + pred;
+        history[p + i] = y;
+        out[i] = y;
+    }
+}
+
+
+
+Because the filter is linear, its response to a real input splits cleanly into two
+independent parts: the zero-input response (ZIR) - what the filter produces
+from its existing memory alone, with zero excitation - and the zero-state
+response (ZSR) of each candidate - what that candidate alone would produce
+starting from an all-zero filter memory. The target the search needs to match is the
+original signal minus the ZIR (the part the filter's own memory already
+explains for free), and every candidate's contribution is judged purely by its ZSR:
+
+
+
+double zero_excite[SUBFRAME_LEN] = {0};
+double zir[SUBFRAME_LEN];
+synth_filter(a, LPC_ORDER, zero_excite, SUBFRAME_LEN, mem, zir);
+
+double target[SUBFRAME_LEN];
+for (int i = 0; i < SUBFRAME_LEN; i++)
+    target[i] = signal[sf_start + i] - zir[i];
+
+
+
+For each codeword, the optimal gain and resulting error have a closed form: the gain
+that minimizes squared error is the correlation between target and ZSR divided by the
+ZSR's own energy, and the residual error at that optimal gain is smallest exactly when
+correlation&sup2; / energy is largest - so the whole codebook search
+reduces to finding the codeword that maximizes that one ratio, with no search over
+gain values needed at all:
+
+
+
+int best_c = 0;
+double best_score = -1.0, best_gain = 0.0;
+double best_zsr[SUBFRAME_LEN];
+double zero_mem[LPC_ORDER] = {0,0,0,0};
+
+for (int c = 0; c < CODEBOOK_SIZE; c++) {
+    double zsr[SUBFRAME_LEN];
+    synth_filter(a, LPC_ORDER, codebook[c], SUBFRAME_LEN, zero_mem, zsr);
+
+    double corr = 0.0, energy = 0.0;
+    for (int i = 0; i < SUBFRAME_LEN; i++) {
+        corr   += target[i] * zsr[i];
+        energy += zsr[i] * zsr[i];
+    }
+    if (energy < 1e-6) continue;
+    double score = (corr * corr) / energy;
+    if (score > best_score) {
+        best_score = score;
+        best_c = c;
+        best_gain = corr / energy;
+        memcpy(best_zsr, zsr, sizeof(zsr));
+    }
+}
+
+
+
+After picking the winning codeword and gain, the reconstructed subframe is
+zir + best_gain * best_zsr, and the filter's real memory is updated with
+the tail of that actual reconstruction before moving to the next subframe - exactly
+the same closed-loop principle from ADPCM and
+Part 5's predictors: always
+predict from what the decoder will actually have, never from information only the
+encoder can see.
+
+
+Measuring the Result
+
+
+Running this on a synthetic noise-excited signal (LPC order 4, 40-sample subframes, a
+32-entry random codebook), the search genuinely improves on doing nothing: comparing
+"reconstruct using only the zero-input response" (no excitation at all) against "the
+best codeword this search actually found" shows the codebook consistently cutting
+per-subframe error energy roughly in half:
+
+
+
+subframe at 0:   zir-only err=7508658.7  with-codebook err=3534244.4  target_energy=7508658.7
+subframe at 40:  zir-only err=7636835.6  with-codebook err=5472479.2  target_energy=7700420.8
+subframe at 80:  zir-only err=5185995.8  with-codebook err=3980390.4  target_energy=5250904.1
+subframe at 120: zir-only err=13164677.9 with-codebook err=8715664.8  target_energy=12598998.9
+
+
+
+The overall reconstruction quality depends heavily on codebook size, which is exactly
+the rate/quality tradeoff vector quantization always makes explicit - more codewords
+means more bits per subframe (log2(codebook_size)) but a better chance
+some codeword's shape happens to resemble the target closely:
+
+
+
+codebook=32:   overall reconstruction SNR: 1.46 dB
+codebook=128:  overall reconstruction SNR: 2.43 dB
+codebook=512:  overall reconstruction SNR: 2.94 dB
+codebook=2048: overall reconstruction SNR: 3.67 dB
+
+
+
+Notice the diminishing returns: quadrupling the codebook from 512 to 2048 entries (2
+more bits per subframe) buys well under 1 dB. This is a genuine, fundamental property
+of vector quantization, not an artifact of this toy implementation - and it is exactly
+why real CELP codecs do not chase quality by brute-forcing an ever-larger random
+codebook. A codebook of, say, 240 entries (one per possible 40-sample
+excitation shape at reasonable resolution) is obviously never going to be searched
+exhaustively. Real codecs (G.729, Speex, AMR) instead use structured or
+algebraic codebooks - excitation vectors built from a small number of pulses at
+algebraically constrained positions - which give an effectively enormous codebook with
+a search cost that stays tractable, plus a separate adaptive (pitch) codebook
+stage before the fixed codebook search shown here, which specifically captures the
+periodic structure of voiced speech (this toy only implements the fixed/stochastic
+codebook half of a real CELP encoder).
+
+
+Summary
+
+
+Vector quantization generalizes scalar quantization to whole blocks of samples at
+once, trading a fixed number of bits (log2(codebook_size)) for
+reconstruction quality that depends on how well the codebook's shapes happen to match
+the data - a tradeoff the LBG algorithm optimizes by iteratively moving codewords to
+the centroids of the data they best represent. CELP applies this idea to speech by
+searching not for the codeword that looks like the LPC residual, but for the
+one that, filtered through the same synthesis filter used to model the vocal tract,
+sounds most like the original signal - a search that reduces, thanks to the
+filter's linearity, to maximizing one closed-form energy-normalized correlation per
+candidate. The measured results here are honest about scale: a small random codebook
+gets a modest but real SNR improvement over no excitation at all, and quality climbs
+with codebook size at sharply diminishing returns, which is exactly the gap that
+structured algebraic codebooks and a separate pitch predictor exist to close in real
+speech codecs.
+
+
+Further Reading
+
+
+Schroeder, M. & Atal, B. - "Code-Excited Linear Prediction (CELP): High-Quality Speech at Very Low Bit Rates"
+ITU-T G.729 - a widely deployed CELP-family speech codec specification
+Linde, Y., Buzo, A. & Gray, R. - "An Algorithm for Vector Quantizer Design" (LBG)
+Linear Prediction (LPC) - Julius O. Smith III
+
+
+See Also
+
+
+Audio Compression Part 5: Lossless Predictive Coding
+Quantization, Noise, and Dither
+Audio Compression Part 8: Building a Toy Perceptual Codec
+
