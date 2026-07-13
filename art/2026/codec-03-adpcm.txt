@@ -287,7 +287,7 @@ size has already adapted to the recent signal, or, as the WAV block layout below
 shows, each block carries an explicit starting step index chosen to match what the
 audio actually needs at that point. Feed the same encoder a slowly-changing 64-sample sine (amplitude 2000, one cycle
 over the whole block, so no single sample-to-sample jump is large) instead of the
-silence-to-8000 leap above, and after the same ramp-up window the tracking error
+silence-to-5000 leap above, and after the same ramp-up window the tracking error
 drops to a maximum of 51 - about 2.5% of the signal's amplitude. Normal continuous
 audio looks like this gradual case almost everywhere; the pathological jump above
 only happens at a genuine cold start, which is exactly why the WAV block layout below
